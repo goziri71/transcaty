@@ -56,12 +56,12 @@ export function decrypt(encryptedValue: string, masterKey: string): string {
 
 /**
  * Ensure SSL is enabled for remote DB connections (Render, Neon, etc.).
- * Uses verify-full for strict certificate validation (pg v9+ recommendation).
+ * Uses sslmode=require (encrypts connection, accepts self-signed certs like Render).
  */
 export function ensureDbSsl(url: string): string {
   if (url.includes("sslmode=")) return url;
   if (url.includes("localhost") || url.includes("127.0.0.1")) return url;
-  const ssl = "sslmode=verify-full";
+  const ssl = "sslmode=require";
   return url.includes("?") ? `${url}&${ssl}` : `${url}?${ssl}`;
 }
 
