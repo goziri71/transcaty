@@ -1,5 +1,4 @@
-import { config } from "dotenv";
-config();
+import "dotenv/config"; // Must be first - loads .env before other imports
 
 import { buildApp } from "../app.js";
 import { queue } from "./lib/queue.js";

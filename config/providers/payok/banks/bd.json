@@ -1,0 +1,25 @@
+{
+  "countryCode": "BD",
+  "currency": "BDT",
+  "type": "e-wallet",
+  "providers": [
+    {
+      "orgId": "BKASH",
+      "orgName": "BKASH",
+      "orgCode": "BKASH",
+      "orgFullName": "bKash"
+    },
+    {
+      "orgId": "NAGAD",
+      "orgName": "NAGAD",
+      "orgCode": "NAGAD",
+      "orgFullName": "Nagad"
+    },
+    {
+      "orgId": "UPAY",
+      "orgName": "UPAY",
+      "orgCode": "UPAY",
+      "orgFullName": "UPAY"
+    }
+  ]
+}

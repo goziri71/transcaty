@@ -11,7 +11,8 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:push": "drizzle-kit push",
-    "db:studio": "drizzle-kit studio"
+    "db:studio": "drizzle-kit studio",
+    "encrypt": "tsx scripts/encrypt.ts"
   },
   "keywords": ["payment", "b2b", "pay-in", "pay-out"],
   "license": "UNLICENSED",
@@ -19,7 +20,10 @@
     "node": ">=20"
   },
   "dependencies": {
+    "@fastify/compress": "^8.0.0",
     "@fastify/cors": "^10.0.1",
+    "@fastify/helmet": "^12.0.0",
+    "@fastify/rate-limit": "^10.1.0",
     "dotenv": "^16.4.0",
     "drizzle-orm": "^0.36.0",
     "fastify": "^5.1.0",
