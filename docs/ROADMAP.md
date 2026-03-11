@@ -15,23 +15,23 @@
 
 ---
 
-## Phase 1: Foundation
+## Phase 1: Foundation ✓
 
 ### 1.1 Database schema
 
-- [ ] `merchants` – id, name, status, kyc_status, created_at
-- [ ] `merchant_api_keys` – merchant_id, key_hash, secret_enc, scopes, status
-- [ ] `wallets` – merchant_id, type (merchant|customer), parent_id (for customer), balance, currency, status
-- [ ] `ledger_entries` – wallet_id, amount, direction, type, reference_id, created_at
-- [ ] `transactions` – id, merchant_id, type (payin|payout|transfer), status, amount, currency, external_id (Payok), metadata
-- [ ] `idempotency_keys` – key, merchant_id, response_snapshot, expires_at
+- [x] `merchants` – id, name, status, kyc_status, created_at
+- [x] `merchant_api_keys` – merchant_id, key_hash, secret_enc, scopes, status
+- [x] `wallets` – merchant_id, type (merchant|customer), parent_id (for customer), balance, currency, status
+- [x] `ledger_entries` – wallet_id, amount, direction, type, reference_id, created_at
+- [x] `transactions` – id, merchant_id, type (payin|payout|transfer), status, amount, currency, external_id (Payok), metadata
+- [x] `idempotency_keys` – key, merchant_id, response_snapshot, expires_at
 
 ### 1.2 Merchant authentication
 
-- [ ] API key + secret model (live/test)
-- [ ] HMAC request signing (X-Transcaty-Key, X-Transcaty-Signature, X-Transcaty-Timestamp)
-- [ ] Replay protection (±5 min timestamp)
-- [ ] Scope-based authorization (payin:create, payout:create, etc.)
+- [x] API key + secret model (live/test)
+- [x] HMAC request signing (X-Transcaty-Key, X-Transcaty-Signature, X-Transcaty-Timestamp)
+- [x] Replay protection (±5 min timestamp)
+- [x] Scope-based authorization (payin:create, payout:create, etc.)
 
 ---
 

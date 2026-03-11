@@ -11,6 +11,7 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:push": "drizzle-kit push",
+    "db:seed-merchant": "tsx scripts/seed-merchant.ts",
     "db:studio": "drizzle-kit studio",
     "encrypt": "tsx scripts/encrypt.ts",
     "payok:test": "tsx scripts/payok-test.ts",
