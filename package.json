@@ -12,7 +12,10 @@
     "db:migrate": "drizzle-kit migrate",
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio",
-    "encrypt": "tsx scripts/encrypt.ts"
+    "encrypt": "tsx scripts/encrypt.ts",
+    "payok:test": "tsx scripts/payok-test.ts",
+    "payok:env-check": "tsx scripts/payok-env-check.ts",
+    "payok:key-check": "tsx scripts/payok-key-check.ts"
   },
   "keywords": ["payment", "b2b", "pay-in", "pay-out"],
   "license": "UNLICENSED",

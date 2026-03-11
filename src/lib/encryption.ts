@@ -68,17 +68,24 @@ export function ensureDbSsl(url: string): string {
 /**
  * Get a value: use plain if available, otherwise decrypt encrypted value.
  */
+/** Check if value looks like our encrypted format (iv:authTag:cipher). */
+function looksLikeEncrypted(value: string): boolean {
+  const parts = value.trim().split(":");
+  return parts.length === 3 && parts.every((p) => /^[0-9a-fA-F]+$/.test(p));
+}
+
 export function getSecret(plainKey: string, encryptedKey: string): string | undefined {
   const plain = process.env[plainKey];
-  if (plain) return plain;
-
   const encrypted = process.env[encryptedKey];
   const masterKey = process.env.ENCRYPTION_MASTER_KEY;
 
-  if (!encrypted || !masterKey) return undefined;
+  if (plain && !looksLikeEncrypted(plain)) return plain;
+
+  const toDecrypt = looksLikeEncrypted(plain ?? "") ? plain! : encrypted;
+  if (!toDecrypt || !masterKey) return plain ?? undefined;
 
   try {
-    return decrypt(encrypted.trim(), masterKey.trim());
+    return decrypt(toDecrypt.trim(), masterKey.trim());
   } catch (err) {
     throw new Error(
       `Failed to decrypt ${encryptedKey}: ${err instanceof Error ? err.message : String(err)}. ` +

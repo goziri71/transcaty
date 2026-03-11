@@ -164,6 +164,8 @@ Returns `list` of `{ name, imageUrl, countryName, category }` where `category` =
 | merchantId, merchantOrderId, platformOrderId | |
 | paymentMethodCode | BKASH, NAGAD, UPAY |
 | amount, paidAmount | Request vs actual paid |
+
+**Alert:** `amount` and `paidAmount` may differ. Use `paidAmount` for the actual received amount when crediting.
 | createTime, successTime | `yyyyMMddHHmmss` |
 | transFeeRate, transFee, totalTransFee | |
 | payer, accountNo | Optional (VA/QRIS only) |
