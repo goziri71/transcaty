@@ -18,6 +18,7 @@ import { verifyPayokCallback } from "./src/lib/payok-signature.js";
 import { getPayokConfig } from "./src/lib/payok-config.js";
 import { createPayinOrder, handlePayinCallback } from "./services/domestic/payok-payin.js";
 import { createPayoutOrder, handlePayoutCallback } from "./services/domestic/payok-payout.js";
+import { LIMITS } from "./src/lib/limits.js";
 
 export async function buildApp() {
   const app = Fastify({ logger: true }).withTypeProvider<ZodTypeProvider>();
@@ -179,8 +180,11 @@ export async function buildApp() {
         response: {
           200: z.object({
             transactionId: z.string(),
-            paymentInfo: z.unknown().optional(),
+            status: z.string(),
+            amount: z.string(),
             platformOrderId: z.string().optional(),
+            paymentInfo: z.unknown().optional(),
+            expiresAt: z.string().nullable().optional(),
           }),
           400: errorResponse,
           401: errorResponse,
@@ -197,8 +201,8 @@ export async function buildApp() {
       }
       const body = request.body as { amount: string; paymentMethodCode: string; customer: { name: string; email: string; phone: string; deviceId: string }; goodsInfo: { name: string; id?: string; price?: string } };
       const amount = parseFloat(body.amount);
-      if (amount < 200 || amount > 25000) {
-        return reply.status(400).send({ error: "Amount must be between 200 and 25000 BDT" });
+      if (amount < LIMITS.payin.min || amount > LIMITS.payin.max) {
+        return reply.status(400).send({ error: `Amount must be between ${LIMITS.payin.min} and ${LIMITS.payin.max} BDT` });
       }
       try {
         const result = await createPayinOrder({
@@ -209,7 +213,13 @@ export async function buildApp() {
           customer: body.customer,
           goodsInfo: body.goodsInfo,
         });
-        return result;
+        const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+        return {
+          ...result,
+          status: "pending",
+          amount: body.amount,
+          expiresAt,
+        };
       } catch (err) {
         app.log.error(err);
         return reply.status(500).send({
@@ -243,8 +253,11 @@ export async function buildApp() {
         response: {
           200: z.object({
             transactionId: z.string(),
-            status: z.string().optional(),
+            status: z.string(),
+            amount: z.string(),
             platformOrderId: z.string().optional(),
+            recipient: z.object({ masked: z.string() }),
+            estimatedCompletion: z.string().nullable().optional(),
           }),
           400: errorResponse,
           401: errorResponse,
@@ -261,8 +274,8 @@ export async function buildApp() {
       }
       const body = request.body as { amount: string; benificiaryAccountInfo: { number: string; orgId: string; orgCode: string; orgName: string; holderName: string }; cardHolderInfo: { firstName: string; lastName: string; email: string; phone: string } };
       const amount = parseFloat(body.amount);
-      if (amount < 100 || amount > 25000) {
-        return reply.status(400).send({ error: "Amount must be between 100 and 25000 BDT" });
+      if (amount < LIMITS.payout.min || amount > LIMITS.payout.max) {
+        return reply.status(400).send({ error: `Amount must be between ${LIMITS.payout.min} and ${LIMITS.payout.max} BDT` });
       }
       try {
         const result = await createPayoutOrder({
@@ -272,7 +285,16 @@ export async function buildApp() {
           benificiaryAccountInfo: body.benificiaryAccountInfo,
           cardHolderInfo: body.cardHolderInfo,
         });
-        return result;
+        const num = body.benificiaryAccountInfo.number;
+        const masked = num.length > 4 ? `****${num.slice(-4)}` : "****";
+        const estimatedCompletion = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+        return {
+          ...result,
+          status: result.status ?? "pending",
+          amount: body.amount,
+          recipient: { masked },
+          estimatedCompletion,
+        };
       } catch (err) {
         app.log.error(err);
         return reply.status(500).send({
@@ -290,7 +312,14 @@ export async function buildApp() {
         response: {
           200: z.object({
             balance: z.string(),
+            availableBalance: z.string(),
+            pendingBalance: z.string(),
             currency: z.string(),
+            lastUpdated: z.string().nullable(),
+            limits: z.object({
+              payin: z.object({ min: z.number(), max: z.number() }),
+              payout: z.object({ min: z.number(), max: z.number() }),
+            }),
           }),
           401: errorResponse,
         },
@@ -300,7 +329,11 @@ export async function buildApp() {
       const m = request.merchant;
       if (!m) return reply.status(401).send({ error: "Unauthorized" });
       const [wallet] = await db
-        .select({ balance: wallets.balance, currency: wallets.currency })
+        .select({
+          balance: wallets.balance,
+          currency: wallets.currency,
+          updatedAt: wallets.updatedAt,
+        })
         .from(wallets)
         .where(
           and(
@@ -310,8 +343,25 @@ export async function buildApp() {
           )
         )
         .limit(1);
-      if (!wallet) return reply.status(200).send({ balance: "0", currency: "BDT" });
-      return { balance: String(wallet.balance), currency: wallet.currency };
+      if (!wallet) {
+        return reply.status(200).send({
+          balance: "0",
+          availableBalance: "0",
+          pendingBalance: "0",
+          currency: "BDT",
+          lastUpdated: null,
+          limits: LIMITS,
+        });
+      }
+      const bal = String(wallet.balance);
+      return {
+        balance: bal,
+        availableBalance: bal,
+        pendingBalance: "0",
+        currency: wallet.currency,
+        lastUpdated: wallet.updatedAt?.toISOString() ?? null,
+        limits: LIMITS,
+      };
     }
   );
 
@@ -323,10 +373,14 @@ export async function buildApp() {
         response: {
           200: z.object({
             id: z.string(),
+            transactionId: z.string(),
             status: z.string(),
             amount: z.string(),
             paidAmount: z.string().nullable(),
-            externalId: z.string().nullable(),
+            platformOrderId: z.string().nullable(),
+            paymentMethod: z.string().nullable(),
+            createdAt: z.string(),
+            completedAt: z.string().nullable(),
           }),
           401: errorResponse,
           404: errorResponse,
@@ -338,12 +392,32 @@ export async function buildApp() {
       if (!m) return reply.status(401).send({ error: "Unauthorized" });
       const { id } = request.params as { id: string };
       const [tx] = await db
-        .select({ id: transactions.id, status: transactions.status, amount: transactions.amount, paidAmount: transactions.paidAmount, externalId: transactions.externalId })
+        .select({
+          id: transactions.id,
+          status: transactions.status,
+          amount: transactions.amount,
+          paidAmount: transactions.paidAmount,
+          externalId: transactions.externalId,
+          metadata: transactions.metadata,
+          createdAt: transactions.createdAt,
+          updatedAt: transactions.updatedAt,
+        })
         .from(transactions)
         .where(and(eq(transactions.id, id), eq(transactions.merchantId, m.merchantId), eq(transactions.type, "payin")))
         .limit(1);
       if (!tx) return reply.status(404).send({ error: "Not found" });
-      return { ...tx, paidAmount: tx.paidAmount ?? null, externalId: tx.externalId ?? null };
+      const meta = tx.metadata ? (JSON.parse(tx.metadata) as { paymentMethodCode?: string }) : {};
+      return {
+        id: tx.id,
+        transactionId: tx.id,
+        status: tx.status,
+        amount: String(tx.amount),
+        paidAmount: tx.paidAmount ? String(tx.paidAmount) : null,
+        platformOrderId: tx.externalId ?? null,
+        paymentMethod: meta.paymentMethodCode ?? null,
+        createdAt: tx.createdAt.toISOString(),
+        completedAt: tx.status === "success" ? tx.updatedAt.toISOString() : null,
+      };
     }
   );
 
@@ -355,9 +429,13 @@ export async function buildApp() {
         response: {
           200: z.object({
             id: z.string(),
+            transactionId: z.string(),
             status: z.string(),
             amount: z.string(),
-            externalId: z.string().nullable(),
+            platformOrderId: z.string().nullable(),
+            recipient: z.object({ masked: z.string() }),
+            createdAt: z.string(),
+            completedAt: z.string().nullable(),
           }),
           401: errorResponse,
           404: errorResponse,
@@ -369,12 +447,32 @@ export async function buildApp() {
       if (!m) return reply.status(401).send({ error: "Unauthorized" });
       const { id } = request.params as { id: string };
       const [tx] = await db
-        .select({ id: transactions.id, status: transactions.status, amount: transactions.amount, externalId: transactions.externalId })
+        .select({
+          id: transactions.id,
+          status: transactions.status,
+          amount: transactions.amount,
+          externalId: transactions.externalId,
+          metadata: transactions.metadata,
+          createdAt: transactions.createdAt,
+          updatedAt: transactions.updatedAt,
+        })
         .from(transactions)
         .where(and(eq(transactions.id, id), eq(transactions.merchantId, m.merchantId), eq(transactions.type, "payout")))
         .limit(1);
       if (!tx) return reply.status(404).send({ error: "Not found" });
-      return { ...tx, externalId: tx.externalId ?? null };
+      const meta = tx.metadata ? (JSON.parse(tx.metadata) as { benificiaryAccountInfo?: { number?: string } }) : {};
+      const num = meta.benificiaryAccountInfo?.number ?? "";
+      const masked = num.length > 4 ? `****${num.slice(-4)}` : "****";
+      return {
+        id: tx.id,
+        transactionId: tx.id,
+        status: tx.status,
+        amount: String(tx.amount),
+        platformOrderId: tx.externalId ?? null,
+        recipient: { masked },
+        createdAt: tx.createdAt.toISOString(),
+        completedAt: tx.status === "success" ? tx.updatedAt.toISOString() : null,
+      };
     }
   );
 
