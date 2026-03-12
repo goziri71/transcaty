@@ -10,13 +10,22 @@ function normalizePem(pem: string): string {
 }
 
 /** Convert raw base64 (no PEM headers) to PEM format. */
-function base64ToPem(base64: string): string {
+function base64ToPem(base64: string, type: "private" | "public" = "private"): string {
   const cleaned = base64.replace(/\s/g, "");
   if (!/^[A-Za-z0-9+/=]+$/.test(cleaned)) {
-    throw new Error("Invalid base64 for private key.");
+    throw new Error(`Invalid base64 for ${type} key.`);
   }
   const lines = cleaned.match(/.{1,64}/g) ?? [];
-  return `-----BEGIN PRIVATE KEY-----\n${lines.join("\n")}\n-----END PRIVATE KEY-----`;
+  const header = type === "public" ? "-----BEGIN PUBLIC KEY-----" : "-----BEGIN PRIVATE KEY-----";
+  const footer = type === "public" ? "-----END PUBLIC KEY-----" : "-----END PRIVATE KEY-----";
+  return `${header}\n${lines.join("\n")}\n${footer}`;
+}
+
+function toPublicPem(value: string): string {
+  const normalized = normalizePem(value);
+  if (normalized.includes("-----BEGIN PUBLIC KEY-----")) return normalized;
+  if (/^[A-Za-z0-9+/=\s]+$/.test(normalized)) return base64ToPem(normalized, "public");
+  throw new Error("Public key must be PEM or base64.");
 }
 
 /** Get PEM from value: already PEM, or raw base64 to convert. */
@@ -26,7 +35,7 @@ function toPem(value: string): string {
     return normalized;
   }
   if (/^[A-Za-z0-9+/=\s]+$/.test(normalized)) {
-    return base64ToPem(normalized);
+    return base64ToPem(normalized, "private");
   }
   throw new Error("Private key must be PEM or base64. Got neither.");
 }
@@ -74,10 +83,11 @@ export function verifyPayokCallback(
   jsonBody: string,
   endpointPath: string,
   signatureBase64: string,
-  publicKeyPem: string
+  publicKeyInput: string
 ): boolean {
+  const pem = toPublicPem(publicKeyInput);
   const plaintext = `${jsonBody}&${endpointPath}`;
   const verify = createVerify("RSA-SHA256");
   verify.update(plaintext, "utf8");
-  return verify.verify(publicKeyPem, signatureBase64, "base64");
+  return verify.verify(pem, signatureBase64, "base64");
 }

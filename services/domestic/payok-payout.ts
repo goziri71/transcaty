@@ -1,0 +1,193 @@
+/**
+ * Payout flow: account inquiry, create payout, handle Payok callback.
+ */
+import { eq, and } from "drizzle-orm";
+import { db } from "../../src/db/index.js";
+import { transactions, wallets, ledgerEntries } from "../../src/db/schema/index.js";
+import { payokPayoutAccountInquiry, payokPayoutCreate } from "../../src/lib/payok-client.js";
+import { audit } from "../../src/lib/audit.js";
+
+export async function createPayoutOrder(params: {
+  merchantId: string;
+  amount: string;
+  baseUrl: string;
+  benificiaryAccountInfo: {
+    number: string;
+    orgId: string;
+    orgCode: string;
+    orgName: string;
+    holderName: string;
+  };
+  cardHolderInfo: { firstName: string; lastName: string; email: string; phone: string };
+}) {
+  const [wallet] = await db
+    .select()
+    .from(wallets)
+    .where(
+      and(
+        eq(wallets.merchantId, params.merchantId),
+        eq(wallets.type, "merchant"),
+        eq(wallets.status, "active")
+      )
+    )
+    .limit(1);
+
+  if (!wallet) throw new Error("Merchant wallet not found");
+  if (Number(wallet.balance) < Number(params.amount)) {
+    throw new Error("Insufficient balance");
+  }
+
+  const [tx] = await db
+    .insert(transactions)
+    .values({
+      merchantId: params.merchantId,
+      type: "payout",
+      status: "pending",
+      amount: params.amount,
+      currency: "BDT",
+      metadata: JSON.stringify({ beneficiary: params.benificiaryAccountInfo }),
+    })
+    .returning();
+
+  if (!tx) throw new Error("Failed to create transaction");
+
+  const { status: inquiryStatus, body: inquiryBody } = await payokPayoutAccountInquiry({
+    merchantOrderId: tx.id,
+    amount: params.amount,
+    benificiaryAccountInfo: params.benificiaryAccountInfo,
+  });
+
+  const inquiry = inquiryBody as { code?: string; inquiryToken?: string; message?: string };
+  if (inquiryStatus !== 200 || inquiry.code === "FAIL" || !inquiry.inquiryToken) {
+    await db.update(transactions).set({ status: "failed" }).where(eq(transactions.id, tx.id));
+    throw new Error(`Payok account inquiry failed: ${inquiry.message ?? JSON.stringify(inquiry)}`);
+  }
+
+  const notificationUrl = `${params.baseUrl.replace(/\/$/, "")}/webhooks/payok/payout`;
+
+  const { status: createStatus, body: createBody } = await payokPayoutCreate({
+    merchantOrderId: tx.id,
+    amount: params.amount,
+    inquiryToken: inquiry.inquiryToken,
+    notificationUrl,
+    benificiaryAccountInfo: params.benificiaryAccountInfo,
+    cardHolderInfo: params.cardHolderInfo,
+  });
+
+  const create = createBody as { code?: string; status?: string; platformOrderId?: string };
+  if (createStatus !== 200 || create.code === "FAIL") {
+    await db.update(transactions).set({ status: "failed" }).where(eq(transactions.id, tx.id));
+    throw new Error(`Payok create payout failed: ${JSON.stringify(create)}`);
+  }
+
+  await db
+    .update(transactions)
+    .set({ externalId: create.platformOrderId, updatedAt: new Date() })
+    .where(eq(transactions.id, tx.id));
+
+  await db.insert(ledgerEntries).values({
+    walletId: wallet.id,
+    amount: params.amount,
+    direction: "debit",
+    type: "payout",
+    referenceId: tx.id,
+  });
+
+  await db
+    .update(wallets)
+    .set({
+      balance: String(Number(wallet.balance) - Number(params.amount)),
+      updatedAt: new Date(),
+    })
+    .where(eq(wallets.id, wallet.id));
+
+  audit({ action: "payout.created", resource: tx.id, meta: { platformOrderId: create.platformOrderId } });
+
+  return {
+    transactionId: tx.id,
+    status: create.status,
+    platformOrderId: create.platformOrderId,
+  };
+}
+
+export async function handlePayoutCallback(body: {
+  code?: string;
+  status?: string;
+  merchantOrderId?: string;
+  platformOrderId?: string;
+  amount?: string;
+}) {
+  const merchantOrderId = body.merchantOrderId;
+  if (!merchantOrderId) {
+    throw new Error("Missing merchantOrderId in callback");
+  }
+
+  const [tx] = await db
+    .select()
+    .from(transactions)
+    .where(
+      and(
+        eq(transactions.id, merchantOrderId),
+        eq(transactions.type, "payout")
+      )
+    )
+    .limit(1);
+
+  if (!tx) {
+    throw new Error(`Transaction not found: ${merchantOrderId}`);
+  }
+
+  if (tx.status !== "pending") {
+    return;
+  }
+
+  const isSuccess = body.code === "SUCCESS" && body.status === "SUCCESS";
+
+  await db
+    .update(transactions)
+    .set({
+      status: isSuccess ? "success" : "failed",
+      externalId: body.platformOrderId ?? tx.externalId,
+      updatedAt: new Date(),
+    })
+    .where(eq(transactions.id, tx.id));
+
+  if (isSuccess) {
+    audit({
+      action: "payout.completed",
+      resource: tx.id,
+      meta: { platformOrderId: body.platformOrderId },
+    });
+  } else {
+    const [wallet] = await db
+      .select()
+      .from(wallets)
+      .where(
+        and(
+          eq(wallets.merchantId, tx.merchantId),
+          eq(wallets.type, "merchant")
+        )
+      )
+    .limit(1);
+
+    if (wallet) {
+      await db.insert(ledgerEntries).values({
+        walletId: wallet.id,
+        amount: String(tx.amount),
+        direction: "credit",
+        type: "payout_refund",
+        referenceId: tx.id,
+      });
+
+      await db
+        .update(wallets)
+        .set({
+          balance: String(Number(wallet.balance) + Number(tx.amount)),
+          updatedAt: new Date(),
+        })
+        .where(eq(wallets.id, wallet.id));
+    }
+
+    audit({ action: "payout.failed", resource: tx.id, meta: { reason: body.code } });
+  }
+}

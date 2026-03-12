@@ -35,37 +35,37 @@
 
 ---
 
-## Phase 2: Payok flows
+## Phase 2: Payok flows ✓
 
 ### 2.1 Payok client
 
-- [ ] Sign all outbound requests
-- [ ] Verify all inbound callbacks
-- [ ] Retry logic, error handling
-- [ ] Log requests/responses (no secrets)
+- [x] Sign all outbound requests
+- [x] Verify all inbound callbacks
+- [ ] Retry logic, error handling (optional)
+- [ ] Log requests/responses (no secrets) (optional)
 
 ### 2.2 Pay-in flow (customer → merchant)
 
-- [ ] Create order via Payok
-- [ ] **Use `paidAmount` (not `amount`) when crediting wallet** – Payok alert: response amount vs paidAmount may differ; paidAmount = actual received
-- [ ] Store transaction (PENDING)
-- [ ] Receive Payok callback → verify signature
-- [ ] Credit merchant wallet (ledger entry)
-- [ ] Update transaction (SUCCESS/FAILED)
-- [ ] Return SUCCESS to Payok
-- [ ] Emit webhook to merchant (if configured)
+- [x] Create order via Payok
+- [x] **Use `paidAmount` (not `amount`) when crediting wallet**
+- [x] Store transaction (PENDING)
+- [x] Receive Payok callback → verify signature
+- [x] Credit merchant wallet (ledger entry)
+- [x] Update transaction (SUCCESS/FAILED)
+- [x] Return SUCCESS to Payok
+- [ ] Emit webhook to merchant (Phase 3)
 
 ### 2.3 Payout flow (merchant → recipient)
 
-- [ ] Validate merchant balance
-- [ ] Bank account inquiry via Payok
-- [ ] Create payout via Payok (with inquiryToken)
-- [ ] Debit merchant wallet (ledger entry)
-- [ ] Store transaction (PENDING)
-- [ ] Receive Payok callback → verify signature
-- [ ] Update transaction (SUCCESS/FAILED)
-- [ ] Return SUCCESS to Payok
-- [ ] Emit webhook to merchant
+- [x] Validate merchant balance
+- [x] Bank account inquiry via Payok
+- [x] Create payout via Payok (with inquiryToken)
+- [x] Debit merchant wallet (ledger entry)
+- [x] Store transaction (PENDING)
+- [x] Receive Payok callback → verify signature
+- [x] Update transaction (SUCCESS/FAILED)
+- [x] Return SUCCESS to Payok (refund on failure)
+- [ ] Emit webhook to merchant (Phase 3)
 
 ---
 
