@@ -4,7 +4,7 @@
  * Usage: npx tsx scripts/payok-test.ts
  */
 import "dotenv/config";
-import { payokBalanceQuery } from "../src/lib/payok-client.js";
+import { payokBalanceQuery } from "../services/domestic/bangladesh/index.js";
 
 async function main() {
   console.log("Calling Payok balance inquiry...\n");

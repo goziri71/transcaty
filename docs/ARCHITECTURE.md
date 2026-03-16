@@ -1,6 +1,52 @@
 # Transcaty Architecture – Separation Plan
 
-> Isolate markets so we never touch Bangladesh when adding Nigeria, Kenya, or other changes. Plan the structure now; implement when ready.
+> Isolate markets so we never touch Bangladesh when adding Nigeria, Kenya, or other changes. Fixed structure, ready for the future.
+
+---
+
+## System Flow (Target Architecture)
+
+```mermaid
+flowchart TD
+    merchantApp[Merchant App] --> apiGateway[API Gateway]
+    apiGateway --> auth[Auth & API Keys]
+    auth --> rateLimit[Rate Limit & WAF]
+    rateLimit --> paymentApi[Payment Orchestration API]
+    paymentApi --> risk[Risk & Policy Engine]
+    risk --> idempotency[Idempotency & Dedup Store]
+    idempotency --> payokAdapter[Payok Adapter]
+    payokAdapter --> payok[Payok]
+    payok --> webhooks[Webhook Ingestion Service]
+    webhooks --> eventBus[Event Bus / Queue]
+    eventBus --> ledger[Double-Entry Ledger]
+    eventBus --> reconciliation[Reconciliation Service]
+    eventBus --> notifications[Merchant Webhook & Notifications]
+    ledger --> reporting[Analytics & Reporting]
+    reconciliation --> ops[Ops & Finance Dashboard]
+```
+
+**Provider:** Payok (Bangladesh). Same structure for future providers (Nigeria, Kenya, etc.) – swap adapter only.
+
+### Layer Mapping (Current → Target)
+
+| Layer | Current | Target / Future |
+|-------|---------|-----------------|
+| Merchant App | External | External |
+| API Gateway | Fastify app | Same or separate gateway |
+| Auth & API Keys | merchant-auth.ts | ✓ |
+| Rate Limit & WAF | @fastify/rate-limit | Add WAF when needed |
+| Payment Orchestration API | payin, payout flows | ✓ |
+| Risk & Policy Engine | KYC gate, limits | Expand to full risk engine |
+| Idempotency & Dedup | idempotency_keys | ✓ |
+| Payok Adapter | payok-client, payok-signature | services/domestic/bangladesh/provider/ |
+| Payok | External | External |
+| Webhook Ingestion | /webhooks/payok/* | api/webhooks/payok/ |
+| Event Bus | pg-boss | ✓ |
+| Double-Entry Ledger | ledger_entries, wallets | ✓ |
+| Reconciliation Service | — | Future |
+| Merchant Webhook & Notifications | merchant-webhook.ts | ✓ |
+| Analytics & Reporting | — | Future |
+| Ops & Finance Dashboard | — | Future |
 
 ---
 
@@ -116,17 +162,17 @@ Merchant API needs to know which country to use. Options:
 
 ## What Moves Where (Migration Checklist)
 
-| Current Location | Target Location |
-|------------------|-----------------|
-| `services/domestic/payok-payin.ts` | `services/domestic/bangladesh/payin.ts` |
-| `services/domestic/payok-payout.ts` | `services/domestic/bangladesh/payout.ts` |
-| `src/lib/payok-client.ts` | `services/domestic/bangladesh/provider/client.ts` |
-| `src/lib/payok-config.ts` | `services/domestic/bangladesh/provider/config.ts` |
-| `src/lib/payok-signature.ts` | `services/domestic/bangladesh/provider/signature.ts` |
-| `src/lib/banks.ts` | `services/domestic/bangladesh/provider/` or `config/providers/payok/` |
-| `src/lib/limits.ts` | Keep in lib (BD limits) or move to `bangladesh/limits.ts` |
-| KYC routes in app.ts | `api/v1/kyc.ts` |
-| Payok webhook routes in app.ts | `api/webhooks/payok/payin.ts`, `payout.ts` |
+| Status | Current Location | Target Location |
+|--------|------------------|-----------------|
+| ✓ | `services/domestic/payok-payin.ts` | `services/domestic/bangladesh/payin.ts` |
+| ✓ | `services/domestic/payok-payout.ts` | `services/domestic/bangladesh/payout.ts` |
+| ✓ | `src/lib/payok-client.ts` | `services/domestic/bangladesh/provider/client.ts` |
+| ✓ | `src/lib/payok-config.ts` | `services/domestic/bangladesh/provider/config.ts` |
+| ✓ | `src/lib/payok-signature.ts` | `services/domestic/bangladesh/provider/signature.ts` |
+| — | `src/lib/banks.ts` | Keep in lib (not yet used in flows) |
+| — | `src/lib/limits.ts` | Keep in lib (BD limits) |
+| — | KYC routes in app.ts | `api/v1/kyc.ts` (future) |
+| — | Payok webhook routes in app.ts | `api/webhooks/payok/` (future) |
 
 ---
 
@@ -176,11 +222,22 @@ When we split into separate deployable services:
 ## Rules
 
 1. **Never edit `services/domestic/bangladesh/`** for Nigeria, Kenya, or unrelated features.
-2. **New country = new folder** `services/domestic/{country}/`.
+2. **New country = new folder** `services/domestic/{country}/` with its own provider adapter.
 3. **Shared logic** goes in `src/lib/` or `services/_shared/`.
 4. **app.ts** stays thin – imports from `api/` and `services/`, no business logic.
 5. **Provider webhooks** live under `api/webhooks/{provider}/` – one folder per provider.
+6. **Flow is fixed** – Auth → Rate Limit → Payment API → Risk → Idempotency → Provider Adapter → Provider → Webhooks → Event Bus → Ledger + Notifications. New providers plug in at the adapter layer.
 
 ---
 
-*Last updated: architecture planning.*
+## Future Providers
+
+When adding Nigeria, Kenya, etc.:
+
+- Add `services/domestic/{country}/` with its provider adapter (e.g. Flutterwave, Paystack).
+- Add `api/webhooks/{provider}/` for that provider's callbacks.
+- Route by merchant country. Bangladesh path unchanged.
+
+---
+
+*Last updated: architecture planning. Structure fixed for future scale.*

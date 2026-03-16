@@ -42,10 +42,6 @@ function toPem(value: string): string {
 
 /**
  * Sign a request body for Payok.
- * @param jsonBody - JSON string of the request body
- * @param endpointPath - e.g. /api-pay/remit/V3.5/balance/query
- * @param privateKeyPem - RSA private key in PEM format (PKCS#1 or PKCS#8)
- * @returns Base64 signature for the sign header
  */
 export function signPayokRequest(
   jsonBody: string,
@@ -73,11 +69,6 @@ export function signPayokRequest(
 
 /**
  * Verify a callback signature from Payok.
- * @param jsonBody - Raw request body string (as received)
- * @param endpointPath - The path Payok used (e.g. our webhook path)
- * @param signatureBase64 - Value from sign header
- * @param publicKeyPem - Payok platform public key in PEM format
- * @returns true if signature is valid
  */
 export function verifyPayokCallback(
   jsonBody: string,

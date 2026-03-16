@@ -1,11 +1,11 @@
 /**
- * Pay-in flow: create order, handle Payok callback, credit wallet.
+ * Bangladesh pay-in flow: create order, handle Payok callback, credit wallet.
  */
 import { eq, and } from "drizzle-orm";
-import { db } from "../../src/db/index.js";
-import { transactions, wallets, ledgerEntries } from "../../src/db/schema/index.js";
-import { payokPayinCreateOrder } from "../../src/lib/payok-client.js";
-import { audit } from "../../src/lib/audit.js";
+import { db } from "../../../src/db/index.js";
+import { transactions, wallets, ledgerEntries } from "../../../src/db/schema/index.js";
+import { payokPayinCreateOrder } from "./provider/client.js";
+import { audit } from "../../../src/lib/audit.js";
 
 export async function createPayinOrder(params: {
   merchantId: string;

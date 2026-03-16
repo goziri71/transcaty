@@ -1,8 +1,8 @@
 /**
  * Payok HTTP client – signed requests for pay-in, payout, balance.
  */
-import { getPayokConfig } from "./payok-config.js";
-import { signPayokRequest } from "./payok-signature.js";
+import { getPayokConfig } from "./config.js";
+import { signPayokRequest } from "./signature.js";
 
 const PAYIN_BASE = "/api-pay/payment/V3.5";
 const PAYOUT_BASE = "/api-pay/remit/V3.5";

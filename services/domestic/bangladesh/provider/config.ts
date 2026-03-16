@@ -1,7 +1,7 @@
 /**
  * Payok credentials – loaded from env (plain or encrypted).
  */
-import { getSecret } from "./encryption.js";
+import { getSecret } from "../../../../src/lib/encryption.js";
 
 export type PayokConfig = {
   merchantId: string;

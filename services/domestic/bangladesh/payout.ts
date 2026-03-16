@@ -1,11 +1,11 @@
 /**
- * Payout flow: account inquiry, create payout, handle Payok callback.
+ * Bangladesh payout flow: account inquiry, create payout, handle Payok callback.
  */
 import { eq, and } from "drizzle-orm";
-import { db } from "../../src/db/index.js";
-import { transactions, wallets, ledgerEntries } from "../../src/db/schema/index.js";
-import { payokPayoutAccountInquiry, payokPayoutCreate } from "../../src/lib/payok-client.js";
-import { audit } from "../../src/lib/audit.js";
+import { db } from "../../../src/db/index.js";
+import { transactions, wallets, ledgerEntries } from "../../../src/db/schema/index.js";
+import { payokPayoutAccountInquiry, payokPayoutCreate } from "./provider/client.js";
+import { audit } from "../../../src/lib/audit.js";
 
 export async function createPayoutOrder(params: {
   merchantId: string;
