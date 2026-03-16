@@ -4,6 +4,12 @@
 
 ---
 
+## Architecture
+
+See **[ARCHITECTURE.md](./ARCHITECTURE.md)** for separation plan: Bangladesh isolated, folder structure, and migration checklist. Never touch Bangladesh when adding other countries.
+
+---
+
 ## Phase 0: Payok verified ✓
 
 **Gate:** Payok API returns 200 before we proceed.
@@ -112,6 +118,9 @@
 
 ### 5.2 Operational controls
 
+- [x] KYC schema (business profiles, documents, persons, users)
+- [x] Merchant KYC API (GET/PUT business, persons, documents, submit)
+- [x] KYC gate (KYC_REQUIRED env – block pay-in/payout until verified)
 - [ ] Cooling period (hold funds X hours after pay-in before withdrawal)
 - [ ] Withdrawal limits (daily/weekly per merchant)
 - [ ] Blacklist (phone, account, merchant)

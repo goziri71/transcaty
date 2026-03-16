@@ -40,6 +40,33 @@ export const transactionStatusEnum = pgEnum("transaction_status", [
   "failed",
 ]);
 
+export const kycProfileStatusEnum = pgEnum("kyc_profile_status", [
+  "draft",
+  "submitted",
+  "verified",
+  "rejected",
+]);
+
+export const kycDocumentStatusEnum = pgEnum("kyc_document_status", [
+  "pending",
+  "verified",
+  "rejected",
+]);
+
+export const kycPersonRoleEnum = pgEnum("kyc_person_role", [
+  "director",
+  "ubo",
+  "authorized_signatory",
+]);
+
+export const merchantUserRoleEnum = pgEnum("merchant_user_role", [
+  "admin",
+  "finance",
+  "viewer",
+]);
+
+export const kycStatusEnum = pgEnum("kyc_status", ["pending", "verified", "rejected"]);
+
 export const merchants = pgTable("merchants", {
   id: uuid("id").primaryKey().defaultRandom(),
   name: text("name").notNull(),
@@ -145,5 +172,109 @@ export const idempotencyKeys = pgTable(
   (t) => [
     primaryKey({ columns: [t.key, t.merchantId] }),
     index("idempotency_keys_expires_at_idx").on(t.expiresAt),
+  ]
+);
+
+export const merchantBusinessProfiles = pgTable(
+  "merchant_business_profiles",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    merchantId: uuid("merchant_id")
+      .notNull()
+      .references(() => merchants.id, { onDelete: "cascade" })
+      .unique(),
+    legalName: text("legal_name").notNull(),
+    tradingName: text("trading_name"),
+    businessType: text("business_type").notNull(), // sole_proprietorship, partnership, private_limited, public_limited
+    registrationNumber: text("registration_number"),
+    incorporationDate: timestamp("incorporation_date", { withTimezone: true }),
+    industry: text("industry"),
+    registeredAddress: text("registered_address").notNull(),
+    operatingAddress: text("operating_address"),
+    taxId: text("tax_id"),
+    contactPhone: text("contact_phone").notNull(),
+    contactEmail: text("contact_email").notNull(),
+    status: kycProfileStatusEnum("status").notNull().default("draft"),
+    verifiedAt: timestamp("verified_at", { withTimezone: true }),
+    rejectedAt: timestamp("rejected_at", { withTimezone: true }),
+    rejectionReason: text("rejection_reason"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("merchant_business_profiles_merchant_id_idx").on(t.merchantId), index("merchant_business_profiles_status_idx").on(t.status)]
+);
+
+export const merchantPersons = pgTable(
+  "merchant_persons",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    merchantId: uuid("merchant_id")
+      .notNull()
+      .references(() => merchants.id, { onDelete: "cascade" }),
+    role: kycPersonRoleEnum("role").notNull(),
+    fullName: text("full_name").notNull(),
+    nationality: text("nationality").notNull(),
+    dateOfBirth: timestamp("date_of_birth", { withTimezone: true }),
+    idType: text("id_type").notNull(), // nid, passport
+    idNumber: text("id_number").notNull(),
+    address: text("address").notNull(),
+    ownershipPercentage: decimal("ownership_percentage", { precision: 5, scale: 2 }),
+    status: kycDocumentStatusEnum("status").notNull().default("pending"),
+    verifiedAt: timestamp("verified_at", { withTimezone: true }),
+    rejectedAt: timestamp("rejected_at", { withTimezone: true }),
+    rejectionReason: text("rejection_reason"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("merchant_persons_merchant_id_idx").on(t.merchantId),
+    index("merchant_persons_merchant_id_role_idx").on(t.merchantId, t.role),
+    index("merchant_persons_status_idx").on(t.status),
+  ]
+);
+
+export const merchantKycDocuments = pgTable(
+  "merchant_kyc_documents",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    merchantId: uuid("merchant_id")
+      .notNull()
+      .references(() => merchants.id, { onDelete: "cascade" }),
+    merchantPersonId: uuid("merchant_person_id").references(() => merchantPersons.id, { onDelete: "set null" }),
+    documentType: text("document_type").notNull(), // registration_certificate, trade_license, tax_certificate, nid, passport, etc.
+    fileReference: text("file_reference").notNull(),
+    documentNumber: text("document_number"),
+    status: kycDocumentStatusEnum("status").notNull().default("pending"),
+    submittedAt: timestamp("submitted_at", { withTimezone: true }).notNull().defaultNow(),
+    verifiedAt: timestamp("verified_at", { withTimezone: true }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("merchant_kyc_documents_merchant_id_idx").on(t.merchantId),
+    index("merchant_kyc_documents_merchant_id_status_idx").on(t.merchantId, t.status),
+    index("merchant_kyc_documents_merchant_person_id_idx").on(t.merchantPersonId),
+  ]
+);
+
+export const merchantUsers = pgTable(
+  "merchant_users",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    merchantId: uuid("merchant_id")
+      .notNull()
+      .references(() => merchants.id, { onDelete: "cascade" }),
+    email: text("email").notNull(),
+    role: merchantUserRoleEnum("role").notNull().default("viewer"),
+    merchantPersonId: uuid("merchant_person_id").references(() => merchantPersons.id, { onDelete: "set null" }),
+    status: text("status").notNull().default("active"), // active, suspended
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("merchant_users_merchant_id_idx").on(t.merchantId),
+    index("merchant_users_email_idx").on(t.email),
+    index("merchant_users_merchant_email_idx").on(t.merchantId, t.email),
   ]
 );
