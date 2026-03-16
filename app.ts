@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import Fastify, { type FastifyRequest } from "fastify";
 import cors from "@fastify/cors";
 import helmet from "@fastify/helmet";
@@ -9,9 +10,9 @@ import {
   type ZodTypeProvider,
 } from "fastify-type-provider-zod";
 import { z } from "zod";
-import { sql, eq, and } from "drizzle-orm";
+import { sql, eq, and, count, desc, gt } from "drizzle-orm";
 import { db } from "./src/db/index.js";
-import { wallets, transactions } from "./src/db/schema/index.js";
+import { wallets, transactions, idempotencyKeys, merchants } from "./src/db/schema/index.js";
 import { apiKeyAuth } from "./src/lib/auth.js";
 import { merchantAuth } from "./src/lib/merchant-auth.js";
 import { verifyPayokCallback } from "./src/lib/payok-signature.js";
@@ -19,12 +20,16 @@ import { getPayokConfig } from "./src/lib/payok-config.js";
 import { createPayinOrder, handlePayinCallback } from "./services/domestic/payok-payin.js";
 import { createPayoutOrder, handlePayoutCallback } from "./services/domestic/payok-payout.js";
 import { LIMITS } from "./src/lib/limits.js";
+import { queueMerchantWebhook } from "./src/lib/merchant-webhook.js";
+import { encrypt } from "./src/lib/encryption.js";
 
 export async function buildApp() {
   const app = Fastify({ logger: true }).withTypeProvider<ZodTypeProvider>();
 
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
+
+  const errorResponse = z.object({ error: z.string(), message: z.string().optional() });
 
   app.addContentTypeParser("application/json", { parseAs: "string" }, (req, body, done) => {
     const raw = typeof body === "string" ? body : body?.toString("utf8") ?? "";
@@ -117,6 +122,45 @@ export async function buildApp() {
     }
   );
 
+  app.patch(
+    "/v1/me/webhook",
+    {
+      schema: {
+        body: z.object({ webhookUrl: z.string().url().optional().nullable() }),
+        response: {
+          200: z.object({
+            webhookUrl: z.string().nullable(),
+            webhookSecret: z.string().optional(),
+          }),
+          401: errorResponse,
+          500: errorResponse,
+        },
+      },
+    },
+    async (request, reply) => {
+      const m = request.merchant;
+      if (!m) return reply.status(401).send({ error: "Unauthorized" });
+      const body = request.body as { webhookUrl?: string | null };
+      const masterKey = process.env.ENCRYPTION_MASTER_KEY;
+      if (!masterKey) return reply.status(500).send({ error: "Internal", message: "Webhook config unavailable" });
+      const url = body.webhookUrl === null || body.webhookUrl === "" ? null : body.webhookUrl?.trim() ?? null;
+      const webhookSecret = url ? randomBytes(32).toString("hex") : null;
+      const webhookSecretEnc = webhookSecret ? encrypt(webhookSecret, masterKey) : null;
+      await db
+        .update(merchants)
+        .set({
+          webhookUrl: url,
+          webhookSecretEnc,
+          updatedAt: new Date(),
+        })
+        .where(eq(merchants.id, m.merchantId));
+      return {
+        webhookUrl: url,
+        ...(webhookSecret && { webhookSecret }),
+      };
+    }
+  );
+
   const PAYIN_WEBHOOK_PATH = "/webhooks/payok/payin";
   const PAYOUT_WEBHOOK_PATH = "/webhooks/payok/payout";
 
@@ -129,7 +173,10 @@ export async function buildApp() {
     }
     const body = typeof request.body === "object" ? request.body : {};
     try {
-      await handlePayinCallback(body as Parameters<typeof handlePayinCallback>[0]);
+      const webhook = await handlePayinCallback(body as Parameters<typeof handlePayinCallback>[0]);
+      if (webhook) {
+        queueMerchantWebhook(webhook.merchantId, webhook.event).catch((e) => app.log.warn(e, "Merchant webhook queue failed"));
+      }
     } catch (err) {
       app.log.error(err);
       return reply.status(500).send("INTERNAL");
@@ -146,7 +193,10 @@ export async function buildApp() {
     }
     const body = typeof request.body === "object" ? request.body : {};
     try {
-      await handlePayoutCallback(body as Parameters<typeof handlePayoutCallback>[0]);
+      const webhook = await handlePayoutCallback(body as Parameters<typeof handlePayoutCallback>[0]);
+      if (webhook) {
+        queueMerchantWebhook(webhook.merchantId, webhook.event).catch((e) => app.log.warn(e, "Merchant webhook queue failed"));
+      }
     } catch (err) {
       app.log.error(err);
       return reply.status(500).send("INTERNAL");
@@ -155,8 +205,6 @@ export async function buildApp() {
   });
 
   const baseUrl = process.env.APP_BASE_URL ?? `http://localhost:${process.env.PORT ?? 3000}`;
-
-  const errorResponse = z.object({ error: z.string(), message: z.string().optional() });
 
   app.post(
     "/v1/payins",
@@ -199,6 +247,21 @@ export async function buildApp() {
       if (!m.scopes.includes("payin:create") && !m.scopes.includes("*")) {
         return reply.status(403).send({ error: "Forbidden", message: "Missing scope: payin:create" });
       }
+      const idemKey = request.headers["idempotency-key"] as string | undefined;
+      if (idemKey?.trim()) {
+        const [cached] = await db
+          .select({ responseSnapshot: idempotencyKeys.responseSnapshot })
+          .from(idempotencyKeys)
+          .where(
+            and(
+              eq(idempotencyKeys.key, idemKey.trim()),
+              eq(idempotencyKeys.merchantId, m.merchantId),
+              gt(idempotencyKeys.expiresAt, new Date())
+            )
+          )
+          .limit(1);
+        if (cached) return JSON.parse(cached.responseSnapshot);
+      }
       const body = request.body as { amount: string; paymentMethodCode: string; customer: { name: string; email: string; phone: string; deviceId: string }; goodsInfo: { name: string; id?: string; price?: string } };
       const amount = parseFloat(body.amount);
       if (amount < LIMITS.payin.min || amount > LIMITS.payin.max) {
@@ -214,12 +277,34 @@ export async function buildApp() {
           goodsInfo: body.goodsInfo,
         });
         const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
-        return {
+        const response = {
           ...result,
           status: "pending",
           amount: body.amount,
           expiresAt,
         };
+        if (idemKey?.trim()) {
+          try {
+            await db.insert(idempotencyKeys).values({
+              key: idemKey.trim(),
+              merchantId: m.merchantId,
+              responseSnapshot: JSON.stringify(response),
+              expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+            });
+          } catch (insertErr: unknown) {
+            const code = insertErr && typeof insertErr === "object" && "code" in insertErr ? (insertErr as { code: string }).code : "";
+            if (code === "23505") {
+              const [cached] = await db
+                .select({ responseSnapshot: idempotencyKeys.responseSnapshot })
+                .from(idempotencyKeys)
+                .where(and(eq(idempotencyKeys.key, idemKey.trim()), eq(idempotencyKeys.merchantId, m.merchantId)))
+                .limit(1);
+              if (cached) return JSON.parse(cached.responseSnapshot);
+            }
+            throw insertErr;
+          }
+        }
+        return response;
       } catch (err) {
         app.log.error(err);
         return reply.status(500).send({
@@ -272,6 +357,21 @@ export async function buildApp() {
       if (!m.scopes.includes("payout:create") && !m.scopes.includes("*")) {
         return reply.status(403).send({ error: "Forbidden", message: "Missing scope: payout:create" });
       }
+      const idemKey = request.headers["idempotency-key"] as string | undefined;
+      if (idemKey?.trim()) {
+        const [cached] = await db
+          .select({ responseSnapshot: idempotencyKeys.responseSnapshot })
+          .from(idempotencyKeys)
+          .where(
+            and(
+              eq(idempotencyKeys.key, idemKey.trim()),
+              eq(idempotencyKeys.merchantId, m.merchantId),
+              gt(idempotencyKeys.expiresAt, new Date())
+            )
+          )
+          .limit(1);
+        if (cached) return JSON.parse(cached.responseSnapshot);
+      }
       const body = request.body as { amount: string; benificiaryAccountInfo: { number: string; orgId: string; orgCode: string; orgName: string; holderName: string }; cardHolderInfo: { firstName: string; lastName: string; email: string; phone: string } };
       const amount = parseFloat(body.amount);
       if (amount < LIMITS.payout.min || amount > LIMITS.payout.max) {
@@ -288,13 +388,35 @@ export async function buildApp() {
         const num = body.benificiaryAccountInfo.number;
         const masked = num.length > 4 ? `****${num.slice(-4)}` : "****";
         const estimatedCompletion = new Date(Date.now() + 5 * 60 * 1000).toISOString();
-        return {
+        const response = {
           ...result,
           status: result.status ?? "pending",
           amount: body.amount,
           recipient: { masked },
           estimatedCompletion,
         };
+        if (idemKey?.trim()) {
+          try {
+            await db.insert(idempotencyKeys).values({
+              key: idemKey.trim(),
+              merchantId: m.merchantId,
+              responseSnapshot: JSON.stringify(response),
+              expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+            });
+          } catch (insertErr: unknown) {
+            const code = insertErr && typeof insertErr === "object" && "code" in insertErr ? (insertErr as { code: string }).code : "";
+            if (code === "23505") {
+              const [cached] = await db
+                .select({ responseSnapshot: idempotencyKeys.responseSnapshot })
+                .from(idempotencyKeys)
+                .where(and(eq(idempotencyKeys.key, idemKey.trim()), eq(idempotencyKeys.merchantId, m.merchantId)))
+                .limit(1);
+              if (cached) return JSON.parse(cached.responseSnapshot);
+            }
+            throw insertErr;
+          }
+        }
+        return response;
       } catch (err) {
         app.log.error(err);
         return reply.status(500).send({
@@ -472,6 +594,87 @@ export async function buildApp() {
         recipient: { masked },
         createdAt: tx.createdAt.toISOString(),
         completedAt: tx.status === "success" ? tx.updatedAt.toISOString() : null,
+      };
+    }
+  );
+
+  app.get(
+    "/v1/transactions",
+    {
+      schema: {
+        querystring: z.object({
+          type: z.enum(["payin", "payout"]).optional(),
+          limit: z.coerce.number().min(1).max(100).default(20),
+          offset: z.coerce.number().min(0).default(0),
+        }),
+        response: {
+          200: z.object({
+            items: z.array(
+              z.object({
+                id: z.string(),
+                type: z.string(),
+                status: z.string(),
+                amount: z.string(),
+                paidAmount: z.string().nullable(),
+                platformOrderId: z.string().nullable(),
+                createdAt: z.string(),
+                completedAt: z.string().nullable(),
+              })
+            ),
+            total: z.number(),
+            limit: z.number(),
+            offset: z.number(),
+          }),
+          401: errorResponse,
+        },
+      },
+    },
+    async (request, reply) => {
+      const m = request.merchant;
+      if (!m) return reply.status(401).send({ error: "Unauthorized" });
+      const { type, limit, offset } = request.query as { type?: "payin" | "payout"; limit: number; offset: number };
+
+      const conditions = [eq(transactions.merchantId, m.merchantId)];
+      if (type) conditions.push(eq(transactions.type, type));
+
+      const [countResult] = await db
+        .select({ count: count() })
+        .from(transactions)
+        .where(and(...conditions));
+
+      const rows = await db
+        .select({
+          id: transactions.id,
+          type: transactions.type,
+          status: transactions.status,
+          amount: transactions.amount,
+          paidAmount: transactions.paidAmount,
+          externalId: transactions.externalId,
+          createdAt: transactions.createdAt,
+          updatedAt: transactions.updatedAt,
+        })
+        .from(transactions)
+        .where(and(...conditions))
+        .orderBy(desc(transactions.createdAt))
+        .limit(limit)
+        .offset(offset);
+
+      const items = rows.map((tx) => ({
+        id: tx.id,
+        type: tx.type,
+        status: tx.status,
+        amount: String(tx.amount),
+        paidAmount: tx.paidAmount ? String(tx.paidAmount) : null,
+        platformOrderId: tx.externalId ?? null,
+        createdAt: tx.createdAt.toISOString(),
+        completedAt: tx.status === "success" ? tx.updatedAt.toISOString() : null,
+      }));
+
+      return {
+        items,
+        total: Number(countResult?.count ?? 0),
+        limit,
+        offset,
       };
     }
   );

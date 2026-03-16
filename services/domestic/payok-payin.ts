@@ -92,11 +92,12 @@ export async function handlePayinCallback(body: {
   }
 
   if (tx.status !== "pending") {
-    return;
+    return null;
   }
 
   const paidAmount = body.paidAmount ?? body.amount ?? tx.amount;
   const isSuccess = body.code === "SUCCESS" && body.status === "SUCCESS";
+  const platformOrderId = body.platformOrderId ?? tx.externalId ?? null;
 
   await db
     .update(transactions)
@@ -147,4 +148,11 @@ export async function handlePayinCallback(body: {
   } else {
     audit({ action: "payment.failed", resource: tx.id, meta: { reason: body.code } });
   }
+
+  return {
+    merchantId: tx.merchantId,
+    event: isSuccess
+      ? { type: "payin.completed" as const, transactionId: tx.id, status: "success", amount: String(tx.amount), paidAmount: String(paidAmount), platformOrderId }
+      : { type: "payin.failed" as const, transactionId: tx.id, status: "failed", amount: String(tx.amount), platformOrderId },
+  };
 }

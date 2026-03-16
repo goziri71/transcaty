@@ -45,6 +45,8 @@ export const merchants = pgTable("merchants", {
   name: text("name").notNull(),
   status: merchantStatusEnum("status").notNull().default("pending"),
   kycStatus: text("kyc_status").default("pending"),
+  webhookUrl: text("webhook_url"),
+  webhookSecretEnc: text("webhook_secret_enc"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });

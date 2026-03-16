@@ -8,6 +8,13 @@
       "when": 1773248789842,
       "tag": "0000_thin_maggott",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1773675288707,
+      "tag": "0001_clean_norrin_radd",
+      "breakpoints": true
     }
   ]
 }

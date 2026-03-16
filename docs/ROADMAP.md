@@ -73,19 +73,20 @@
 
 ### 3.1 Merchant-facing endpoints
 
-- [ ] `POST /v1/payins` – create pay-in order
-- [ ] `GET /v1/payins/:id` – inquiry pay-in status
-- [ ] `POST /v1/payouts` – create payout (inquiry + create in one or two steps)
-- [ ] `GET /v1/payouts/:id` – inquiry payout status
-- [ ] `GET /v1/balance` – merchant wallet balance
-- [ ] `GET /v1/transactions` – list transactions (paginated)
+- [x] `POST /v1/payins` – create pay-in order
+- [x] `GET /v1/payins/:id` – inquiry pay-in status
+- [x] `POST /v1/payouts` – create payout (inquiry + create in one or two steps)
+- [x] `GET /v1/payouts/:id` – inquiry payout status
+- [x] `GET /v1/balance` – merchant wallet balance
+- [x] `GET /v1/transactions` – list transactions (paginated)
+- [x] `PATCH /v1/me/webhook` – configure webhook URL
 
 ### 3.2 Our webhooks to merchants
 
-- [ ] Webhook URL per merchant
-- [ ] Sign payload (HMAC or similar)
-- [ ] Events: payin.completed, payin.failed, payout.completed, payout.failed
-- [ ] Retry policy (exponential backoff)
+- [x] Webhook URL per merchant
+- [x] Sign payload (HMAC-SHA256, X-Transcaty-Webhook-Signature)
+- [x] Events: payin.completed, payin.failed, payout.completed, payout.failed
+- [x] Retry policy (pg-boss: 5 retries, 60s delay)
 - [ ] Idempotent delivery (merchant dedupes by event_id)
 
 ---
@@ -118,9 +119,9 @@
 
 ### 5.3 Idempotency
 
-- [ ] `Idempotency-Key` header on all mutation endpoints
-- [ ] Store key → response for 24h
-- [ ] Return cached response on duplicate key
+- [x] `Idempotency-Key` header on POST /v1/payins, POST /v1/payouts
+- [x] Store key → response for 24h
+- [x] Return cached response on duplicate key
 
 ---
 

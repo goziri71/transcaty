@@ -45,7 +45,7 @@ export async function createPayoutOrder(params: {
       status: "pending",
       amount: params.amount,
       currency: "BDT",
-      metadata: JSON.stringify({ beneficiary: params.benificiaryAccountInfo }),
+      metadata: JSON.stringify({ benificiaryAccountInfo: params.benificiaryAccountInfo }),
     })
     .returning();
 
@@ -138,10 +138,11 @@ export async function handlePayoutCallback(body: {
   }
 
   if (tx.status !== "pending") {
-    return;
+    return null;
   }
 
   const isSuccess = body.code === "SUCCESS" && body.status === "SUCCESS";
+  const platformOrderId = body.platformOrderId ?? tx.externalId ?? null;
 
   await db
     .update(transactions)
@@ -190,4 +191,11 @@ export async function handlePayoutCallback(body: {
 
     audit({ action: "payout.failed", resource: tx.id, meta: { reason: body.code } });
   }
+
+  return {
+    merchantId: tx.merchantId,
+    event: isSuccess
+      ? { type: "payout.completed" as const, transactionId: tx.id, status: "success", amount: String(tx.amount), platformOrderId }
+      : { type: "payout.failed" as const, transactionId: tx.id, status: "failed", amount: String(tx.amount), platformOrderId },
+  };
 }
