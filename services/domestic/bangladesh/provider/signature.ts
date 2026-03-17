@@ -101,6 +101,15 @@ export function verifyPayokCallback(
   return verifyWithPlaintext(`${jsonBody}&${endpointPath}`, signatureBase64, publicKeyInput);
 }
 
+/** Minify JSON: parse and stringify to remove spaces (per Payok: remove spaces before signing). */
+function minifyJsonBody(jsonStr: string): string | null {
+  try {
+    return JSON.stringify(JSON.parse(jsonStr));
+  } catch {
+    return null;
+  }
+}
+
 /** Canonicalize JSON: parse and stringify with sorted keys (no extra whitespace). */
 function canonicalizeJson(jsonStr: string): string | null {
   try {
@@ -124,7 +133,7 @@ function sortKeys(obj: object): object {
 
 /**
  * Verify callback signature. Tries multiple path formats, plaintext orders, and body variants.
- * Doc: Plaintext = {json_body}&{endpoint_path} — some implementations use path&body or canonical JSON.
+ * Per Payok: stringify and remove spaces before signing. We try raw, minified, and canonical.
  */
 export function verifyPayokCallbackWithFallbacks(
   jsonBody: string,
@@ -132,9 +141,11 @@ export function verifyPayokCallbackWithFallbacks(
   signatureBase64: string,
   publicKeyInput: string
 ): boolean {
-  const bodyVariants = [jsonBody];
+  const bodyVariants: string[] = [jsonBody];
+  const minified = minifyJsonBody(jsonBody);
+  if (minified && minified !== jsonBody) bodyVariants.push(minified);
   const canonical = canonicalizeJson(jsonBody);
-  if (canonical && canonical !== jsonBody) bodyVariants.push(canonical);
+  if (canonical && !bodyVariants.includes(canonical)) bodyVariants.push(canonical);
 
   for (const body of bodyVariants) {
     for (const path of pathCandidates) {

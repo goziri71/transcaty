@@ -7,7 +7,18 @@ import { getMerchantWebhookJobName, sendMerchantWebhook, type WebhookEvent } fro
 const PORT = Number(process.env.PORT) || 3000;
 const HOST = process.env.HOST || "0.0.0.0";
 
+function validateEnv() {
+  const portalSecret = process.env.PORTAL_JWT_SECRET ?? process.env.JWT_SECRET;
+  if (!portalSecret?.trim()) {
+    throw new Error(
+      "PORTAL_JWT_SECRET or JWT_SECRET is required for portal auth (signup/login). " +
+        "Add it to Render Environment. Generate: node -e \"console.log(require('crypto').randomBytes(32).toString('hex'))\""
+    );
+  }
+}
+
 async function main() {
+  validateEnv();
   await queue.start();
 
   await queue.work(

@@ -16,6 +16,7 @@ async function payokPost<T = unknown>(path: string, body: object): Promise<{ sta
   const baseUrl = config.baseUrl.replace(/\/$/, "");
   const url = `${baseUrl}${path}`;
 
+  // Per Payok: stringify and remove spaces before signing. JSON.stringify produces compact output.
   const jsonBody = JSON.stringify(body);
   const sign = signPayokRequest(jsonBody, path, config.privateKey);
 
