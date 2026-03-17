@@ -157,6 +157,7 @@ export async function registerPortalAuthRoutes(app: FastifyInstance) {
             }),
           }),
           401: errorResponse,
+          500: errorResponse,
         },
       },
     },
