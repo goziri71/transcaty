@@ -8,7 +8,7 @@ const PAYIN_BASE = "/api-pay/payment/V3.5";
 const PAYOUT_BASE = "/api-pay/remit/V3.5";
 
 function formatRequestTime(): string {
-  return new Date().toISOString().slice(0, 24);
+  return new Date().toISOString();
 }
 
 async function payokPost<T = unknown>(path: string, body: object): Promise<{ status: number; body: T }> {
@@ -23,7 +23,7 @@ async function payokPost<T = unknown>(path: string, body: object): Promise<{ sta
   try {
     res = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json", sign },
+      headers: { "Content-Type": "application/json;charset=utf-8", sign },
       body: jsonBody,
     });
   } catch (err) {

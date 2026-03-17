@@ -72,3 +72,15 @@ Use the merchant auth script or your own HMAC signing for the headers.
 | Signature verification | Webhooks verify Payok `platformOrderId` + signature |
 
 Once Payok sends callbacks to your webhooks, pay-in credits and payout debits/refunds will update your DB automatically.
+
+## 5. Webhook 401 "Invalid signature" – Troubleshooting
+
+If Payok callbacks reach your server but return **401 Invalid signature**, check:
+
+| Cause | Fix |
+|-------|-----|
+| **Wrong or missing `PAYOK_PLATFORM_PUB_KEY`** | Use the platform public key from Payok (not your merchant key). Set `PAYOK_PLATFORM_PUB_KEY` or `PAYOK_PLATFORM_PUB_KEY_ENC` on Render. |
+| **Encrypted key but wrong `ENCRYPTION_MASTER_KEY`** | If using `*_ENC` vars, ensure `ENCRYPTION_MASTER_KEY` on Render matches the key used to encrypt. |
+| **Proxy/load balancer alters body** | Raw body is captured in `preParsing` before parsing. If a proxy modifies the body, verification will fail. |
+
+**Diagnostics:** On 401, the server logs `hasSign`, `rawBodyLen`, `contentType`. Check Render logs for `"payin webhook 401: invalid signature"` to see whether the `sign` header or body is missing.

@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { Readable } from "node:stream";
 import Fastify, { type FastifyRequest, type FastifyReply } from "fastify";
 import cors from "@fastify/cors";
 import helmet from "@fastify/helmet";
@@ -53,6 +54,19 @@ export async function buildApp() {
     } catch (e) {
       done(e as Error, undefined);
     }
+  });
+
+  // Capture raw body for Payok webhooks (any content-type) for signature verification
+  app.addHook("preParsing", async (request, _reply, payload) => {
+    const path = request.url.split("?")[0];
+    if (!path.startsWith("/webhooks/payok/")) return payload;
+    const chunks: Buffer[] = [];
+    for await (const chunk of payload) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    }
+    const raw = Buffer.concat(chunks).toString("utf8");
+    (request as FastifyRequest & { rawBody?: string }).rawBody = raw;
+    return Readable.from(Buffer.concat(chunks));
   });
 
   await app.register(helmet, { global: true });
@@ -525,9 +539,13 @@ export async function buildApp() {
 
   app.post(PAYIN_WEBHOOK_PATH, async (request, reply) => {
     const rawBody = (request as FastifyRequest & { rawBody?: string }).rawBody ?? "";
-    const sign = request.headers.sign as string | undefined;
+    const sign = (request.headers.sign ?? request.headers.Sign) as string | undefined;
     const config = getPayokConfig();
     if (!sign || !verifyPayokCallback(rawBody, PAYIN_WEBHOOK_PATH, sign, config.platformPublicKey)) {
+      app.log.warn(
+        { hasSign: !!sign, rawBodyLen: rawBody.length, contentType: request.headers["content-type"] },
+        "payin webhook 401: invalid signature"
+      );
       return reply.status(401).send("Invalid signature");
     }
     const body = typeof request.body === "object" ? request.body : {};
@@ -545,9 +563,13 @@ export async function buildApp() {
 
   app.post(PAYOUT_WEBHOOK_PATH, async (request, reply) => {
     const rawBody = (request as FastifyRequest & { rawBody?: string }).rawBody ?? "";
-    const sign = request.headers.sign as string | undefined;
+    const sign = (request.headers.sign ?? request.headers.Sign) as string | undefined;
     const config = getPayokConfig();
     if (!sign || !verifyPayokCallback(rawBody, PAYOUT_WEBHOOK_PATH, sign, config.platformPublicKey)) {
+      app.log.warn(
+        { hasSign: !!sign, rawBodyLen: rawBody.length, contentType: request.headers["content-type"] },
+        "payout webhook 401: invalid signature"
+      );
       return reply.status(401).send("Invalid signature");
     }
     const body = typeof request.body === "object" ? request.body : {};
