@@ -37,7 +37,13 @@ export async function registerPortalAuthRoutes(app: FastifyInstance) {
             token: z.string(),
             merchantId: z.string(),
             email: z.string(),
+            role: z.string(),
             needsActivation: z.boolean(),
+            merchant: z.object({
+              name: z.string(),
+              status: z.string(),
+              kycStatus: z.string(),
+            }),
           }),
           400: errorResponse,
           500: errorResponse,
@@ -118,7 +124,13 @@ export async function registerPortalAuthRoutes(app: FastifyInstance) {
         token,
         merchantId: merchant.id,
         email: user.email,
+        role: "admin",
         needsActivation: true,
+        merchant: {
+          name: body.businessName.trim(),
+          status: "pending",
+          kycStatus: "pending",
+        },
       });
     }
   );
@@ -136,7 +148,13 @@ export async function registerPortalAuthRoutes(app: FastifyInstance) {
             token: z.string(),
             merchantId: z.string(),
             email: z.string(),
+            role: z.string(),
             needsActivation: z.boolean(),
+            merchant: z.object({
+              name: z.string(),
+              status: z.string(),
+              kycStatus: z.string(),
+            }),
           }),
           401: errorResponse,
         },
@@ -188,12 +206,23 @@ export async function registerPortalAuthRoutes(app: FastifyInstance) {
       }
 
       const [merchant] = await db
-        .select({ kycStatus: merchants.kycStatus })
+        .select({
+          name: merchants.name,
+          status: merchants.status,
+          kycStatus: merchants.kycStatus,
+        })
         .from(merchants)
         .where(eq(merchants.id, existing.merchantId))
         .limit(1);
 
-      const needsActivation = merchant?.kycStatus !== "verified";
+      if (!merchant) {
+        return reply.status(500).send({
+          error: "Internal",
+          message: "Merchant not found",
+        });
+      }
+
+      const needsActivation = merchant.kycStatus !== "verified";
 
       const token = signPortalToken({
         merchantUserId: existing.id,
@@ -206,7 +235,13 @@ export async function registerPortalAuthRoutes(app: FastifyInstance) {
         token,
         merchantId: existing.merchantId,
         email: existing.email,
+        role: existing.role,
         needsActivation,
+        merchant: {
+          name: merchant.name,
+          status: merchant.status,
+          kycStatus: merchant.kycStatus ?? "pending",
+        },
       });
     }
   );

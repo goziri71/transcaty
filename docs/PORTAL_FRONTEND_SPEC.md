@@ -106,7 +106,13 @@ X-Portal-Token: <token>
   "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
   "merchantId": "uuid",
   "email": "admin@acme.com",
-  "needsActivation": true
+  "role": "admin",
+  "needsActivation": true,
+  "merchant": {
+    "name": "Acme Inc",
+    "status": "pending",
+    "kycStatus": "pending"
+  }
 }
 ```
 
@@ -141,7 +147,13 @@ X-Portal-Token: <token>
   "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
   "merchantId": "uuid",
   "email": "admin@acme.com",
-  "needsActivation": true
+  "role": "admin",
+  "needsActivation": true,
+  "merchant": {
+    "name": "Acme Inc",
+    "status": "pending",
+    "kycStatus": "pending"
+  }
 }
 ```
 
