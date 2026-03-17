@@ -84,3 +84,5 @@ If Payok callbacks reach your server but return **401 Invalid signature**, check
 | **Proxy/load balancer alters body** | Raw body is captured in `preParsing` before parsing. If a proxy modifies the body, verification will fail. |
 
 **Diagnostics:** On 401, the server logs `hasSign`, `rawBodyLen`, `contentType`. Check Render logs for `"payin webhook 401: invalid signature"` to see whether the `sign` header or body is missing.
+
+**Temporary bypass (staging only):** Set `PAYOK_WEBHOOK_SKIP_VERIFY=1` on Render to accept callbacks without signature verification. Use only for SIT/staging while you get the exact callback sign format from Payok. **Remove before production.**
