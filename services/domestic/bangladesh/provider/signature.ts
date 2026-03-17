@@ -69,6 +69,7 @@ export function signPayokRequest(
 
 /**
  * Verify a callback signature from Payok.
+ * Plaintext = {json_body}&{endpoint_path}
  */
 export function verifyPayokCallback(
   jsonBody: string,
@@ -81,4 +82,19 @@ export function verifyPayokCallback(
   const verify = createVerify("RSA-SHA256");
   verify.update(plaintext, "utf8");
   return verify.verify(pem, signatureBase64, "base64");
+}
+
+/**
+ * Verify callback signature, trying multiple path formats (Payok may sign with path or full URL).
+ */
+export function verifyPayokCallbackWithFallbacks(
+  jsonBody: string,
+  pathCandidates: string[],
+  signatureBase64: string,
+  publicKeyInput: string
+): boolean {
+  for (const path of pathCandidates) {
+    if (verifyPayokCallback(jsonBody, path, signatureBase64, publicKeyInput)) return true;
+  }
+  return false;
 }

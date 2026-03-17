@@ -33,6 +33,7 @@ import {
   handlePayoutCallback,
   getPayokConfig,
   verifyPayokCallback,
+  verifyPayokCallbackWithFallbacks,
 } from "./services/domestic/bangladesh/index.js";
 import { LIMITS } from "./src/lib/limits.js";
 import { queueMerchantWebhook } from "./src/lib/merchant-webhook.js";
@@ -536,12 +537,21 @@ export async function buildApp() {
 
   const PAYIN_WEBHOOK_PATH = "/webhooks/payok/payin";
   const PAYOUT_WEBHOOK_PATH = "/webhooks/payok/payout";
+  const baseUrl = process.env.APP_BASE_URL ?? `http://localhost:${process.env.PORT ?? 3000}`;
+  const payinPathCandidates = [
+    PAYIN_WEBHOOK_PATH,
+    `${baseUrl.replace(/\/$/, "")}${PAYIN_WEBHOOK_PATH}`,
+  ];
+  const payoutPathCandidates = [
+    PAYOUT_WEBHOOK_PATH,
+    `${baseUrl.replace(/\/$/, "")}${PAYOUT_WEBHOOK_PATH}`,
+  ];
 
   app.post(PAYIN_WEBHOOK_PATH, async (request, reply) => {
     const rawBody = (request as FastifyRequest & { rawBody?: string }).rawBody ?? "";
     const sign = (request.headers.sign ?? request.headers.Sign) as string | undefined;
     const config = getPayokConfig();
-    if (!sign || !verifyPayokCallback(rawBody, PAYIN_WEBHOOK_PATH, sign, config.platformPublicKey)) {
+    if (!sign || !verifyPayokCallbackWithFallbacks(rawBody, payinPathCandidates, sign, config.platformPublicKey)) {
       app.log.warn(
         { hasSign: !!sign, rawBodyLen: rawBody.length, contentType: request.headers["content-type"] },
         "payin webhook 401: invalid signature"
@@ -565,7 +575,7 @@ export async function buildApp() {
     const rawBody = (request as FastifyRequest & { rawBody?: string }).rawBody ?? "";
     const sign = (request.headers.sign ?? request.headers.Sign) as string | undefined;
     const config = getPayokConfig();
-    if (!sign || !verifyPayokCallback(rawBody, PAYOUT_WEBHOOK_PATH, sign, config.platformPublicKey)) {
+    if (!sign || !verifyPayokCallbackWithFallbacks(rawBody, payoutPathCandidates, sign, config.platformPublicKey)) {
       app.log.warn(
         { hasSign: !!sign, rawBodyLen: rawBody.length, contentType: request.headers["content-type"] },
         "payout webhook 401: invalid signature"
@@ -585,7 +595,6 @@ export async function buildApp() {
     return reply.type("text/plain").send("SUCCESS");
   });
 
-  const baseUrl = process.env.APP_BASE_URL ?? `http://localhost:${process.env.PORT ?? 3000}`;
   const kycRequired = process.env.KYC_REQUIRED === "true";
 
   async function requireKycVerified(merchantId: string, reply: FastifyReply): Promise<boolean> {
