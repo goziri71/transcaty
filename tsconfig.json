@@ -23,6 +23,6 @@
       "@/*": ["src/*"]
     }
   },
-  "include": ["app.ts", "src/**/*"],
+  "include": ["app.ts", "src/**/*", "api/**/*"],
   "exclude": ["node_modules", "dist"]
 }

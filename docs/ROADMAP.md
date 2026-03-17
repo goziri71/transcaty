@@ -97,6 +97,40 @@ See **[ARCHITECTURE.md](./ARCHITECTURE.md)** for separation plan: Bangladesh iso
 
 ---
 
+## Phase 3.5: Merchant Portal ✓
+
+**Flow:** Signup (business name, email, password) → Login → Activation (KYC) → API keys.
+
+### 3.5.1 Portal auth
+
+- [x] `POST /portal/auth/signup` – minimal signup (businessName, email, password)
+- [x] `POST /portal/auth/login` – email + password → JWT
+- [x] `POST /portal/auth/logout` – client clears token
+- [x] JWT auth for `/portal/me/*` (Authorization: Bearer or X-Portal-Token)
+
+### 3.5.2 Portal profile & activation
+
+- [x] `GET /portal/me` – profile, kycStatus, needsActivation, canCreateApiKeys
+- [x] `PATCH /portal/me` – update business name
+- [x] `PUT /portal/me/kyc/business` – business profile
+- [x] `POST /portal/me/kyc/persons` – add persons
+- [x] `POST /portal/me/kyc/documents` – add documents
+- [x] `POST /portal/me/kyc/submit` – submit KYC
+
+### 3.5.3 Portal API keys
+
+- [x] `GET /portal/me/api-keys` – list keys (requires kycStatus=verified)
+- [x] `POST /portal/me/api-keys` – create key (returns key + secret once)
+- [x] `DELETE /portal/me/api-keys/:keyId` – revoke key
+
+### 3.5.4 Env & setup
+
+- Add `PORTAL_JWT_SECRET` to .env (32-byte hex)
+- Run `npm run db:migrate` for `password_hash` on merchant_users
+- Run `npm run db:seed-portal-user` for test user (merchant@example.com / password123)
+
+---
+
 ## Phase 4: Customer wallets
 
 - [ ] `POST /v1/wallets` – merchant creates customer wallet

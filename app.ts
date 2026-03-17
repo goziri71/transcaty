@@ -23,6 +23,8 @@ import {
 } from "./src/db/schema/index.js";
 import { apiKeyAuth } from "./src/lib/auth.js";
 import { merchantAuth } from "./src/lib/merchant-auth.js";
+import { portalAuth } from "./src/lib/portal-auth.js";
+import { registerPortalRoutes } from "./api/portal/index.js";
 import {
   createPayinOrder,
   handlePayinCallback,
@@ -65,9 +67,13 @@ export async function buildApp() {
     const path = request.url.split("?")[0];
     if (path === "/" || path === "/health") return;
     if (path.startsWith("/webhooks/payok/")) return;
+    if (path === "/portal/auth/signup" || path === "/portal/auth/login" || path === "/portal/auth/logout") return;
+    if (path.startsWith("/portal/")) return portalAuth(request, reply);
     if (path.startsWith("/v1/")) return merchantAuth(request, reply);
     return apiKeyAuth(request, reply);
   });
+
+  await registerPortalRoutes(app);
 
   app.get(
     "/health",

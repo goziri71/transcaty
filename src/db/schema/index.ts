@@ -23,6 +23,7 @@ export const walletTypeEnum = pgEnum("wallet_type", ["merchant", "customer"]);
 export const walletStatusEnum = pgEnum("wallet_status", [
   "active",
   "frozen",
+  "pending",
   "closed",
 ]);
 
@@ -32,6 +33,7 @@ export const transactionTypeEnum = pgEnum("transaction_type", [
   "payin",
   "payout",
   "transfer",
+  "refund",
 ]);
 
 export const transactionStatusEnum = pgEnum("transaction_status", [
@@ -104,6 +106,7 @@ export const wallets = pgTable(
       .references(() => merchants.id, { onDelete: "cascade" }),
     type: walletTypeEnum("type").notNull(),
     parentId: uuid("parent_id"), // for customer wallets, references merchant wallet
+    label: text("label"), // customer display name (e.g. "John Doe", "user@example.com")
     balance: decimal("balance", { precision: 18, scale: 2 }).notNull().default("0"),
     currency: text("currency").notNull().default("BDT"),
     status: walletStatusEnum("status").notNull().default("active"),
@@ -142,18 +145,20 @@ export const transactions = pgTable(
     merchantId: uuid("merchant_id")
       .notNull()
       .references(() => merchants.id, { onDelete: "cascade" }),
+    walletId: uuid("wallet_id").references(() => wallets.id, { onDelete: "set null" }), // customer wallet for transfer/refund
     type: transactionTypeEnum("type").notNull(),
     status: transactionStatusEnum("status").notNull().default("pending"),
     amount: decimal("amount", { precision: 18, scale: 2 }).notNull(),
     paidAmount: decimal("paid_amount", { precision: 18, scale: 2 }), // actual received (payin)
     currency: text("currency").notNull().default("BDT"),
     externalId: text("external_id"), // Payok platformOrderId
-    metadata: text("metadata"), // JSON
+    metadata: text("metadata"), // JSON: { refundOfTransactionId?, reason?, customerWalletId?, ... }
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     index("transactions_merchant_id_idx").on(t.merchantId),
+    index("transactions_wallet_id_idx").on(t.walletId),
     index("transactions_external_id_idx").on(t.externalId),
   ]
 );
@@ -266,6 +271,7 @@ export const merchantUsers = pgTable(
       .notNull()
       .references(() => merchants.id, { onDelete: "cascade" }),
     email: text("email").notNull(),
+    passwordHash: text("password_hash"),
     role: merchantUserRoleEnum("role").notNull().default("viewer"),
     merchantPersonId: uuid("merchant_person_id").references(() => merchantPersons.id, { onDelete: "set null" }),
     status: text("status").notNull().default("active"), // active, suspended
