@@ -220,7 +220,9 @@ Return plain text: `SUCCESS`
 
 Same as payout: SHA256WithRSA, Base64. Plaintext = `{json_body}&{endpoint_path}`
 
-Example: `{"paymentMethodCode":"BKASH",...}&/api-pay/payment/V3.5/order/create-api`
+**Our requests (to Payok):** `endpoint_path` = Payok API path, e.g. `/api-pay/payment/V3.5/order/create-api`
+
+**Callbacks (Payok → us):** `endpoint_path` = path of our `notificationUrl` (the URL we registered). We try: `/webhooks/payok/payin`, full URL, and variants.
 
 ---
 

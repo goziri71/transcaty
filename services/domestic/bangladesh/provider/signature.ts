@@ -69,23 +69,31 @@ export function signPayokRequest(
 
 /**
  * Verify a callback signature from Payok.
- * Plaintext = {json_body}&{endpoint_path}
+ * Doc: Plaintext = {json_body}&{endpoint_path}
  */
+function verifyWithPlaintext(
+  plaintext: string,
+  signatureBase64: string,
+  publicKeyInput: string
+): boolean {
+  const pem = toPublicPem(publicKeyInput);
+  const verify = createVerify("RSA-SHA256");
+  verify.update(plaintext, "utf8");
+  return verify.verify(pem, signatureBase64, "base64");
+}
+
 export function verifyPayokCallback(
   jsonBody: string,
   endpointPath: string,
   signatureBase64: string,
   publicKeyInput: string
 ): boolean {
-  const pem = toPublicPem(publicKeyInput);
-  const plaintext = `${jsonBody}&${endpointPath}`;
-  const verify = createVerify("RSA-SHA256");
-  verify.update(plaintext, "utf8");
-  return verify.verify(pem, signatureBase64, "base64");
+  return verifyWithPlaintext(`${jsonBody}&${endpointPath}`, signatureBase64, publicKeyInput);
 }
 
 /**
- * Verify callback signature, trying multiple path formats (Payok may sign with path or full URL).
+ * Verify callback signature. Tries multiple path formats and both plaintext orders.
+ * Doc: Plaintext = {json_body}&{endpoint_path} — some implementations use path&body.
  */
 export function verifyPayokCallbackWithFallbacks(
   jsonBody: string,
@@ -94,7 +102,8 @@ export function verifyPayokCallbackWithFallbacks(
   publicKeyInput: string
 ): boolean {
   for (const path of pathCandidates) {
-    if (verifyPayokCallback(jsonBody, path, signatureBase64, publicKeyInput)) return true;
+    if (verifyWithPlaintext(`${jsonBody}&${path}`, signatureBase64, publicKeyInput)) return true;
+    if (verifyWithPlaintext(`${path}&${jsonBody}`, signatureBase64, publicKeyInput)) return true;
   }
   return false;
 }

@@ -537,13 +537,23 @@ export async function buildApp() {
   const PAYIN_WEBHOOK_PATH = "/webhooks/payok/payin";
   const PAYOUT_WEBHOOK_PATH = "/webhooks/payok/payout";
   const baseUrl = process.env.APP_BASE_URL ?? `http://localhost:${process.env.PORT ?? 3000}`;
+  const base = baseUrl.replace(/\/$/, "");
+  const fullPayinUrl = `${base}${PAYIN_WEBHOOK_PATH}`;
+  const fullPayoutUrl = `${base}${PAYOUT_WEBHOOK_PATH}`;
+  // Doc: Plaintext = {json_body}&{endpoint_path}. Try path, full URL, variants, Payok internal path.
   const payinPathCandidates = [
     PAYIN_WEBHOOK_PATH,
-    `${baseUrl.replace(/\/$/, "")}${PAYIN_WEBHOOK_PATH}`,
+    fullPayinUrl,
+    PAYIN_WEBHOOK_PATH.slice(1),
+    `${fullPayinUrl}/`,
+    "/api-pay/payment/V3.5/order/notify",
   ];
   const payoutPathCandidates = [
     PAYOUT_WEBHOOK_PATH,
-    `${baseUrl.replace(/\/$/, "")}${PAYOUT_WEBHOOK_PATH}`,
+    fullPayoutUrl,
+    PAYOUT_WEBHOOK_PATH.slice(1),
+    `${fullPayoutUrl}/`,
+    "/api-pay/remit/V3.5/order/notify",
   ];
 
   app.post(PAYIN_WEBHOOK_PATH, async (request, reply) => {
