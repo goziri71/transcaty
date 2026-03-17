@@ -17,7 +17,8 @@
     "encrypt": "tsx scripts/encrypt.ts",
     "payok:test": "tsx scripts/payok-test.ts",
     "payok:env-check": "tsx scripts/payok-env-check.ts",
-    "payok:key-check": "tsx scripts/payok-key-check.ts"
+    "payok:key-check": "tsx scripts/payok-key-check.ts",
+    "payok:platform-key-check": "tsx scripts/payok-platform-key-check.ts"
   },
   "keywords": [
     "payment",

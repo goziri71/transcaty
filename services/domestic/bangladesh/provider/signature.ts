@@ -67,6 +67,11 @@ export function signPayokRequest(
   }
 }
 
+/** Normalize base64: URL-safe (-_) to standard (+/), strip whitespace. */
+function normalizeBase64Signature(sig: string): string {
+  return sig.replace(/\s/g, "").replace(/-/g, "+").replace(/_/g, "/");
+}
+
 /**
  * Verify a callback signature from Payok.
  * Doc: Plaintext = {json_body}&{endpoint_path}
@@ -77,9 +82,14 @@ function verifyWithPlaintext(
   publicKeyInput: string
 ): boolean {
   const pem = toPublicPem(publicKeyInput);
+  const sig = normalizeBase64Signature(signatureBase64);
   const verify = createVerify("RSA-SHA256");
   verify.update(plaintext, "utf8");
-  return verify.verify(pem, signatureBase64, "base64");
+  try {
+    return verify.verify(pem, sig, "base64");
+  } catch {
+    return false;
+  }
 }
 
 export function verifyPayokCallback(
@@ -91,9 +101,30 @@ export function verifyPayokCallback(
   return verifyWithPlaintext(`${jsonBody}&${endpointPath}`, signatureBase64, publicKeyInput);
 }
 
+/** Canonicalize JSON: parse and stringify with sorted keys (no extra whitespace). */
+function canonicalizeJson(jsonStr: string): string | null {
+  try {
+    const obj = JSON.parse(jsonStr) as object;
+    return JSON.stringify(sortKeys(obj));
+  } catch {
+    return null;
+  }
+}
+
+function sortKeys(obj: object): object {
+  if (obj === null || typeof obj !== "object") return obj;
+  if (Array.isArray(obj)) return obj.map(sortKeys);
+  return Object.keys(obj)
+    .sort()
+    .reduce((acc, k) => {
+      acc[k] = sortKeys((obj as Record<string, unknown>)[k] as object);
+      return acc;
+    }, {} as Record<string, unknown>);
+}
+
 /**
- * Verify callback signature. Tries multiple path formats and both plaintext orders.
- * Doc: Plaintext = {json_body}&{endpoint_path} — some implementations use path&body.
+ * Verify callback signature. Tries multiple path formats, plaintext orders, and body variants.
+ * Doc: Plaintext = {json_body}&{endpoint_path} — some implementations use path&body or canonical JSON.
  */
 export function verifyPayokCallbackWithFallbacks(
   jsonBody: string,
@@ -101,9 +132,15 @@ export function verifyPayokCallbackWithFallbacks(
   signatureBase64: string,
   publicKeyInput: string
 ): boolean {
-  for (const path of pathCandidates) {
-    if (verifyWithPlaintext(`${jsonBody}&${path}`, signatureBase64, publicKeyInput)) return true;
-    if (verifyWithPlaintext(`${path}&${jsonBody}`, signatureBase64, publicKeyInput)) return true;
+  const bodyVariants = [jsonBody];
+  const canonical = canonicalizeJson(jsonBody);
+  if (canonical && canonical !== jsonBody) bodyVariants.push(canonical);
+
+  for (const body of bodyVariants) {
+    for (const path of pathCandidates) {
+      if (verifyWithPlaintext(`${body}&${path}`, signatureBase64, publicKeyInput)) return true;
+      if (verifyWithPlaintext(`${path}&${body}`, signatureBase64, publicKeyInput)) return true;
+    }
   }
   return false;
 }
