@@ -32,7 +32,6 @@ import {
   createPayoutOrder,
   handlePayoutCallback,
   getPayokConfig,
-  verifyPayokCallback,
   verifyPayokCallbackWithFallbacks,
 } from "./services/domestic/bangladesh/index.js";
 import { LIMITS } from "./src/lib/limits.js";
