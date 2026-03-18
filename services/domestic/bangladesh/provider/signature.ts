@@ -67,9 +67,20 @@ export function signPayokRequest(
   }
 }
 
-/** Normalize base64: URL-safe (-_) to standard (+/), strip whitespace. */
+/** Normalize base64 signature from headers/proxies to standard base64 bytes. */
 function normalizeBase64Signature(sig: string): string {
-  return sig.replace(/\s/g, "").replace(/-/g, "+").replace(/_/g, "/");
+  let normalized = sig.trim();
+  try {
+    normalized = decodeURIComponent(normalized);
+  } catch {
+    // Keep original when value is not URL-encoded.
+  }
+  // Some proxies/frameworks can turn "+" into space in headers.
+  normalized = normalized.replace(/ /g, "+");
+  normalized = normalized.replace(/\s/g, "").replace(/-/g, "+").replace(/_/g, "/");
+  const mod = normalized.length % 4;
+  if (mod !== 0) normalized += "=".repeat(4 - mod);
+  return normalized;
 }
 
 /**
@@ -83,13 +94,17 @@ function verifyWithPlaintext(
 ): boolean {
   const pem = toPublicPem(publicKeyInput);
   const sig = normalizeBase64Signature(signatureBase64);
-  const verify = createVerify("RSA-SHA256");
-  verify.update(plaintext, "utf8");
-  try {
-    return verify.verify(pem, sig, "base64");
-  } catch {
-    return false;
+  const algorithms = ["RSA-SHA256", "sha256"] as const;
+  for (const algorithm of algorithms) {
+    const verify = createVerify(algorithm);
+    verify.update(plaintext, "utf8");
+    try {
+      if (verify.verify(pem, sig, "base64")) return true;
+    } catch {
+      // Try next algorithm.
+    }
   }
+  return false;
 }
 
 export function verifyPayokCallback(
@@ -100,6 +115,23 @@ export function verifyPayokCallback(
 ): boolean {
   return verifyWithPlaintext(`${jsonBody}&${endpointPath}`, signatureBase64, publicKeyInput);
 }
+
+type BodyVariant = "raw" | "trimmed" | "minified" | "canonical";
+type PlaintextMode = "body" | "body&path" | "path&body" | "body+path" | "path+body";
+
+export type PayokSignatureVerificationDebug = {
+  verified: boolean;
+  match?: {
+    bodyVariant: BodyVariant;
+    mode: PlaintextMode;
+    path: string | null;
+  };
+  diagnostics: {
+    bodyVariantCount: number;
+    pathVariantCount: number;
+    attempts: number;
+  };
+};
 
 /** Minify JSON: parse and stringify to remove spaces (per Payok: remove spaces before signing). */
 function minifyJsonBody(jsonStr: string): string | null {
@@ -141,17 +173,91 @@ export function verifyPayokCallbackWithFallbacks(
   signatureBase64: string,
   publicKeyInput: string
 ): boolean {
-  const bodyVariants: string[] = [jsonBody];
-  const minified = minifyJsonBody(jsonBody);
-  if (minified && minified !== jsonBody) bodyVariants.push(minified);
-  const canonical = canonicalizeJson(jsonBody);
-  if (canonical && !bodyVariants.includes(canonical)) bodyVariants.push(canonical);
+  return verifyPayokCallbackWithFallbacksDebug(jsonBody, pathCandidates, signatureBase64, publicKeyInput).verified;
+}
 
-  for (const body of bodyVariants) {
-    for (const path of pathCandidates) {
-      if (verifyWithPlaintext(`${body}&${path}`, signatureBase64, publicKeyInput)) return true;
-      if (verifyWithPlaintext(`${path}&${body}`, signatureBase64, publicKeyInput)) return true;
+export function verifyPayokCallbackWithFallbacksDebug(
+  jsonBody: string,
+  pathCandidates: string[],
+  signatureBase64: string,
+  publicKeyInput: string
+): PayokSignatureVerificationDebug {
+  const bodyVariants: Array<{ name: BodyVariant; value: string }> = [];
+  const pushBody = (name: BodyVariant, value: string | null | undefined) => {
+    if (!value) return;
+    if (!bodyVariants.some((v) => v.value === value)) bodyVariants.push({ name, value });
+  };
+  pushBody("raw", jsonBody);
+  pushBody("trimmed", jsonBody.trim());
+  pushBody("minified", minifyJsonBody(jsonBody));
+  pushBody("canonical", canonicalizeJson(jsonBody));
+
+  const normalizedPaths: string[] = [];
+  const pushPath = (value: string | null | undefined) => {
+    if (!value) return;
+    const v = value.trim();
+    if (!v) return;
+    if (!normalizedPaths.includes(v)) normalizedPaths.push(v);
+  };
+  for (const candidate of pathCandidates) {
+    pushPath(candidate);
+    pushPath(candidate.replace(/\/$/, ""));
+    pushPath(candidate.startsWith("/") ? candidate.slice(1) : `/${candidate}`);
+    pushPath(candidate.startsWith("/") ? candidate : candidate.slice(1));
+    try {
+      const asUrl = new URL(candidate);
+      pushPath(asUrl.pathname);
+      pushPath(asUrl.pathname.replace(/\/$/, ""));
+      pushPath(asUrl.pathname.startsWith("/") ? asUrl.pathname.slice(1) : asUrl.pathname);
+    } catch {
+      // Candidate is a path, not an absolute URL.
     }
   }
-  return false;
+
+  let attempts = 0;
+  for (const body of bodyVariants) {
+    attempts += 1;
+    if (verifyWithPlaintext(body.value, signatureBase64, publicKeyInput)) {
+      return {
+        verified: true,
+        match: { bodyVariant: body.name, mode: "body", path: null },
+        diagnostics: {
+          bodyVariantCount: bodyVariants.length,
+          pathVariantCount: normalizedPaths.length,
+          attempts,
+        },
+      };
+    }
+    for (const path of normalizedPaths) {
+      const candidates: Array<{ mode: PlaintextMode; plaintext: string }> = [
+        { mode: "body&path", plaintext: `${body.value}&${path}` },
+        { mode: "path&body", plaintext: `${path}&${body.value}` },
+        { mode: "body+path", plaintext: `${body.value}${path}` },
+        { mode: "path+body", plaintext: `${path}${body.value}` },
+      ];
+      for (const candidate of candidates) {
+        attempts += 1;
+        if (verifyWithPlaintext(candidate.plaintext, signatureBase64, publicKeyInput)) {
+          return {
+            verified: true,
+            match: { bodyVariant: body.name, mode: candidate.mode, path },
+            diagnostics: {
+              bodyVariantCount: bodyVariants.length,
+              pathVariantCount: normalizedPaths.length,
+              attempts,
+            },
+          };
+        }
+      }
+    }
+  }
+
+  return {
+    verified: false,
+    diagnostics: {
+      bodyVariantCount: bodyVariants.length,
+      pathVariantCount: normalizedPaths.length,
+      attempts,
+    },
+  };
 }

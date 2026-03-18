@@ -33,6 +33,7 @@ import {
   handlePayoutCallback,
   getPayokConfig,
   verifyPayokCallbackWithFallbacks,
+  verifyPayokCallbackWithFallbacksDebug,
 } from "./services/domestic/bangladesh/index.js";
 import { LIMITS } from "./src/lib/limits.js";
 import { queueMerchantWebhook } from "./src/lib/merchant-webhook.js";
@@ -563,9 +564,15 @@ export async function buildApp() {
     const rawBody = (request as FastifyRequest & { rawBody?: string }).rawBody ?? "";
     const sign = (request.headers.sign ?? request.headers.Sign) as string | undefined;
     const config = getPayokConfig();
+    const verifyDebug =
+      !skipWebhookVerify && !!sign && debugWebhookBody
+        ? verifyPayokCallbackWithFallbacksDebug(rawBody, payinPathCandidates, sign, config.platformPublicKey)
+        : null;
     const verified =
       skipWebhookVerify ||
-      (!!sign && verifyPayokCallbackWithFallbacks(rawBody, payinPathCandidates, sign, config.platformPublicKey));
+      (!!sign &&
+        (verifyDebug?.verified ??
+          verifyPayokCallbackWithFallbacks(rawBody, payinPathCandidates, sign, config.platformPublicKey)));
     if (!verified) {
       const debugPayload: Record<string, unknown> = {
         hasSign: !!sign,
@@ -577,9 +584,20 @@ export async function buildApp() {
       if (debugWebhookBody) {
         debugPayload.rawBody = rawBody;
         debugPayload.signHeaderPrefix = sign ? sign.slice(0, 60) + "..." : null;
+        debugPayload.verifyDiagnostics = verifyDebug?.diagnostics ?? null;
       }
       app.log.warn(debugPayload, "payin webhook 401: invalid signature");
       return reply.status(401).send("Invalid signature");
+    }
+    if (debugWebhookBody && verifyDebug?.match) {
+      app.log.info(
+        {
+          path: PAYIN_WEBHOOK_PATH,
+          signatureMatch: verifyDebug.match,
+          verifyDiagnostics: verifyDebug.diagnostics,
+        },
+        "payin webhook signature matched"
+      );
     }
     if (skipWebhookVerify) app.log.warn("payin webhook: PAYOK_WEBHOOK_SKIP_VERIFY enabled – signature not verified");
     const body = typeof request.body === "object" ? request.body : {};
@@ -599,9 +617,15 @@ export async function buildApp() {
     const rawBody = (request as FastifyRequest & { rawBody?: string }).rawBody ?? "";
     const sign = (request.headers.sign ?? request.headers.Sign) as string | undefined;
     const config = getPayokConfig();
+    const verifyDebug =
+      !skipWebhookVerify && !!sign && debugWebhookBody
+        ? verifyPayokCallbackWithFallbacksDebug(rawBody, payoutPathCandidates, sign, config.platformPublicKey)
+        : null;
     const verified =
       skipWebhookVerify ||
-      (!!sign && verifyPayokCallbackWithFallbacks(rawBody, payoutPathCandidates, sign, config.platformPublicKey));
+      (!!sign &&
+        (verifyDebug?.verified ??
+          verifyPayokCallbackWithFallbacks(rawBody, payoutPathCandidates, sign, config.platformPublicKey)));
     if (!verified) {
       const debugPayload: Record<string, unknown> = {
         hasSign: !!sign,
@@ -613,9 +637,20 @@ export async function buildApp() {
       if (debugWebhookBody) {
         debugPayload.rawBody = rawBody;
         debugPayload.signHeaderPrefix = sign ? sign.slice(0, 60) + "..." : null;
+        debugPayload.verifyDiagnostics = verifyDebug?.diagnostics ?? null;
       }
       app.log.warn(debugPayload, "payout webhook 401: invalid signature");
       return reply.status(401).send("Invalid signature");
+    }
+    if (debugWebhookBody && verifyDebug?.match) {
+      app.log.info(
+        {
+          path: PAYOUT_WEBHOOK_PATH,
+          signatureMatch: verifyDebug.match,
+          verifyDiagnostics: verifyDebug.diagnostics,
+        },
+        "payout webhook signature matched"
+      );
     }
     if (skipWebhookVerify) app.log.warn("payout webhook: PAYOK_WEBHOOK_SKIP_VERIFY enabled – signature not verified");
     const body = typeof request.body === "object" ? request.body : {};
