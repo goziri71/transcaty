@@ -25,7 +25,10 @@ import {
 import { apiKeyAuth } from "./src/lib/auth.js";
 import { merchantAuth } from "./src/lib/merchant-auth.js";
 import { portalAuth } from "./src/lib/portal-auth.js";
+import { providerAuth } from "./src/lib/provider-auth.js";
 import { registerPortalRoutes } from "./api/portal/index.js";
+import { registerProviderRoutes } from "./api/provider/index.js";
+import { registerProviderAuthRoutes } from "./api/provider/auth.js";
 import {
   createPayinOrder,
   handlePayinCallback,
@@ -83,12 +86,16 @@ export async function buildApp() {
     if (path === "/" || path === "/health") return;
     if (path.startsWith("/webhooks/payok/")) return;
     if (path === "/portal/auth/signup" || path === "/portal/auth/login" || path === "/portal/auth/logout") return;
+    if (path === "/provider/auth/login") return;
     if (path.startsWith("/portal/")) return portalAuth(request, reply);
+    if (path.startsWith("/provider/")) return providerAuth(request, reply);
     if (path.startsWith("/v1/")) return merchantAuth(request, reply);
     return apiKeyAuth(request, reply);
   });
 
   await registerPortalRoutes(app);
+  await registerProviderAuthRoutes(app);
+  await registerProviderRoutes(app);
 
   app.get(
     "/health",

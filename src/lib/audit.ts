@@ -10,7 +10,13 @@ export type AuditAction =
   | "payout.completed"
   | "payout.failed"
   | "auth.failed"
-  | "config.changed";
+  | "config.changed"
+  | "provider.merchant.status_changed"
+  | "provider.merchant.kyc_changed"
+  | "provider.customer.status_changed"
+  | "provider.wallet.adjusted"
+  | "provider.transaction.status_changed"
+  | "provider.transaction.reconciled";
 
 export interface AuditEntry {
   action: AuditAction;

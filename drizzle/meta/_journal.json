@@ -36,6 +36,13 @@
       "when": 1773736452256,
       "tag": "0004_fine_payback",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1773849286632,
+      "tag": "0005_right_beyonder",
+      "breakpoints": true
     }
   ]
 }

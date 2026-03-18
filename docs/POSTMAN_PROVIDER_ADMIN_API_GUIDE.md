@@ -1,0 +1,342 @@
+# Provider Admin API – Postman Testing Guide (Transcaty Super Admin)
+
+> Step-by-step guide for testing the provider (master) admin endpoints under `/provider/*`.
+
+---
+
+## What This Is
+
+This API is a **separate admin surface** from merchant portal.
+
+- Merchant portal routes: `/portal/*`
+- Provider (Transcaty super-admin) routes: `/provider/*`
+
+Provider auth supports two modes:
+
+- `X-Provider-Key: <PROVIDER_API_KEY>`
+- `Authorization: Bearer <provider_jwt_token>` after login
+
+---
+
+## Step 0: Create Provider Key (Yes, generate it yourself)
+
+Yes, you should generate a strong random key.
+
+Use one of these:
+
+```bash
+# Option A: Node (64 hex chars / 32 bytes)
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+```
+
+```bash
+# Option B: OpenSSL
+openssl rand -hex 32
+```
+
+Set it in Render/local env:
+
+```env
+PROVIDER_API_KEY=<generated_value>
+```
+
+Optional encrypted setup:
+
+```bash
+npm run encrypt -- "<generated_value>"
+```
+
+Then set:
+
+```env
+PROVIDER_API_KEY_ENC=<encrypted_value>
+ENCRYPTION_MASTER_KEY=<your_master_key>
+```
+
+Never expose this key in frontend code.
+
+---
+
+## Step 1: Postman Environment
+
+Create environment, e.g. **Transcaty Provider Admin**.
+
+| Variable | Value |
+| --- | --- |
+| `baseUrl` | `https://transcaty-building-technology-1.onrender.com` |
+| `providerKey` | your `PROVIDER_API_KEY` |
+| `providerToken` | (leave empty initially) |
+
+Collection-level headers:
+
+| Key | Value |
+| --- | --- |
+| `Authorization` | `Bearer {{providerToken}}` |
+| `Content-Type` | `application/json` |
+
+If `providerToken` is empty, you can temporarily use `X-Provider-Key: {{providerKey}}` for bootstrap and emergency access.
+
+---
+
+## Step 2: Bootstrap + Login (Phase 3)
+
+### 2.1 Bootstrap first super admin (one-time)
+
+POST `{{baseUrl}}/provider/auth/bootstrap`
+
+Headers:
+
+- `X-Provider-Key: {{providerKey}}`
+
+Body:
+
+```json
+{
+  "email": "superadmin@transcaty.com",
+  "password": "ChangeMe123!",
+  "fullName": "Transcaty Super Admin"
+}
+```
+
+### 2.2 Login
+
+POST `{{baseUrl}}/provider/auth/login`
+
+```json
+{
+  "email": "superadmin@transcaty.com",
+  "password": "ChangeMe123!"
+}
+```
+
+Copy returned `token` into Postman env variable `providerToken`.
+
+### 2.3 Verify auth
+
+Expected `200`:
+
+```json
+{
+  "role": "super_admin",
+  "authType": "jwt",
+  "email": "superadmin@transcaty.com"
+}
+```
+
+If `401`: token/key invalid.
+If `500`: provider auth not configured on server.
+
+### 2.4 Manage provider users (super admin)
+
+- `GET /provider/auth/users`
+- `POST /provider/auth/users`
+- `PATCH /provider/auth/users/:userId`
+
+---
+
+## Step 3: Merchant Management
+
+### 3.1 List merchants
+
+GET `{{baseUrl}}/provider/merchants?limit=20&offset=0`
+
+Optional filters:
+
+- `status=pending|active|suspended|closed`
+- `kycStatus=pending|verified|rejected`
+- `q=<name search>`
+
+### 3.2 Get merchant details
+
+GET `{{baseUrl}}/provider/merchants/<merchantId>`
+
+Includes merchant wallet + KYC summary counts.
+
+### 3.3 Change merchant status
+
+PATCH `{{baseUrl}}/provider/merchants/<merchantId>/status`
+
+```json
+{
+  "status": "suspended",
+  "reason": "Chargeback review"
+}
+```
+
+### 3.4 Approve/reject KYC (merchant-level)
+
+PATCH `{{baseUrl}}/provider/merchants/<merchantId>/kyc`
+
+Approve:
+
+```json
+{
+  "kycStatus": "verified"
+}
+```
+
+Reject:
+
+```json
+{
+  "kycStatus": "rejected",
+  "reason": "Documents mismatch"
+}
+```
+
+---
+
+## Step 4: Customer Wallet Management (Global)
+
+### 4.1 List customer wallets
+
+GET `{{baseUrl}}/provider/customers?limit=20&offset=0`
+
+Optional filters:
+
+- `merchantId=<uuid>`
+- `status=active|frozen|pending|closed`
+
+### 4.2 Update customer wallet status
+
+PATCH `{{baseUrl}}/provider/customers/<walletId>/status`
+
+```json
+{
+  "status": "frozen",
+  "reason": "Fraud monitoring"
+}
+```
+
+Note: closing wallet with positive balance returns `400`.
+
+---
+
+## Step 5: Merchant Wallet Adjustments (Credit/Debit)
+
+### POST `{{baseUrl}}/provider/merchants/<merchantId>/wallet-adjustments`
+
+Credit example:
+
+```json
+{
+  "direction": "credit",
+  "amount": "500.00",
+  "reason": "Manual settlement correction",
+  "referenceId": "ops-ticket-1234"
+}
+```
+
+Debit example:
+
+```json
+{
+  "direction": "debit",
+  "amount": "100.00",
+  "reason": "Duplicate credit rollback",
+  "referenceId": "ops-ticket-1235"
+}
+```
+
+`referenceId` is required (use internal ticket/case ID).
+
+Response includes previous/current balance.
+
+---
+
+## Step 6: Transaction Ops / Remediation
+
+### 6.1 List transactions
+
+GET `{{baseUrl}}/provider/transactions?limit=20&offset=0`
+
+Optional filters:
+
+- `merchantId=<uuid>`
+- `type=payin|payout|transfer|refund`
+- `status=pending|success|failed`
+
+### 6.2 Change transaction status (manual remediation)
+
+PATCH `{{baseUrl}}/provider/transactions/<transactionId>/status`
+
+```json
+{
+  "status": "failed",
+  "reason": "Provider timeout reconciliation",
+  "ticketId": "ops-ticket-2201",
+  "platformOrderId": "2026031807000000129"
+}
+```
+
+Optional `paidAmount` can be sent when needed:
+
+```json
+{
+  "status": "success",
+  "reason": "Late callback reconciliation",
+  "ticketId": "ops-ticket-2202",
+  "paidAmount": "500.00",
+  "force": true
+}
+```
+
+Guardrail for Payok-backed tx (`payin`, `payout`):
+
+- Without `force=true`, only `pending -> failed` is allowed.
+- For any other transition, reconcile first, then use `force=true` with a valid `ticketId`.
+
+### 6.3 Reconcile with Payok before force fixes
+
+GET `{{baseUrl}}/provider/transactions/<transactionId>/reconcile`
+
+Response shows:
+
+- local status
+- Payok inquiry payload/status
+- `suggestedLocalStatus`
+- `isMismatch`
+
+Use this endpoint before manual force updates.
+
+---
+
+## Suggested Test Sequence
+
+1. `GET /provider/me`
+2. `GET /provider/merchants`
+3. Pick merchant ID
+4. `GET /provider/merchants/:merchantId`
+5. `PATCH /provider/merchants/:merchantId/kyc` (approve/reject)
+6. `POST /provider/merchants/:merchantId/wallet-adjustments`
+7. `GET /provider/transactions`
+8. `PATCH /provider/transactions/:transactionId/status`
+9. `GET /provider/transactions/:transactionId/reconcile` before force status change
+
+---
+
+## Security Notes
+
+- Rotate `PROVIDER_API_KEY` periodically.
+- Restrict access to trusted backend tools and admin devices only.
+- Keep provider actions tied to internal ticket/reference IDs.
+- Monitor audit logs for:
+  - `provider.merchant.status_changed`
+  - `provider.merchant.kyc_changed`
+  - `provider.customer.status_changed`
+  - `provider.wallet.adjusted`
+  - `provider.transaction.status_changed`
+  - `provider.transaction.reconciled`
+
+---
+
+## Scope of This Version
+
+This version provides core super-admin operations for live ops.
+
+Potential next upgrades:
+
+- Multi-user provider admins (instead of one API key)
+- Fine-grained provider roles/permissions
+- Stronger remediation workflows with dual approval
+- Dedicated KYC document/person approval endpoints

@@ -67,6 +67,14 @@ export const merchantUserRoleEnum = pgEnum("merchant_user_role", [
   "viewer",
 ]);
 
+export const providerUserRoleEnum = pgEnum("provider_user_role", [
+  "super_admin",
+  "ops",
+  "risk",
+  "finance",
+  "support",
+]);
+
 export const kycStatusEnum = pgEnum("kyc_status", ["pending", "verified", "rejected"]);
 
 export const merchants = pgTable("merchants", {
@@ -282,5 +290,25 @@ export const merchantUsers = pgTable(
     index("merchant_users_merchant_id_idx").on(t.merchantId),
     index("merchant_users_email_idx").on(t.email),
     index("merchant_users_merchant_email_idx").on(t.merchantId, t.email),
+  ]
+);
+
+export const providerUsers = pgTable(
+  "provider_users",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    email: text("email").notNull().unique(),
+    fullName: text("full_name"),
+    passwordHash: text("password_hash").notNull(),
+    role: providerUserRoleEnum("role").notNull().default("ops"),
+    status: text("status").notNull().default("active"), // active, suspended
+    lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("provider_users_email_idx").on(t.email),
+    index("provider_users_role_idx").on(t.role),
+    index("provider_users_status_idx").on(t.status),
   ]
 );
