@@ -11,6 +11,7 @@ import {
   merchantPersons,
   merchantKycDocuments,
 } from "../../src/db/schema/index.js";
+import { createKycUploadUrl } from "../../src/lib/kyc-storage.js";
 
 const errorResponse = z.object({
   error: z.string(),
@@ -195,6 +196,74 @@ export async function registerPortalKycRoutes(app: FastifyInstance) {
   );
 
   app.post(
+    "/portal/me/kyc/documents/upload-url",
+    {
+      schema: {
+        body: z.object({
+          documentType: z.string().min(1),
+          filename: z.string().min(1),
+          contentType: z.string().optional(),
+          merchantPersonId: z.string().uuid().optional(),
+        }),
+        response: {
+          200: z.object({
+            uploadUrl: z.string(),
+            uploadToken: z.string(),
+            path: z.string(),
+            bucket: z.string(),
+            fileReference: z.string(),
+            expiresIn: z.number(),
+          }),
+          400: errorResponse,
+          401: errorResponse,
+          500: errorResponse,
+        },
+      },
+    },
+    async (request, reply) => {
+      const user = request.portalUser;
+      if (!user) return reply.status(401).send({ error: "Unauthorized" });
+
+      const body = request.body as {
+        documentType: string;
+        filename: string;
+        contentType?: string;
+        merchantPersonId?: string;
+      };
+
+      if (body.merchantPersonId) {
+        const [person] = await db
+          .select()
+          .from(merchantPersons)
+          .where(
+            and(
+              eq(merchantPersons.id, body.merchantPersonId),
+              eq(merchantPersons.merchantId, user.merchantId)
+            )
+          )
+          .limit(1);
+        if (!person) {
+          return reply.status(400).send({ error: "Invalid merchantPersonId" });
+        }
+      }
+
+      try {
+        const result = await createKycUploadUrl({
+          merchantId: user.merchantId,
+          documentType: body.documentType,
+          filename: body.filename,
+          contentType: body.contentType,
+          merchantPersonId: body.merchantPersonId,
+        });
+        return result;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Failed to create upload URL";
+        return reply.status(500).send({ error: msg });
+      }
+    }
+  );
+
+  app.post(
     "/portal/me/kyc/documents",
     {
       schema: {
@@ -221,6 +290,11 @@ export async function registerPortalKycRoutes(app: FastifyInstance) {
         documentNumber?: string;
         merchantPersonId?: string;
       };
+
+      const prefix = `kyc/${user.merchantId}/`;
+      if (!body.fileReference.startsWith(prefix)) {
+        return reply.status(400).send({ error: "Invalid fileReference" });
+      }
 
       if (body.merchantPersonId) {
         const [person] = await db

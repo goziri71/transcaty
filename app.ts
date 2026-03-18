@@ -557,6 +557,7 @@ export async function buildApp() {
   ];
 
   const skipWebhookVerify = process.env.PAYOK_WEBHOOK_SKIP_VERIFY === "1" || process.env.PAYOK_WEBHOOK_SKIP_VERIFY === "true";
+  const debugWebhookBody = process.env.PAYOK_WEBHOOK_DEBUG_BODY === "1" || process.env.PAYOK_WEBHOOK_DEBUG_BODY === "true";
 
   app.post(PAYIN_WEBHOOK_PATH, async (request, reply) => {
     const rawBody = (request as FastifyRequest & { rawBody?: string }).rawBody ?? "";
@@ -566,10 +567,18 @@ export async function buildApp() {
       skipWebhookVerify ||
       (!!sign && verifyPayokCallbackWithFallbacks(rawBody, payinPathCandidates, sign, config.platformPublicKey));
     if (!verified) {
-      app.log.warn(
-        { hasSign: !!sign, rawBodyLen: rawBody.length, contentType: request.headers["content-type"] },
-        "payin webhook 401: invalid signature"
-      );
+      const debugPayload: Record<string, unknown> = {
+        hasSign: !!sign,
+        rawBodyLen: rawBody.length,
+        contentType: request.headers["content-type"],
+        path: PAYIN_WEBHOOK_PATH,
+        pathCandidates: payinPathCandidates,
+      };
+      if (debugWebhookBody) {
+        debugPayload.rawBody = rawBody;
+        debugPayload.signHeaderPrefix = sign ? sign.slice(0, 60) + "..." : null;
+      }
+      app.log.warn(debugPayload, "payin webhook 401: invalid signature");
       return reply.status(401).send("Invalid signature");
     }
     if (skipWebhookVerify) app.log.warn("payin webhook: PAYOK_WEBHOOK_SKIP_VERIFY enabled – signature not verified");
@@ -594,10 +603,18 @@ export async function buildApp() {
       skipWebhookVerify ||
       (!!sign && verifyPayokCallbackWithFallbacks(rawBody, payoutPathCandidates, sign, config.platformPublicKey));
     if (!verified) {
-      app.log.warn(
-        { hasSign: !!sign, rawBodyLen: rawBody.length, contentType: request.headers["content-type"] },
-        "payout webhook 401: invalid signature"
-      );
+      const debugPayload: Record<string, unknown> = {
+        hasSign: !!sign,
+        rawBodyLen: rawBody.length,
+        contentType: request.headers["content-type"],
+        path: PAYOUT_WEBHOOK_PATH,
+        pathCandidates: payoutPathCandidates,
+      };
+      if (debugWebhookBody) {
+        debugPayload.rawBody = rawBody;
+        debugPayload.signHeaderPrefix = sign ? sign.slice(0, 60) + "..." : null;
+      }
+      app.log.warn(debugPayload, "payout webhook 401: invalid signature");
       return reply.status(401).send("Invalid signature");
     }
     if (skipWebhookVerify) app.log.warn("payout webhook: PAYOK_WEBHOOK_SKIP_VERIFY enabled – signature not verified");

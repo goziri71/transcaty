@@ -36,6 +36,7 @@
     "@fastify/cors": "^10.0.1",
     "@fastify/helmet": "^12.0.0",
     "@fastify/rate-limit": "^10.1.0",
+    "@supabase/supabase-js": "^2.99.2",
     "bcrypt": "^6.0.0",
     "dotenv": "^16.4.0",
     "drizzle-orm": "^0.36.0",

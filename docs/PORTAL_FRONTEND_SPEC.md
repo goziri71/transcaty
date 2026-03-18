@@ -341,7 +341,48 @@ No body. Returns `{ "ok": true }`. Client clears token.
 
 ---
 
-### 10. KYC – Add document
+### 10a. KYC – Get presigned upload URL
+
+**POST** `/portal/me/kyc/documents/upload-url`
+
+Get a presigned URL to upload a file directly to S3/R2. Frontend uploads via `PUT` to `uploadUrl`, then sends `fileReference` to `POST /portal/me/kyc/documents`.
+
+**Body**
+
+```json
+{
+  "documentType": "registration_certificate",
+  "filename": "certificate.pdf",
+  "contentType": "application/pdf",
+  "merchantPersonId": "uuid"
+}
+```
+
+| Field | Required | Notes |
+|-------|----------|-------|
+| documentType | yes | e.g. registration_certificate, trade_license, nid, passport |
+| filename | yes | Original filename (used for extension) |
+| contentType | no | application/pdf, image/jpeg, image/png, etc. Default: application/octet-stream |
+| merchantPersonId | no | Link to person if person-specific doc |
+
+**Success (200)**
+
+```json
+{
+  "uploadUrl": "https://xxx.supabase.co",
+  "uploadToken": "signed-token...",
+  "path": "kyc/{merchantId}/{uuid}-certificate.pdf",
+  "bucket": "kyc-documents",
+  "fileReference": "kyc/{merchantId}/{uuid}-certificate.pdf",
+  "expiresIn": 7200
+}
+```
+
+**Flow:** 1) Call this endpoint; 2) Use Supabase client: `supabase.storage.from(bucket).uploadToSignedUrl(path, uploadToken, file)`; 3) Call `POST /portal/me/kyc/documents` with `fileReference`.
+
+---
+
+### 10b. KYC – Add document
 
 **POST** `/portal/me/kyc/documents`
 
@@ -350,7 +391,7 @@ No body. Returns `{ "ok": true }`. Client clears token.
 ```json
 {
   "documentType": "registration_certificate",
-  "fileReference": "s3://bucket/path/to/file.pdf",
+  "fileReference": "kyc/{merchantId}/{uuid}-certificate.pdf",
   "documentNumber": "DOC-123",
   "merchantPersonId": "uuid"
 }
@@ -359,7 +400,7 @@ No body. Returns `{ "ok": true }`. Client clears token.
 | Field | Required | Notes |
 |-------|----------|-------|
 | documentType | yes | e.g. registration_certificate, trade_license, nid, passport |
-| fileReference | yes | Storage reference (upload flow TBD) |
+| fileReference | yes | From `upload-url` response (must be from this merchant) |
 | documentNumber | no | |
 | merchantPersonId | no | Link to person if person-specific doc |
 
@@ -388,7 +429,7 @@ No body. Returns `{ "ok": true }`. Client clears token.
 
 ---
 
-### 11. KYC – Submit
+### 12. KYC – Submit
 
 **POST** `/portal/me/kyc/submit`
 
@@ -735,13 +776,23 @@ All errors follow:
 
 ## File upload (documents)
 
-`fileReference` is a string. The backend does not handle file upload. Options:
+The backend uses **Supabase Storage** with signed upload URLs:
 
-1. **Presigned URL** – Backend provides a presigned S3/Storage URL; frontend uploads, then sends the resulting path as `fileReference`.
-2. **Base64** – Frontend encodes file, sends in body; backend stores and returns reference. (Requires backend support.)
-3. **External storage** – Frontend uploads to your storage, passes URL/path as `fileReference`.
+1. Call `POST /portal/me/kyc/documents/upload-url` with `documentType`, `filename`, optional `contentType`.
+2. Receive `{ uploadUrl, uploadToken, path, bucket, fileReference, expiresIn }`.
+3. Use Supabase client to upload:
 
-Confirm with backend which approach is implemented.
+   ```js
+   import { createClient } from '@supabase/supabase-js';
+   const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+   await supabase.storage.from(bucket).uploadToSignedUrl(path, uploadToken, file, {
+     contentType: file.type,
+   });
+   ```
+
+4. Call `POST /portal/me/kyc/documents` with `fileReference` to register the document.
+
+Allowed types: `application/pdf`, `image/jpeg`, `image/png`, `image/webp`.
 
 ---
 
