@@ -75,6 +75,19 @@ export const providerUserRoleEnum = pgEnum("provider_user_role", [
   "support",
 ]);
 
+export const providerActionTypeEnum = pgEnum("provider_action_type", [
+  "wallet_adjustment",
+  "transaction_status_change",
+]);
+
+export const providerActionStatusEnum = pgEnum("provider_action_status", [
+  "pending",
+  "approved",
+  "rejected",
+  "executed",
+  "cancelled",
+]);
+
 export const kycStatusEnum = pgEnum("kyc_status", ["pending", "verified", "rejected"]);
 
 export const merchants = pgTable("merchants", {
@@ -310,5 +323,34 @@ export const providerUsers = pgTable(
     index("provider_users_email_idx").on(t.email),
     index("provider_users_role_idx").on(t.role),
     index("provider_users_status_idx").on(t.status),
+  ]
+);
+
+export const providerActionRequests = pgTable(
+  "provider_action_requests",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    actionType: providerActionTypeEnum("action_type").notNull(),
+    status: providerActionStatusEnum("status").notNull().default("pending"),
+    requestedBy: uuid("requested_by").references(() => providerUsers.id, { onDelete: "set null" }),
+    approvedBy: uuid("approved_by").references(() => providerUsers.id, { onDelete: "set null" }),
+    resourceType: text("resource_type").notNull(),
+    resourceId: text("resource_id").notNull(),
+    payload: text("payload").notNull(), // JSON object for deferred execution
+    reason: text("reason"),
+    ticketId: text("ticket_id"),
+    riskLevel: text("risk_level").notNull().default("normal"),
+    rejectedReason: text("rejected_reason"),
+    executedAt: timestamp("executed_at", { withTimezone: true }),
+    rejectedAt: timestamp("rejected_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("provider_action_requests_status_idx").on(t.status),
+    index("provider_action_requests_action_type_idx").on(t.actionType),
+    index("provider_action_requests_requested_by_idx").on(t.requestedBy),
+    index("provider_action_requests_approved_by_idx").on(t.approvedBy),
+    index("provider_action_requests_created_at_idx").on(t.createdAt),
   ]
 );

@@ -90,6 +90,8 @@ export function canProviderAccess(
     | "tx.read"
     | "tx.reconcile"
     | "tx.status.write"
+    | "approval.read"
+    | "approval.review"
     | "provider.users.manage"
 ): boolean {
   const perms: Record<ProviderRole, Set<string>> = {
@@ -103,9 +105,11 @@ export function canProviderAccess(
       "tx.read",
       "tx.reconcile",
       "tx.status.write",
+      "approval.read",
+      "approval.review",
       "provider.users.manage",
     ]),
-    ops: new Set(["merchant.read", "customer.read", "customer.status.write", "tx.read", "tx.reconcile"]),
+    ops: new Set(["merchant.read", "customer.read", "customer.status.write", "tx.read", "tx.reconcile", "approval.read"]),
     risk: new Set([
       "merchant.read",
       "merchant.status.write",
@@ -115,14 +119,45 @@ export function canProviderAccess(
       "tx.read",
       "tx.reconcile",
       "tx.status.write",
+      "approval.read",
+      "approval.review",
     ]),
-    finance: new Set(["merchant.read", "customer.read", "tx.read", "tx.reconcile", "wallet.adjust", "tx.status.write"]),
-    support: new Set(["merchant.read", "customer.read", "tx.read", "tx.reconcile"]),
+    finance: new Set([
+      "merchant.read",
+      "customer.read",
+      "tx.read",
+      "tx.reconcile",
+      "wallet.adjust",
+      "tx.status.write",
+      "approval.read",
+    ]),
+    support: new Set(["merchant.read", "customer.read", "tx.read", "tx.reconcile", "approval.read"]),
   };
   return perms[role].has(permission);
 }
 
+function normalizeIp(ip: string): string {
+  if (ip.startsWith("::ffff:")) return ip.slice(7);
+  return ip;
+}
+
 export async function providerAuth(request: FastifyRequest, reply: FastifyReply): Promise<void> {
+  const allowlistRaw = process.env.PROVIDER_IP_ALLOWLIST?.trim();
+  if (allowlistRaw) {
+    const allowlist = allowlistRaw
+      .split(",")
+      .map((v) => normalizeIp(v.trim()))
+      .filter(Boolean);
+    const forwarded = (request.headers["x-forwarded-for"] as string | undefined)?.split(",")[0]?.trim();
+    const requestIp = normalizeIp(forwarded || request.ip || "");
+    if (!allowlist.includes(requestIp)) {
+      return reply.status(403).send({
+        error: "Forbidden",
+        message: "Provider access denied for this IP",
+      });
+    }
+  }
+
   const headerKey = request.headers["x-provider-key"] as string | undefined;
   const headerToken = request.headers["x-provider-token"] as string | undefined;
   const authHeader = request.headers.authorization;

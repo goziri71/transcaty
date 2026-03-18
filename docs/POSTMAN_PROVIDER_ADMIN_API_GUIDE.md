@@ -16,6 +16,12 @@ Provider auth supports two modes:
 - `X-Provider-Key: <PROVIDER_API_KEY>`
 - `Authorization: Bearer <provider_jwt_token>` after login
 
+Recommended env:
+
+- `PROVIDER_JWT_SECRET` for provider JWT signing
+- `PROVIDER_IP_ALLOWLIST` to restrict admin access to known office/VPN IPs
+- `PROVIDER_APPROVAL_THRESHOLD_AMOUNT` for high-risk maker-checker trigger
+
 ---
 
 ## Step 0: Create Provider Key (Yes, generate it yourself)
@@ -301,6 +307,50 @@ Use this endpoint before manual force updates.
 
 ---
 
+## Step 7: Maker-Checker Approvals (Phase 4)
+
+High-risk actions are queued for approval (non-super-admin), including:
+
+- large wallet adjustments (threshold-based)
+- debit adjustments
+- force/high-risk transaction status changes
+
+### 7.1 List approval requests
+
+GET `{{baseUrl}}/provider/approvals?status=pending&limit=20&offset=0`
+
+Optional filters:
+
+- `status=pending|approved|rejected|executed|cancelled`
+- `actionType=wallet_adjustment|transaction_status_change`
+
+### 7.2 Approve request
+
+POST `{{baseUrl}}/provider/approvals/<requestId>/approve`
+
+```json
+{
+  "note": "Reviewed and approved by risk"
+}
+```
+
+Rules:
+
+- Only roles with review permission can approve
+- Maker-checker enforced: requester cannot approve own request
+
+### 7.3 Reject request
+
+POST `{{baseUrl}}/provider/approvals/<requestId>/reject`
+
+```json
+{
+  "reason": "Missing supporting evidence"
+}
+```
+
+---
+
 ## Suggested Test Sequence
 
 1. `GET /provider/me`
@@ -312,6 +362,8 @@ Use this endpoint before manual force updates.
 7. `GET /provider/transactions`
 8. `PATCH /provider/transactions/:transactionId/status`
 9. `GET /provider/transactions/:transactionId/reconcile` before force status change
+10. `GET /provider/approvals?status=pending`
+11. `POST /provider/approvals/:requestId/approve` (from different reviewer account)
 
 ---
 

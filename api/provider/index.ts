@@ -4,6 +4,7 @@ import { and, count, desc, eq, ilike, inArray } from "drizzle-orm";
 import { db } from "../../src/db/index.js";
 import {
   ledgerEntries,
+  providerActionRequests,
   merchantBusinessProfiles,
   merchantKycDocuments,
   merchantPersons,
@@ -31,6 +32,9 @@ const TRANSACTION_STATUS = ["pending", "success", "failed"] as const;
 const TRANSACTION_TYPE = ["payin", "payout", "transfer", "refund"] as const;
 const ADJUSTMENT_DIRECTION = ["credit", "debit"] as const;
 const PAYOK_TX_TYPE = ["payin", "payout"] as const;
+const APPROVAL_STATUS = ["pending", "approved", "rejected", "executed", "cancelled"] as const;
+const APPROVAL_ACTION = ["wallet_adjustment", "transaction_status_change"] as const;
+const DEFAULT_APPROVAL_THRESHOLD = Number(process.env.PROVIDER_APPROVAL_THRESHOLD_AMOUNT ?? "10000");
 
 function mergeMetadata(metadata: string | null, patch: Record<string, unknown>): string {
   let current: Record<string, unknown> = {};
@@ -80,6 +84,8 @@ function ensureProviderPermission(
     | "tx.read"
     | "tx.reconcile"
     | "tx.status.write"
+    | "approval.read"
+    | "approval.review"
 ): boolean {
   const actor = request.provider;
   if (!actor) {
@@ -91,6 +97,28 @@ function ensureProviderPermission(
     return false;
   }
   return true;
+}
+
+function parsePayload(value: string): Record<string, unknown> {
+  try {
+    return JSON.parse(value) as Record<string, unknown>;
+  } catch {
+    return { raw: value };
+  }
+}
+
+function getApprovalRiskLevel(params: {
+  actionType: (typeof APPROVAL_ACTION)[number];
+  amount?: number;
+  direction?: "credit" | "debit";
+  force?: boolean;
+}): "normal" | "high" {
+  if (params.actionType === "wallet_adjustment") {
+    if ((params.amount ?? 0) >= DEFAULT_APPROVAL_THRESHOLD) return "high";
+    if (params.direction === "debit") return "high";
+  }
+  if (params.actionType === "transaction_status_change" && params.force) return "high";
+  return "normal";
 }
 
 export async function registerProviderRoutes(app: FastifyInstance) {
@@ -582,6 +610,11 @@ export async function registerProviderRoutes(app: FastifyInstance) {
             previousBalance: z.string(),
             currentBalance: z.string(),
           }),
+          202: z.object({
+            requestId: z.string(),
+            status: z.literal("pending"),
+            requiresApproval: z.literal(true),
+          }),
           400: errorResponse,
           401: errorResponse,
           404: errorResponse,
@@ -601,6 +634,57 @@ export async function registerProviderRoutes(app: FastifyInstance) {
       const amount = Number(body.amount);
       if (!Number.isFinite(amount) || amount <= 0) {
         return reply.status(400).send({ error: "Bad Request", message: "Amount must be greater than 0" });
+      }
+
+      const actor = request.provider!;
+      const riskLevel = getApprovalRiskLevel({
+        actionType: "wallet_adjustment",
+        amount,
+        direction: body.direction,
+      });
+      const needsApproval = riskLevel === "high" && actor.role !== "super_admin";
+      if (needsApproval) {
+        const [requestRow] = await db
+          .insert(providerActionRequests)
+          .values({
+            actionType: "wallet_adjustment",
+            status: "pending",
+            requestedBy: actor.providerUserId ?? null,
+            resourceType: "merchant_wallet",
+            resourceId: merchantId,
+            payload: JSON.stringify({
+              merchantId,
+              direction: body.direction,
+              amount: toMoneyString(amount),
+              reason: body.reason,
+              referenceId: body.referenceId,
+            }),
+            reason: body.reason,
+            ticketId: body.referenceId,
+            riskLevel,
+          })
+          .returning({ id: providerActionRequests.id });
+
+        audit({
+          action: "provider.wallet.adjusted",
+          actor: actor.providerUserId ?? "provider:api_key",
+          resource: merchantId,
+          meta: {
+            queuedOnly: true,
+            direction: body.direction,
+            amount: toMoneyString(amount),
+            reason: body.reason,
+            referenceId: body.referenceId,
+            approvalRequestId: requestRow.id,
+            riskLevel,
+          },
+        });
+
+        return reply.status(202).send({
+          requestId: requestRow.id,
+          status: "pending",
+          requiresApproval: true,
+        });
       }
 
       const result = await db.transaction(async (tx) => {
@@ -781,6 +865,11 @@ export async function registerProviderRoutes(app: FastifyInstance) {
             id: z.string(),
             status: z.string(),
           }),
+          202: z.object({
+            requestId: z.string(),
+            status: z.literal("pending"),
+            requiresApproval: z.literal(true),
+          }),
           400: errorResponse,
           401: errorResponse,
           404: errorResponse,
@@ -821,6 +910,62 @@ export async function registerProviderRoutes(app: FastifyInstance) {
         }
       }
 
+      const actor = request.provider!;
+      const highRiskChange =
+        body.force === true ||
+        body.status === "success" ||
+        (existing.status !== "pending" && body.status !== "failed");
+      if (highRiskChange && actor.role !== "super_admin") {
+        const [requestRow] = await db
+          .insert(providerActionRequests)
+          .values({
+            actionType: "transaction_status_change",
+            status: "pending",
+            requestedBy: actor.providerUserId ?? null,
+            resourceType: "transaction",
+            resourceId: transactionId,
+            payload: JSON.stringify({
+              transactionId,
+              status: body.status,
+              reason: body.reason,
+              ticketId: body.ticketId,
+              paidAmount: body.paidAmount ?? null,
+              platformOrderId: body.platformOrderId ?? null,
+              force: body.force === true,
+            }),
+            reason: body.reason,
+            ticketId: body.ticketId,
+            riskLevel: getApprovalRiskLevel({
+              actionType: "transaction_status_change",
+              force: body.force === true,
+            }),
+          })
+          .returning({ id: providerActionRequests.id });
+
+        audit({
+          action: "provider.transaction.status_changed",
+          actor: actor.providerUserId ?? "provider:api_key",
+          resource: transactionId,
+          meta: {
+            queuedOnly: true,
+            merchantId: existing.merchantId,
+            type: existing.type,
+            from: existing.status,
+            to: body.status,
+            reason: body.reason,
+            ticketId: body.ticketId,
+            force: body.force === true,
+            approvalRequestId: requestRow.id,
+          },
+        });
+
+        return reply.status(202).send({
+          requestId: requestRow.id,
+          status: "pending",
+          requiresApproval: true,
+        });
+      }
+
       const metadata = mergeMetadata(existing.metadata, {
         reason: body.reason,
         ticketId: body.ticketId,
@@ -856,6 +1001,302 @@ export async function registerProviderRoutes(app: FastifyInstance) {
       });
 
       return { id: transactionId, status: body.status };
+    }
+  );
+
+  app.get(
+    "/provider/approvals",
+    {
+      schema: {
+        querystring: z.object({
+          status: z.enum(APPROVAL_STATUS).optional(),
+          actionType: z.enum(APPROVAL_ACTION).optional(),
+          limit: z.coerce.number().min(1).max(100).default(20),
+          offset: z.coerce.number().min(0).default(0),
+        }),
+        response: {
+          200: z.object({
+            items: z.array(
+              z.object({
+                id: z.string(),
+                actionType: z.string(),
+                status: z.string(),
+                resourceType: z.string(),
+                resourceId: z.string(),
+                ticketId: z.string().nullable(),
+                riskLevel: z.string(),
+                requestedBy: z.string().nullable(),
+                approvedBy: z.string().nullable(),
+                createdAt: z.string(),
+                updatedAt: z.string(),
+              })
+            ),
+            total: z.number(),
+            limit: z.number(),
+            offset: z.number(),
+          }),
+          401: errorResponse,
+          403: errorResponse,
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!ensureProviderPermission(request, reply, "approval.read")) return;
+      const { status, actionType, limit, offset } = request.query as {
+        status?: (typeof APPROVAL_STATUS)[number];
+        actionType?: (typeof APPROVAL_ACTION)[number];
+        limit: number;
+        offset: number;
+      };
+      const conditions = [];
+      if (status) conditions.push(eq(providerActionRequests.status, status));
+      if (actionType) conditions.push(eq(providerActionRequests.actionType, actionType));
+
+      const [totalResult] = await db
+        .select({ count: count() })
+        .from(providerActionRequests)
+        .where(conditions.length ? and(...conditions) : undefined);
+
+      const rows = await db
+        .select()
+        .from(providerActionRequests)
+        .where(conditions.length ? and(...conditions) : undefined)
+        .orderBy(desc(providerActionRequests.createdAt))
+        .limit(limit)
+        .offset(offset);
+
+      return {
+        items: rows.map((r) => ({
+          id: r.id,
+          actionType: r.actionType,
+          status: r.status,
+          resourceType: r.resourceType,
+          resourceId: r.resourceId,
+          ticketId: r.ticketId,
+          riskLevel: r.riskLevel,
+          requestedBy: r.requestedBy,
+          approvedBy: r.approvedBy,
+          createdAt: r.createdAt.toISOString(),
+          updatedAt: r.updatedAt.toISOString(),
+        })),
+        total: Number(totalResult?.count ?? 0),
+        limit,
+        offset,
+      };
+    }
+  );
+
+  app.post(
+    "/provider/approvals/:requestId/approve",
+    {
+      schema: {
+        params: z.object({ requestId: z.string().uuid() }),
+        body: z.object({
+          note: z.string().max(500).optional(),
+        }),
+        response: {
+          200: z.object({
+            id: z.string(),
+            status: z.literal("executed"),
+          }),
+          400: errorResponse,
+          401: errorResponse,
+          403: errorResponse,
+          404: errorResponse,
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!ensureProviderPermission(request, reply, "approval.review")) return;
+      const actor = request.provider!;
+      if (!actor.providerUserId) {
+        return reply.status(403).send({ error: "Forbidden", message: "JWT provider user required for approvals" });
+      }
+      const { requestId } = request.params as { requestId: string };
+
+      const result = await db.transaction(async (tx) => {
+        const [req] = await tx
+          .select()
+          .from(providerActionRequests)
+          .where(eq(providerActionRequests.id, requestId))
+          .limit(1);
+        if (!req) return { error: "NOT_FOUND" as const };
+        if (req.status !== "pending") return { error: "NOT_PENDING" as const };
+        if (req.requestedBy && req.requestedBy === actor.providerUserId) return { error: "MAKER_CHECKER" as const };
+
+        const payload = parsePayload(req.payload);
+        if (req.actionType === "wallet_adjustment") {
+          const merchantId = String(payload.merchantId ?? "");
+          const direction = String(payload.direction ?? "") as "credit" | "debit";
+          const amount = Number(payload.amount ?? 0);
+          const referenceId = String(payload.referenceId ?? "");
+          if (!merchantId || !direction || !amount || !referenceId) return { error: "INVALID_PAYLOAD" as const };
+
+          const [wallet] = await tx
+            .select()
+            .from(wallets)
+            .where(and(eq(wallets.merchantId, merchantId), eq(wallets.type, "merchant")))
+            .limit(1);
+          if (!wallet) return { error: "WALLET_NOT_FOUND" as const };
+
+          const previousBalance = Number(wallet.balance);
+          const nextBalance = direction === "credit" ? previousBalance + amount : previousBalance - amount;
+          if (nextBalance < 0) return { error: "INSUFFICIENT_BALANCE" as const };
+
+          await tx.insert(ledgerEntries).values({
+            walletId: wallet.id,
+            amount: toMoneyString(amount),
+            direction,
+            type: "provider_adjustment",
+            referenceId,
+          });
+          await tx
+            .update(wallets)
+            .set({ balance: toMoneyString(nextBalance), updatedAt: new Date() })
+            .where(eq(wallets.id, wallet.id));
+        } else if (req.actionType === "transaction_status_change") {
+          const txId = String(payload.transactionId ?? "");
+          const status = String(payload.status ?? "") as (typeof TRANSACTION_STATUS)[number];
+          const reason = String(payload.reason ?? "");
+          const ticketId = String(payload.ticketId ?? "");
+          const paidAmount = payload.paidAmount != null ? String(payload.paidAmount) : undefined;
+          const platformOrderId = payload.platformOrderId != null ? String(payload.platformOrderId) : undefined;
+          if (!txId || !status || !reason || !ticketId) return { error: "INVALID_PAYLOAD" as const };
+
+          const [existing] = await tx
+            .select()
+            .from(transactions)
+            .where(eq(transactions.id, txId))
+            .limit(1);
+          if (!existing) return { error: "TX_NOT_FOUND" as const };
+
+          const metadata = mergeMetadata(existing.metadata, {
+            reason,
+            ticketId,
+            approvedBy: actor.providerUserId,
+            approvalRequestId: req.id,
+            fromStatus: existing.status,
+            toStatus: status,
+          });
+          await tx
+            .update(transactions)
+            .set({
+              status,
+              paidAmount: paidAmount ?? existing.paidAmount,
+              externalId: platformOrderId ?? existing.externalId,
+              metadata,
+              updatedAt: new Date(),
+            })
+            .where(eq(transactions.id, txId));
+        }
+
+        await tx
+          .update(providerActionRequests)
+          .set({
+            status: "executed",
+            approvedBy: actor.providerUserId,
+            executedAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(eq(providerActionRequests.id, requestId));
+
+        return { ok: true as const, req };
+      });
+
+      if ("error" in result) {
+        const errorKey = String(result.error);
+        if (errorKey === "NOT_FOUND") {
+          return reply.status(404).send({ error: "Not found", message: "Approval request not found" });
+        }
+        if (errorKey === "WALLET_NOT_FOUND") {
+          return reply.status(404).send({ error: "Not found", message: "Merchant wallet not found" });
+        }
+        if (errorKey === "TX_NOT_FOUND") {
+          return reply.status(404).send({ error: "Not found", message: "Transaction not found" });
+        }
+        if (errorKey === "NOT_PENDING") {
+          return reply.status(400).send({ error: "Bad Request", message: "Only pending requests can be approved" });
+        }
+        if (errorKey === "MAKER_CHECKER") {
+          return reply.status(400).send({ error: "Bad Request", message: "Requester cannot approve their own request" });
+        }
+        if (errorKey === "INVALID_PAYLOAD") {
+          return reply.status(400).send({ error: "Bad Request", message: "Invalid approval payload" });
+        }
+        if (errorKey === "INSUFFICIENT_BALANCE") {
+          return reply.status(400).send({ error: "Bad Request", message: "Insufficient balance for debit adjustment" });
+        }
+        return reply.status(400).send({ error: "Bad Request", message: "Approval failed" });
+      }
+
+      audit({
+        action: "config.changed",
+        actor: actor.providerUserId,
+        resource: requestId,
+        meta: { approvalStatus: "executed", actionType: result.req.actionType, resourceId: result.req.resourceId },
+      });
+
+      return { id: requestId, status: "executed" };
+    }
+  );
+
+  app.post(
+    "/provider/approvals/:requestId/reject",
+    {
+      schema: {
+        params: z.object({ requestId: z.string().uuid() }),
+        body: z.object({
+          reason: z.string().min(3).max(500),
+        }),
+        response: {
+          200: z.object({ id: z.string(), status: z.literal("rejected") }),
+          400: errorResponse,
+          401: errorResponse,
+          403: errorResponse,
+          404: errorResponse,
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!ensureProviderPermission(request, reply, "approval.review")) return;
+      const actor = request.provider!;
+      if (!actor.providerUserId) {
+        return reply.status(403).send({ error: "Forbidden", message: "JWT provider user required for approvals" });
+      }
+      const { requestId } = request.params as { requestId: string };
+      const { reason } = request.body as { reason: string };
+
+      const [req] = await db
+        .select()
+        .from(providerActionRequests)
+        .where(eq(providerActionRequests.id, requestId))
+        .limit(1);
+      if (!req) {
+        return reply.status(404).send({ error: "Not found", message: "Approval request not found" });
+      }
+      if (req.status !== "pending") {
+        return reply.status(400).send({ error: "Bad Request", message: "Only pending requests can be rejected" });
+      }
+
+      await db
+        .update(providerActionRequests)
+        .set({
+          status: "rejected",
+          approvedBy: actor.providerUserId,
+          rejectedReason: reason,
+          rejectedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(providerActionRequests.id, requestId));
+
+      audit({
+        action: "config.changed",
+        actor: actor.providerUserId,
+        resource: requestId,
+        meta: { approvalStatus: "rejected", reason },
+      });
+
+      return { id: requestId, status: "rejected" };
     }
   );
 
