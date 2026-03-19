@@ -52,7 +52,26 @@ So merchant only integrates with Transcaty endpoints.
 
 ---
 
-## 4) HMAC Headers (Required for `/v1/*`)
+## 4) How Merchant Ties Their Customer to Their Service
+
+This is the part that usually confuses teams, so keep it simple:
+
+1. Merchant keeps their own customer ID in their system.
+2. Merchant creates/uses a Transcaty customer wallet under their merchant account.
+3. Merchant stores a mapping in their DB:
+   - `merchant_customer_id` (their ID)
+   - `transcaty_customer_wallet_id` (Transcaty ID)
+4. For future actions (balance view, transfer, refund, transaction history), merchant uses the stored Transcaty wallet ID.
+
+Important:
+
+- Merchant customers never call Transcaty directly.
+- Merchant backend calls Transcaty, then merchant app shows results to customer.
+- Customer data is isolated by merchant context, so one merchant cannot access another merchant's customers.
+
+---
+
+## 5) HMAC Headers (Required for `/v1/*`)
 
 Merchant must send:
 
@@ -70,7 +89,7 @@ Hash algorithm:
 
 ---
 
-## 5) Merchant Webhooks (Yes, Available)
+## 6) Merchant Webhooks (Yes, Available)
 
 Transcaty can notify merchant server after pay-in/payout completion.
 
@@ -100,11 +119,7 @@ Use `null` to remove webhook:
 }
 ```
 
----
-
-## 6) Merchant Webhook Events Sent by Transcaty
-
-Current event types:
+### Event types sent by Transcaty
 
 - `payin.completed`
 - `payin.failed`
