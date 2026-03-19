@@ -7,6 +7,7 @@ import {
   PROVIDER_ROLES,
   canProviderAccess,
   getProviderApiKey,
+  getProviderPermissions,
   hashProviderPassword,
   signProviderToken,
   verifyProviderPassword,
@@ -31,10 +32,17 @@ export async function registerProviderAuthRoutes(app: FastifyInstance) {
         response: {
           200: z.object({
             token: z.string(),
+            authType: z.literal("jwt"),
+            tokenType: z.literal("Bearer"),
+            expiresIn: z.string(),
             user: z.object({
               id: z.string(),
               email: z.string(),
+              fullName: z.string().nullable(),
               role: z.enum(PROVIDER_ROLES),
+              status: z.string(),
+              lastLoginAt: z.string(),
+              permissions: z.array(z.string()),
             }),
           }),
           401: errorResponse,
@@ -49,6 +57,7 @@ export async function registerProviderAuthRoutes(app: FastifyInstance) {
         .select({
           id: providerUsers.id,
           email: providerUsers.email,
+          fullName: providerUsers.fullName,
           passwordHash: providerUsers.passwordHash,
           role: providerUsers.role,
           status: providerUsers.status,
@@ -66,9 +75,10 @@ export async function registerProviderAuthRoutes(app: FastifyInstance) {
         return reply.status(401).send({ error: "Unauthorized", message: "Invalid credentials" });
       }
 
+      const now = new Date();
       await db
         .update(providerUsers)
-        .set({ lastLoginAt: new Date(), updatedAt: new Date() })
+        .set({ lastLoginAt: now, updatedAt: now })
         .where(eq(providerUsers.id, user.id));
 
       const token = signProviderToken({
@@ -79,10 +89,17 @@ export async function registerProviderAuthRoutes(app: FastifyInstance) {
 
       return {
         token,
+        authType: "jwt" as const,
+        tokenType: "Bearer" as const,
+        expiresIn: "12h",
         user: {
           id: user.id,
           email: user.email,
+          fullName: user.fullName,
           role: user.role as ProviderRole,
+          status: user.status,
+          lastLoginAt: now.toISOString(),
+          permissions: getProviderPermissions(user.role as ProviderRole),
         },
       };
     }

@@ -8,6 +8,19 @@ import { getSecret } from "./encryption.js";
 
 export const PROVIDER_ROLES = ["super_admin", "ops", "risk", "finance", "support"] as const;
 export type ProviderRole = (typeof PROVIDER_ROLES)[number];
+export type ProviderPermission =
+  | "merchant.read"
+  | "merchant.status.write"
+  | "merchant.kyc.write"
+  | "customer.read"
+  | "customer.status.write"
+  | "wallet.adjust"
+  | "tx.read"
+  | "tx.reconcile"
+  | "tx.status.write"
+  | "approval.read"
+  | "approval.review"
+  | "provider.users.manage";
 
 export type ProviderContext = {
   providerUserId?: string;
@@ -78,62 +91,52 @@ export function verifyProviderPassword(password: string, hash: string): Promise<
   return bcrypt.compare(password, hash);
 }
 
-export function canProviderAccess(
-  role: ProviderRole,
-  permission:
-    | "merchant.read"
-    | "merchant.status.write"
-    | "merchant.kyc.write"
-    | "customer.read"
-    | "customer.status.write"
-    | "wallet.adjust"
-    | "tx.read"
-    | "tx.reconcile"
-    | "tx.status.write"
-    | "approval.read"
-    | "approval.review"
-    | "provider.users.manage"
-): boolean {
-  const perms: Record<ProviderRole, Set<string>> = {
-    super_admin: new Set([
-      "merchant.read",
-      "merchant.status.write",
-      "merchant.kyc.write",
-      "customer.read",
-      "customer.status.write",
-      "wallet.adjust",
-      "tx.read",
-      "tx.reconcile",
-      "tx.status.write",
-      "approval.read",
-      "approval.review",
-      "provider.users.manage",
-    ]),
-    ops: new Set(["merchant.read", "customer.read", "customer.status.write", "tx.read", "tx.reconcile", "approval.read"]),
-    risk: new Set([
-      "merchant.read",
-      "merchant.status.write",
-      "merchant.kyc.write",
-      "customer.read",
-      "customer.status.write",
-      "tx.read",
-      "tx.reconcile",
-      "tx.status.write",
-      "approval.read",
-      "approval.review",
-    ]),
-    finance: new Set([
-      "merchant.read",
-      "customer.read",
-      "tx.read",
-      "tx.reconcile",
-      "wallet.adjust",
-      "tx.status.write",
-      "approval.read",
-    ]),
-    support: new Set(["merchant.read", "customer.read", "tx.read", "tx.reconcile", "approval.read"]),
-  };
-  return perms[role].has(permission);
+const ROLE_PERMISSIONS: Record<ProviderRole, ProviderPermission[]> = {
+  super_admin: [
+    "merchant.read",
+    "merchant.status.write",
+    "merchant.kyc.write",
+    "customer.read",
+    "customer.status.write",
+    "wallet.adjust",
+    "tx.read",
+    "tx.reconcile",
+    "tx.status.write",
+    "approval.read",
+    "approval.review",
+    "provider.users.manage",
+  ],
+  ops: ["merchant.read", "customer.read", "customer.status.write", "tx.read", "tx.reconcile", "approval.read"],
+  risk: [
+    "merchant.read",
+    "merchant.status.write",
+    "merchant.kyc.write",
+    "customer.read",
+    "customer.status.write",
+    "tx.read",
+    "tx.reconcile",
+    "tx.status.write",
+    "approval.read",
+    "approval.review",
+  ],
+  finance: [
+    "merchant.read",
+    "customer.read",
+    "tx.read",
+    "tx.reconcile",
+    "wallet.adjust",
+    "tx.status.write",
+    "approval.read",
+  ],
+  support: ["merchant.read", "customer.read", "tx.read", "tx.reconcile", "approval.read"],
+};
+
+export function getProviderPermissions(role: ProviderRole): ProviderPermission[] {
+  return ROLE_PERMISSIONS[role];
+}
+
+export function canProviderAccess(role: ProviderRole, permission: ProviderPermission): boolean {
+  return ROLE_PERMISSIONS[role].includes(permission);
 }
 
 function normalizeIp(ip: string): string {
