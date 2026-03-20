@@ -1,105 +1,268 @@
-# Transcaty Merchant Onboarding (Very Simple)
+# Transcaty Merchant API Guide (Simple + Full Examples)
 
-This guide is for your merchants.  
-Goal: start using Transcaty in a few easy steps.
+This is a merchant-facing guide.  
+It shows the full flow with request and response examples.
 
 ---
 
-## 1) What You Get From Transcaty
+## 1) What Merchant Receives
 
-When a merchant is onboarded, they get:
+When a merchant is onboarded, they receive:
 
 - `apiKey`
 - `secret`
-- `baseUrl` (your API URL)
+- `baseUrl`
 
-They use these to call Transcaty APIs.
+Example:
 
----
-
-## 2) How Payment Flow Works
-
-Merchant talks to **Transcaty**.  
-Transcaty talks to **Payok**.
-
-So merchant only integrates with Transcaty endpoints.
+```text
+apiKey: transcaty_test_xxxxxxxxxxxxxxxxx
+secret: 64-char-secret-hex
+baseUrl: https://api.transcaty.com
+```
 
 ---
 
-## 3) Main Endpoints Merchants Use
+## 2) Required Headers (`/v1/*`)
 
-### Auth / identity
-
-- `GET /v1/me`
-
-### Balance
-
-- `GET /v1/balance`
-
-### Pay-in (customer pays merchant)
-
-- `POST /v1/payins`
-- `GET /v1/payins/:id`
-
-### Payout (merchant sends money out)
-
-- `POST /v1/payouts`
-- `GET /v1/payouts/:id`
-
-### Transactions
-
-- `GET /v1/transactions`
-
----
-
-## 4) How Merchant Ties Their Customer to Their Service
-
-This is the part that usually confuses teams, so keep it simple:
-
-1. Merchant keeps their own customer ID in their system.
-2. Merchant creates/uses a Transcaty customer wallet under their merchant account.
-3. Merchant stores a mapping in their DB:
-   - `merchant_customer_id` (their ID)
-   - `transcaty_customer_wallet_id` (Transcaty ID)
-4. For future actions (balance view, transfer, refund, transaction history), merchant uses the stored Transcaty wallet ID.
-
-Important:
-
-- Merchant customers never call Transcaty directly.
-- Merchant backend calls Transcaty, then merchant app shows results to customer.
-- Customer data is isolated by merchant context, so one merchant cannot access another merchant's customers.
-
----
-
-## 5) HMAC Headers (Required for `/v1/*`)
-
-Merchant must send:
+Every merchant API call to `/v1/*` must include:
 
 - `X-Transcaty-Key`
 - `X-Transcaty-Signature`
 - `X-Transcaty-Timestamp`
+- `Content-Type: application/json` (for POST/PATCH)
 
 Signature payload format:
 
-`<timestamp>.<raw_json_body>`
+```text
+<timestamp>.<raw_json_body>
+```
 
-Hash algorithm:
+Algorithm:
 
-`HMAC-SHA256` with merchant `secret`.
+```text
+HMAC-SHA256 using merchant secret
+```
 
 ---
 
-## 6) Merchant Webhooks (Yes, Available)
+## 3) Step-by-Step API Flow
 
-Transcaty can notify merchant server after pay-in/payout completion.
+## 3.1 Auth Check
 
-### Configure merchant webhook URL
+Request:
 
-Use:
+`GET /v1/me`
 
-- `PATCH /v1/me/webhook`
+Response (200):
 
-Body example:
+```json
+{
+  "merchantId": "85305e39-5cd5-4e81-b5ea-58ba10c0f110",
+  "scopes": ["payin:create", "payout:create", "balance:read", "*"],
+  "environment": "test"
+}
+```
+
+---
+
+## 3.2 Get Balance
+
+Request:
+
+`GET /v1/balance`
+
+Response (200):
+
+```json
+{
+  "balance": "5000.00",
+  "availableBalance": "5000.00",
+  "pendingBalance": "0.00",
+  "currency": "BDT",
+  "lastUpdated": "2026-03-20T10:00:00.000Z",
+  "limits": {
+    "payin": { "min": 200, "max": 25000 },
+    "payout": { "min": 100, "max": 25000 }
+  }
+}
+```
+
+---
+
+## 3.3 Create Pay-in
+
+Request:
+
+`POST /v1/payins`
+
+```json
+{
+  "amount": "500.00",
+  "paymentMethodCode": "BKASH",
+  "customer": {
+    "name": "Rahim",
+    "email": "rahim@example.com",
+    "phone": "01712345678",
+    "deviceId": "device-123"
+  },
+  "goodsInfo": {
+    "name": "Order #1001",
+    "id": "1001",
+    "price": "500.00"
+  }
+}
+```
+
+Response (200):
+
+```json
+{
+  "transactionId": "d562be7c-00d4-4d63-bf50-93f72b437222",
+  "status": "pending",
+  "amount": "500.00",
+  "platformOrderId": "2026031807000000129",
+  "paymentInfo": {
+    "content": "https://payment-link.example",
+    "type": "url",
+    "expiredTime": "20260320120000"
+  },
+  "expiresAt": "2026-03-20T12:00:00.000Z"
+}
+```
+
+Use `transactionId` as your main reference in your system.
+
+---
+
+## 3.4 Check Pay-in Status
+
+Request:
+
+`GET /v1/payins/:id`
+
+Example:
+
+`GET /v1/payins/d562be7c-00d4-4d63-bf50-93f72b437222`
+
+Response (200):
+
+```json
+{
+  "id": "d562be7c-00d4-4d63-bf50-93f72b437222",
+  "transactionId": "d562be7c-00d4-4d63-bf50-93f72b437222",
+  "status": "success",
+  "amount": "500.00",
+  "paidAmount": "500.00",
+  "platformOrderId": "2026031807000000129",
+  "paymentMethod": "BKASH",
+  "createdAt": "2026-03-20T11:00:00.000Z",
+  "completedAt": "2026-03-20T11:02:00.000Z"
+}
+```
+
+---
+
+## 3.5 Create Payout
+
+Request:
+
+`POST /v1/payouts`
+
+```json
+{
+  "amount": "300.00",
+  "benificiaryAccountInfo": {
+    "number": "01712345678",
+    "holderName": "01712345678",
+    "orgName": "BKASH",
+    "orgCode": "BKASH",
+    "orgId": "BKASH"
+  },
+  "cardHolderInfo": {
+    "firstName": "Rahim",
+    "lastName": "Uddin",
+    "email": "rahim@example.com",
+    "phone": "01712345678"
+  }
+}
+```
+
+Response (200):
+
+```json
+{
+  "transactionId": "3bec8916-0ea6-4f8d-891a-e5e14a0dcbf9",
+  "status": "pending",
+  "amount": "300.00",
+  "platformOrderId": "2026031807090000044",
+  "estimatedCompletion": "2026-03-20T12:05:00.000Z"
+}
+```
+
+---
+
+## 3.6 Check Payout Status
+
+Request:
+
+`GET /v1/payouts/:id`
+
+Example:
+
+`GET /v1/payouts/3bec8916-0ea6-4f8d-891a-e5e14a0dcbf9`
+
+Response (200):
+
+```json
+{
+  "id": "3bec8916-0ea6-4f8d-891a-e5e14a0dcbf9",
+  "transactionId": "3bec8916-0ea6-4f8d-891a-e5e14a0dcbf9",
+  "status": "success",
+  "amount": "300.00",
+  "platformOrderId": "2026031807090000044",
+  "createdAt": "2026-03-20T12:00:00.000Z",
+  "completedAt": "2026-03-20T12:01:00.000Z"
+}
+```
+
+---
+
+## 3.7 List Transactions
+
+Request:
+
+`GET /v1/transactions?type=payin&limit=10&offset=0`
+
+Response (200):
+
+```json
+{
+  "items": [
+    {
+      "id": "d562be7c-00d4-4d63-bf50-93f72b437222",
+      "type": "payin",
+      "status": "success",
+      "amount": "500.00",
+      "paidAmount": "500.00",
+      "platformOrderId": "2026031807000000129",
+      "createdAt": "2026-03-20T11:00:00.000Z",
+      "completedAt": "2026-03-20T11:02:00.000Z"
+    }
+  ],
+  "total": 1,
+  "limit": 10,
+  "offset": 0
+}
+```
+
+---
+
+## 3.8 Configure Merchant Webhook
+
+### Request
+
+`PATCH /v1/me/webhook`
 
 ```json
 {
@@ -107,11 +270,18 @@ Body example:
 }
 ```
 
-Response includes:
+### Response (200)
 
-- `webhookSecret` (save this safely)
+```json
+{
+  "webhookUrl": "https://merchant.com/webhooks/transcaty",
+  "webhookSecret": "generated-secret-value"
+}
+```
 
-Use `null` to remove webhook:
+Save `webhookSecret` securely.
+
+Disable webhook:
 
 ```json
 {
@@ -119,61 +289,82 @@ Use `null` to remove webhook:
 }
 ```
 
-### Event types sent by Transcaty
+---
+
+## 4) Webhook Events Merchant Receives
+
+Event types:
 
 - `payin.completed`
 - `payin.failed`
 - `payout.completed`
 - `payout.failed`
 
-Headers sent by Transcaty:
+Webhook headers:
 
-- `X-Transcaty-Webhook-Signature` (HMAC SHA256)
 - `X-Transcaty-Event`
+- `X-Transcaty-Webhook-Signature`
 
-Payload shape:
+Example payload:
 
 ```json
 {
   "event": "payin.completed",
-  "transactionId": "uuid",
+  "transactionId": "d562be7c-00d4-4d63-bf50-93f72b437222",
   "status": "success",
-  "amount": "500",
-  "paidAmount": "500",
+  "amount": "500.00",
+  "paidAmount": "500.00",
   "platformOrderId": "2026031807000000129",
-  "timestamp": "2026-03-19T10:00:00.000Z"
+  "timestamp": "2026-03-20T11:02:00.000Z"
 }
 ```
 
-For failed events, `paidAmount` may be absent.
+---
+
+## 5) Customer Mapping (Important)
+
+Merchant should map internal customer IDs to Transcaty wallet IDs.
+
+Store in merchant DB:
+
+- `merchant_customer_id`
+- `transcaty_customer_wallet_id`
+
+Use this mapping in your own app/services when showing customer balances and histories.
 
 ---
 
-## 7) Important Notes for Merchants
+## 6) Common Errors
 
-- Use `transactionId` from Transcaty as your main reference.
-- `platformOrderId` is provider-side reference (for support/escalation).
-- Do not call Payok directly from merchant integration.
-- If webhook is delayed, poll `GET /v1/payins/:id` or `GET /v1/payouts/:id`.
+### 401 Unauthorized
 
----
+- Invalid/missing HMAC headers
+- Wrong `apiKey` or `secret`
+- Bad timestamp
 
-## 8) Super Quick Test (Merchant)
+### 400 Bad Request
 
-1. `GET /v1/me`
-2. `GET /v1/balance`
-3. `POST /v1/payins`
-4. Complete payer step from `paymentInfo.content`
-5. `GET /v1/payins/:id` until `success`
-6. `POST /v1/payouts`
-7. `GET /v1/payouts/:id` until final state
-8. Set webhook URL with `PATCH /v1/me/webhook` and confirm events are received
+- Amount out of allowed range
+- Invalid body fields
+
+### 403 Forbidden
+
+- KYC or permission restriction
 
 ---
 
-## 9) Existing Detailed Docs
+## 7) Quick Go-Live Checklist
 
-For deeper testing examples:
+1. Auth check works (`GET /v1/me`)
+2. Balance check works (`GET /v1/balance`)
+3. Pay-in create + status flow works
+4. Payout create + status flow works
+5. Webhook endpoint receives and verifies signatures
+6. Retry/idempotency handling is implemented in merchant backend
+
+---
+
+## 8) More Detailed References
 
 - `docs/POSTMAN_MERCHANT_API_GUIDE.md`
 - `docs/PORTAL_FRONTEND_SPEC.md`

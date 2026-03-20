@@ -703,6 +703,59 @@ Requires `kycStatus === 'verified'`.
 
 ---
 
+### 25. Payouts – Create (merchant dashboard)
+
+**POST** `/portal/me/payouts`
+
+Creates a payout request from merchant dashboard using portal JWT auth.
+
+**Body**
+
+```json
+{
+  "environment": "test",
+  "amount": "300.00",
+  "benificiaryAccountInfo": {
+    "number": "01712345678",
+    "holderName": "01712345678",
+    "orgName": "BKASH",
+    "orgCode": "BKASH",
+    "orgId": "BKASH"
+  },
+  "cardHolderInfo": {
+    "firstName": "Rahim",
+    "lastName": "Uddin",
+    "email": "rahim@example.com",
+    "phone": "01712345678"
+  }
+}
+```
+
+| Field | Required | Notes |
+|-------|----------|-------|
+| environment | no | `test` or `live` (default `test`) |
+| amount | yes | Must be within payout limits |
+| benificiaryAccountInfo | yes | Recipient account details |
+| cardHolderInfo | yes | Sender identity details |
+
+**Success (201)**
+
+```json
+{
+  "transactionId": "uuid",
+  "status": "pending",
+  "amount": "300.00",
+  "platformOrderId": "2026031807090000044",
+  "environment": "test",
+  "recipient": { "masked": "****5678" },
+  "estimatedCompletion": null
+}
+```
+
+**Error (403)** for live environment when merchant is not active or KYC is not verified.
+
+---
+
 ## Error format
 
 All errors follow:

@@ -5,16 +5,24 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { eq, and, count, desc } from "drizzle-orm";
 import { db } from "../../src/db/index.js";
-import { transactions } from "../../src/db/schema/index.js";
+import { merchants, transactions } from "../../src/db/schema/index.js";
 import {
   transferToCustomer,
   refundToCustomer,
 } from "../../services/operations/transfers.js";
+import { createPayoutOrder } from "../../services/domestic/bangladesh/payout.js";
+import { LIMITS } from "../../src/lib/limits.js";
 
 const errorResponse = z.object({
   error: z.string(),
   message: z.string().optional(),
 });
+
+function maskRecipient(value: string): string {
+  const v = value.replace(/\s/g, "");
+  if (v.length <= 4) return `****${v}`;
+  return `****${v.slice(-4)}`;
+}
 
 export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
   app.get(
@@ -192,6 +200,127 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
         createdAt: tx.createdAt.toISOString(),
         completedAt: tx.status === "success" ? tx.updatedAt.toISOString() : null,
       };
+    }
+  );
+
+  app.post(
+    "/portal/me/payouts",
+    {
+      schema: {
+        body: z.object({
+          environment: z.enum(["test", "live"]).default("test"),
+          amount: z.string(),
+          benificiaryAccountInfo: z.object({
+            number: z.string(),
+            orgId: z.string(),
+            orgCode: z.string(),
+            orgName: z.string(),
+            holderName: z.string(),
+          }),
+          cardHolderInfo: z.object({
+            firstName: z.string(),
+            lastName: z.string(),
+            email: z.string().email(),
+            phone: z.string(),
+          }),
+        }),
+        response: {
+          201: z.object({
+            transactionId: z.string(),
+            status: z.string(),
+            amount: z.string(),
+            platformOrderId: z.string().nullable(),
+            environment: z.enum(["test", "live"]),
+            recipient: z.object({ masked: z.string() }),
+            estimatedCompletion: z.string().nullable(),
+          }),
+          400: errorResponse,
+          401: errorResponse,
+          403: errorResponse,
+          500: errorResponse,
+        },
+      },
+    },
+    async (request, reply) => {
+      const user = request.portalUser;
+      if (!user) return reply.status(401).send({ error: "Unauthorized" });
+
+      const body = request.body as {
+        environment: "test" | "live";
+        amount: string;
+        benificiaryAccountInfo: {
+          number: string;
+          orgId: string;
+          orgCode: string;
+          orgName: string;
+          holderName: string;
+        };
+        cardHolderInfo: {
+          firstName: string;
+          lastName: string;
+          email: string;
+          phone: string;
+        };
+      };
+
+      const amount = Number(body.amount);
+      if (!Number.isFinite(amount)) {
+        return reply.status(400).send({ error: "Bad Request", message: "Invalid amount" });
+      }
+      if (amount < LIMITS.payout.min || amount > LIMITS.payout.max) {
+        return reply
+          .status(400)
+          .send({ error: "Bad Request", message: `Amount must be between ${LIMITS.payout.min} and ${LIMITS.payout.max} BDT` });
+      }
+
+      if (body.environment === "live") {
+        const [merchant] = await db
+          .select({ status: merchants.status, kycStatus: merchants.kycStatus })
+          .from(merchants)
+          .where(eq(merchants.id, user.merchantId))
+          .limit(1);
+        if (!merchant) return reply.status(401).send({ error: "Unauthorized" });
+        if (merchant.status !== "active") {
+          return reply.status(403).send({ error: "Forbidden", message: "Merchant account is not active" });
+        }
+        if (merchant.kycStatus !== "verified") {
+          return reply.status(403).send({ error: "Forbidden", message: "KYC verification required for live payouts" });
+        }
+      }
+
+      const baseUrl = process.env.APP_BASE_URL ?? `http://localhost:${process.env.PORT ?? 3000}`;
+      try {
+        const result = await createPayoutOrder({
+          merchantId: user.merchantId,
+          environment: body.environment,
+          amount: body.amount,
+          baseUrl,
+          benificiaryAccountInfo: body.benificiaryAccountInfo,
+          cardHolderInfo: body.cardHolderInfo,
+        });
+
+        return reply.status(201).send({
+          transactionId: result.transactionId,
+          status: result.status ?? "pending",
+          amount: body.amount,
+          platformOrderId: result.platformOrderId ?? null,
+          environment: body.environment,
+          recipient: { masked: maskRecipient(body.benificiaryAccountInfo.number) },
+          estimatedCompletion: null,
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        const lower = msg.toLowerCase();
+        if (
+          lower.includes("insufficient balance") ||
+          lower.includes("failed") ||
+          lower.includes("invalid") ||
+          lower.includes("not found")
+        ) {
+          return reply.status(400).send({ error: "Bad Request", message: msg });
+        }
+        return reply.status(500).send({ error: "Internal", message: msg });
+      }
     }
   );
 
