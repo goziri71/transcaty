@@ -18,6 +18,7 @@ import {
   payokPayoutInquiry,
 } from "../../services/domestic/bangladesh/provider/client.js";
 import { PROVIDER_ROLES, canProviderAccess } from "../../src/lib/provider-auth.js";
+import { getDefaultPayokEnvironment, type PayokEnvironment } from "../../services/domestic/bangladesh/provider/config.js";
 
 const errorResponse = z.object({
   error: z.string(),
@@ -119,6 +120,17 @@ function getApprovalRiskLevel(params: {
   }
   if (params.actionType === "transaction_status_change" && params.force) return "high";
   return "normal";
+}
+
+function getTransactionPayokEnvironment(metadata: string | null): PayokEnvironment {
+  const fallback = getDefaultPayokEnvironment();
+  if (!metadata) return fallback;
+  try {
+    const parsed = JSON.parse(metadata) as { environment?: string };
+    return parsed.environment === "test" || parsed.environment === "live" ? parsed.environment : fallback;
+  } catch {
+    return fallback;
+  }
 }
 
 export async function registerProviderRoutes(app: FastifyInstance) {
@@ -1311,6 +1323,7 @@ export async function registerProviderRoutes(app: FastifyInstance) {
             type: z.string(),
             localStatus: z.string(),
             platformOrderId: z.string().nullable(),
+            environment: z.enum(["test", "live"]),
             payok: z
               .object({
                 code: z.string().nullable(),
@@ -1351,13 +1364,14 @@ export async function registerProviderRoutes(app: FastifyInstance) {
 
       let inquiryStatus: number;
       let inquiryBody: unknown;
+      const txEnvironment = getTransactionPayokEnvironment(txRow.metadata);
       try {
         if (txRow.type === "payin") {
-          const res = await payokPayinInquiry(txRow.id);
+          const res = await payokPayinInquiry(txRow.id, txEnvironment);
           inquiryStatus = res.status;
           inquiryBody = res.body;
         } else {
-          const res = await payokPayoutInquiry(txRow.id);
+          const res = await payokPayoutInquiry(txRow.id, txEnvironment);
           inquiryStatus = res.status;
           inquiryBody = res.body;
         }
@@ -1389,6 +1403,7 @@ export async function registerProviderRoutes(app: FastifyInstance) {
         meta: {
           type: txRow.type,
           localStatus: txRow.status,
+          environment: txEnvironment,
           payokCode: outcome.code ?? null,
           payokStatus: outcome.status ?? null,
           suggestedLocalStatus,
@@ -1401,6 +1416,7 @@ export async function registerProviderRoutes(app: FastifyInstance) {
         type: txRow.type,
         localStatus: txRow.status,
         platformOrderId: txRow.externalId,
+        environment: txEnvironment,
         payok: {
           code: outcome.code ?? null,
           status: outcome.status ?? null,

@@ -6,9 +6,11 @@ import { db } from "../../../src/db/index.js";
 import { transactions, wallets, ledgerEntries } from "../../../src/db/schema/index.js";
 import { payokPayinCreateOrder } from "./provider/client.js";
 import { audit } from "../../../src/lib/audit.js";
+import type { PayokEnvironment } from "./provider/config.js";
 
 export async function createPayinOrder(params: {
   merchantId: string;
+  environment: PayokEnvironment;
   amount: string;
   paymentMethodCode: string;
   baseUrl: string;
@@ -23,7 +25,7 @@ export async function createPayinOrder(params: {
       status: "pending",
       amount: params.amount,
       currency: "BDT",
-      metadata: JSON.stringify({ paymentMethodCode: params.paymentMethodCode }),
+      metadata: JSON.stringify({ paymentMethodCode: params.paymentMethodCode, environment: params.environment }),
     })
     .returning();
 
@@ -33,6 +35,7 @@ export async function createPayinOrder(params: {
   const returnUrl = params.baseUrl;
 
   const { status, body } = await payokPayinCreateOrder({
+    environment: params.environment,
     merchantOrderId: tx.id,
     amount: params.amount,
     paymentMethodCode: params.paymentMethodCode,

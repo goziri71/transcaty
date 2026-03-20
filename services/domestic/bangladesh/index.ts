@@ -5,7 +5,7 @@
 export { createPayinOrder, handlePayinCallback } from "./payin.js";
 export { createPayoutOrder, handlePayoutCallback } from "./payout.js";
 export { payokBalanceQuery } from "./provider/client.js";
-export { getPayokConfig } from "./provider/config.js";
+export { getPayokConfig, getPayokCallbackPublicKeys } from "./provider/config.js";
 export {
   verifyPayokCallback,
   verifyPayokCallbackWithFallbacks,

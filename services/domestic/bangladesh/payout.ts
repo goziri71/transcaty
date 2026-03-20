@@ -6,9 +6,11 @@ import { db } from "../../../src/db/index.js";
 import { transactions, wallets, ledgerEntries } from "../../../src/db/schema/index.js";
 import { payokPayoutAccountInquiry, payokPayoutCreate } from "./provider/client.js";
 import { audit } from "../../../src/lib/audit.js";
+import type { PayokEnvironment } from "./provider/config.js";
 
 export async function createPayoutOrder(params: {
   merchantId: string;
+  environment: PayokEnvironment;
   amount: string;
   baseUrl: string;
   benificiaryAccountInfo: {
@@ -45,13 +47,14 @@ export async function createPayoutOrder(params: {
       status: "pending",
       amount: params.amount,
       currency: "BDT",
-      metadata: JSON.stringify({ benificiaryAccountInfo: params.benificiaryAccountInfo }),
+      metadata: JSON.stringify({ benificiaryAccountInfo: params.benificiaryAccountInfo, environment: params.environment }),
     })
     .returning();
 
   if (!tx) throw new Error("Failed to create transaction");
 
   const { status: inquiryStatus, body: inquiryBody } = await payokPayoutAccountInquiry({
+    environment: params.environment,
     merchantOrderId: tx.id,
     amount: params.amount,
     benificiaryAccountInfo: params.benificiaryAccountInfo,
@@ -66,6 +69,7 @@ export async function createPayoutOrder(params: {
   const notificationUrl = `${params.baseUrl.replace(/\/$/, "")}/webhooks/payok/payout`;
 
   const { status: createStatus, body: createBody } = await payokPayoutCreate({
+    environment: params.environment,
     merchantOrderId: tx.id,
     amount: params.amount,
     inquiryToken: inquiry.inquiryToken,

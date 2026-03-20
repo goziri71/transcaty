@@ -34,7 +34,7 @@ import {
   handlePayinCallback,
   createPayoutOrder,
   handlePayoutCallback,
-  getPayokConfig,
+  getPayokCallbackPublicKeys,
   verifyPayokCallbackWithFallbacks,
   verifyPayokCallbackWithFallbacksDebug,
 } from "./services/domestic/bangladesh/index.js";
@@ -570,16 +570,19 @@ export async function buildApp() {
   app.post(PAYIN_WEBHOOK_PATH, async (request, reply) => {
     const rawBody = (request as FastifyRequest & { rawBody?: string }).rawBody ?? "";
     const sign = (request.headers.sign ?? request.headers.Sign) as string | undefined;
-    const config = getPayokConfig();
+    const callbackPublicKeys = getPayokCallbackPublicKeys();
     const verifyDebug =
       !skipWebhookVerify && !!sign && debugWebhookBody
-        ? verifyPayokCallbackWithFallbacksDebug(rawBody, payinPathCandidates, sign, config.platformPublicKey)
+        ? callbackPublicKeys
+            .map((key) => verifyPayokCallbackWithFallbacksDebug(rawBody, payinPathCandidates, sign, key))
+            .find((d) => d.verified) ?? null
         : null;
     const verified =
       skipWebhookVerify ||
-      (!!sign &&
-        (verifyDebug?.verified ??
-          verifyPayokCallbackWithFallbacks(rawBody, payinPathCandidates, sign, config.platformPublicKey)));
+      (!!sign && (
+        verifyDebug?.verified ??
+        callbackPublicKeys.some((key) => verifyPayokCallbackWithFallbacks(rawBody, payinPathCandidates, sign, key))
+      ));
     if (!verified) {
       const debugPayload: Record<string, unknown> = {
         hasSign: !!sign,
@@ -623,16 +626,19 @@ export async function buildApp() {
   app.post(PAYOUT_WEBHOOK_PATH, async (request, reply) => {
     const rawBody = (request as FastifyRequest & { rawBody?: string }).rawBody ?? "";
     const sign = (request.headers.sign ?? request.headers.Sign) as string | undefined;
-    const config = getPayokConfig();
+    const callbackPublicKeys = getPayokCallbackPublicKeys();
     const verifyDebug =
       !skipWebhookVerify && !!sign && debugWebhookBody
-        ? verifyPayokCallbackWithFallbacksDebug(rawBody, payoutPathCandidates, sign, config.platformPublicKey)
+        ? callbackPublicKeys
+            .map((key) => verifyPayokCallbackWithFallbacksDebug(rawBody, payoutPathCandidates, sign, key))
+            .find((d) => d.verified) ?? null
         : null;
     const verified =
       skipWebhookVerify ||
-      (!!sign &&
-        (verifyDebug?.verified ??
-          verifyPayokCallbackWithFallbacks(rawBody, payoutPathCandidates, sign, config.platformPublicKey)));
+      (!!sign && (
+        verifyDebug?.verified ??
+        callbackPublicKeys.some((key) => verifyPayokCallbackWithFallbacks(rawBody, payoutPathCandidates, sign, key))
+      ));
     if (!verified) {
       const debugPayload: Record<string, unknown> = {
         hasSign: !!sign,
@@ -750,6 +756,7 @@ export async function buildApp() {
       try {
         const result = await createPayinOrder({
           merchantId: m.merchantId,
+          environment: m.environment,
           amount: body.amount,
           paymentMethodCode: body.paymentMethodCode,
           baseUrl,
@@ -861,6 +868,7 @@ export async function buildApp() {
       try {
         const result = await createPayoutOrder({
           merchantId: m.merchantId,
+          environment: m.environment,
           amount: body.amount,
           baseUrl,
           benificiaryAccountInfo: body.benificiaryAccountInfo,
