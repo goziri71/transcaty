@@ -18,6 +18,8 @@ const errorResponse = z.object({
   message: z.string().optional(),
 });
 
+const metadataSchema = z.record(z.any());
+
 function maskRecipient(value: string): string {
   const v = value.replace(/\s/g, "");
   if (v.length <= 4) return `****${v}`;
@@ -149,7 +151,7 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
             platformOrderId: z.string().nullable(),
             customerWalletId: z.string().nullable(),
             refundOfTransactionId: z.string().nullable(),
-            metadata: z.record(z.string()).nullable(),
+            metadata: metadataSchema.nullable(),
             createdAt: z.string(),
             completedAt: z.string().nullable(),
           }),
@@ -176,12 +178,15 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
         return reply.status(404).send({ error: "Not found", message: "Transaction not found" });
       }
 
-      let metadata: Record<string, string> | null = null;
+      let metadata: Record<string, unknown> | null = null;
       let refundOfTransactionId: string | null = null;
       if (tx.metadata) {
         try {
-          metadata = JSON.parse(tx.metadata) as Record<string, string>;
-          refundOfTransactionId = metadata?.refundOfTransactionId ?? null;
+          metadata = JSON.parse(tx.metadata) as Record<string, unknown>;
+          refundOfTransactionId =
+            typeof metadata?.refundOfTransactionId === "string"
+              ? metadata.refundOfTransactionId
+              : null;
         } catch {
           metadata = {};
         }
