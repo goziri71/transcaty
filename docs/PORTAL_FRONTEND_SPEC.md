@@ -743,12 +743,25 @@ Creates a payout request from merchant dashboard using portal JWT auth.
 ```json
 {
   "transactionId": "uuid",
+  "reference": "uuid",
   "status": "pending",
   "amount": "300.00",
   "platformOrderId": "2026031807090000044",
   "environment": "test",
   "recipient": { "masked": "****5678" },
   "estimatedCompletion": null
+}
+```
+
+**Error (400)**
+
+```json
+{
+  "error": "Bad Request",
+  "message": "Payok account inquiry failed: ...",
+  "transactionId": "uuid",
+  "reference": "uuid",
+  "platformOrderId": null
 }
 ```
 

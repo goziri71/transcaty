@@ -8,6 +8,18 @@ import { payokPayoutAccountInquiry, payokPayoutCreate } from "./provider/client.
 import { audit } from "../../../src/lib/audit.js";
 import type { PayokEnvironment } from "./provider/config.js";
 
+export class PayoutCreationError extends Error {
+  transactionId: string;
+  platformOrderId: string | null;
+
+  constructor(message: string, transactionId: string, platformOrderId?: string | null) {
+    super(message);
+    this.name = "PayoutCreationError";
+    this.transactionId = transactionId;
+    this.platformOrderId = platformOrderId ?? null;
+  }
+}
+
 export async function createPayoutOrder(params: {
   merchantId: string;
   environment: PayokEnvironment;
@@ -62,8 +74,23 @@ export async function createPayoutOrder(params: {
 
   const inquiry = inquiryBody as { code?: string; inquiryToken?: string; message?: string };
   if (inquiryStatus !== 200 || inquiry.code === "FAIL" || !inquiry.inquiryToken) {
-    await db.update(transactions).set({ status: "failed" }).where(eq(transactions.id, tx.id));
-    throw new Error(`Payok account inquiry failed: ${inquiry.message ?? JSON.stringify(inquiry)}`);
+    const prevMetadata = tx.metadata ? (JSON.parse(tx.metadata) as Record<string, unknown>) : {};
+    await db
+      .update(transactions)
+      .set({
+        status: "failed",
+        metadata: JSON.stringify({
+          ...prevMetadata,
+          failedStage: "account_inquiry",
+          failureReason: inquiry.message ?? JSON.stringify(inquiry),
+        }),
+        updatedAt: new Date(),
+      })
+      .where(eq(transactions.id, tx.id));
+    throw new PayoutCreationError(
+      `Payok account inquiry failed: ${inquiry.message ?? JSON.stringify(inquiry)}`,
+      tx.id
+    );
   }
 
   const notificationUrl = `${params.baseUrl.replace(/\/$/, "")}/webhooks/payok/payout`;
@@ -80,8 +107,25 @@ export async function createPayoutOrder(params: {
 
   const create = createBody as { code?: string; status?: string; platformOrderId?: string };
   if (createStatus !== 200 || create.code === "FAIL") {
-    await db.update(transactions).set({ status: "failed" }).where(eq(transactions.id, tx.id));
-    throw new Error(`Payok create payout failed: ${JSON.stringify(create)}`);
+    const prevMetadata = tx.metadata ? (JSON.parse(tx.metadata) as Record<string, unknown>) : {};
+    await db
+      .update(transactions)
+      .set({
+        status: "failed",
+        externalId: create.platformOrderId,
+        metadata: JSON.stringify({
+          ...prevMetadata,
+          failedStage: "create_payout",
+          failureReason: JSON.stringify(create),
+        }),
+        updatedAt: new Date(),
+      })
+      .where(eq(transactions.id, tx.id));
+    throw new PayoutCreationError(
+      `Payok create payout failed: ${JSON.stringify(create)}`,
+      tx.id,
+      create.platformOrderId
+    );
   }
 
   await db

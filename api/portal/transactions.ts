@@ -10,12 +10,21 @@ import {
   transferToCustomer,
   refundToCustomer,
 } from "../../services/operations/transfers.js";
-import { createPayoutOrder } from "../../services/domestic/bangladesh/payout.js";
+import {
+  createPayoutOrder,
+  PayoutCreationError,
+} from "../../services/domestic/bangladesh/payout.js";
 import { LIMITS } from "../../src/lib/limits.js";
 
 const errorResponse = z.object({
   error: z.string(),
   message: z.string().optional(),
+});
+
+const payoutErrorResponse = errorResponse.extend({
+  transactionId: z.string().optional(),
+  reference: z.string().optional(),
+  platformOrderId: z.string().nullable().optional(),
 });
 
 const metadataSchema = z.record(z.any());
@@ -232,6 +241,7 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
         response: {
           201: z.object({
             transactionId: z.string(),
+            reference: z.string(),
             status: z.string(),
             amount: z.string(),
             platformOrderId: z.string().nullable(),
@@ -239,7 +249,7 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
             recipient: z.object({ masked: z.string() }),
             estimatedCompletion: z.string().nullable(),
           }),
-          400: errorResponse,
+          400: payoutErrorResponse,
           401: errorResponse,
           403: errorResponse,
           500: errorResponse,
@@ -306,6 +316,7 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
 
         return reply.status(201).send({
           transactionId: result.transactionId,
+          reference: result.transactionId,
           status: result.status ?? "pending",
           amount: body.amount,
           platformOrderId: result.platformOrderId ?? null,
@@ -315,6 +326,15 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
         });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
+        if (err instanceof PayoutCreationError) {
+          return reply.status(400).send({
+            error: "Bad Request",
+            message: msg,
+            transactionId: err.transactionId,
+            reference: err.transactionId,
+            platformOrderId: err.platformOrderId ?? null,
+          });
+        }
         const lower = msg.toLowerCase();
         if (
           lower.includes("insufficient balance") ||
