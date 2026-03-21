@@ -3,6 +3,12 @@ import "dotenv/config"; // Must be first - loads .env before other imports
 import { buildApp } from "../app.js";
 import { queue } from "./lib/queue.js";
 import { getMerchantWebhookJobName, sendMerchantWebhook, type WebhookEvent } from "./lib/merchant-webhook.js";
+import {
+  TRANSACTIONAL_EMAIL_JOB,
+  deliverTransactionalEmail,
+  type TransactionalEmailPayload,
+} from "./lib/transactional-email-queue.js";
+import { disconnectRedis } from "./lib/redis.js";
 
 const PORT = Number(process.env.PORT) || 3000;
 const HOST = process.env.HOST || "0.0.0.0";
@@ -36,6 +42,16 @@ async function main() {
     }
   );
 
+  await queue.work(
+    TRANSACTIONAL_EMAIL_JOB,
+    { batchSize: 3 },
+    async (jobs) => {
+      for (const job of jobs) {
+        await deliverTransactionalEmail(job.data as TransactionalEmailPayload);
+      }
+    }
+  );
+
   const app = await buildApp();
 
   try {
@@ -50,6 +66,7 @@ async function main() {
     app.log.info("Shutting down...");
     await app.close();
     await queue.stop();
+    await disconnectRedis();
     process.exit(0);
   };
 

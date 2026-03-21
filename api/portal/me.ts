@@ -11,6 +11,7 @@ import {
   merchantBusinessProfiles,
   merchantPersons,
   merchantKycDocuments,
+  merchantUsers,
   wallets,
 } from "../../src/db/schema/index.js";
 import { LIMITS } from "../../src/lib/limits.js";
@@ -45,6 +46,8 @@ export async function registerPortalMeRoutes(app: FastifyInstance) {
               .nullable(),
             personsCount: z.number(),
             documentsCount: z.number(),
+            mfaEnabled: z.boolean(),
+            mfaPendingSetup: z.boolean(),
           }),
           401: errorResponse,
           404: errorResponse,
@@ -54,6 +57,15 @@ export async function registerPortalMeRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const user = request.portalUser;
       if (!user) return reply.status(401).send({ error: "Unauthorized" });
+
+      const [mu] = await db
+        .select({
+          mfaEnabled: merchantUsers.mfaEnabled,
+          mfaPending: merchantUsers.mfaPending,
+        })
+        .from(merchantUsers)
+        .where(eq(merchantUsers.id, user.merchantUserId))
+        .limit(1);
 
       const [merchant] = await db
         .select({
@@ -114,6 +126,8 @@ export async function registerPortalMeRoutes(app: FastifyInstance) {
           : null,
         personsCount: Number(personsResult?.count ?? 0),
         documentsCount: Number(documentsResult?.count ?? 0),
+        mfaEnabled: mu?.mfaEnabled ?? false,
+        mfaPendingSetup: !!(mu?.mfaPending && !mu?.mfaEnabled),
       });
     }
   );

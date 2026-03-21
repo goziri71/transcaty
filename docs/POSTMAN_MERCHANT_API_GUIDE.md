@@ -2,6 +2,20 @@
 
 > A simple, step-by-step guide to test the full merchant flow in Postman. Written for beginners.
 
+## Scope (important)
+
+This guide covers **only** the **Merchant API** under **`/v1/*`**, authenticated with **HMAC** headers (`X-Transcaty-Key`, `X-Transcaty-Signature`, `X-Transcaty-Timestamp`).
+
+The following **do not change** merchant API contracts, signing, or routes:
+
+| Surface | Purpose |
+| --- | --- |
+| **`/portal/*`** | Merchant **dashboard** (JWT login, MFA, password reset, KYC uploads) |
+| **`/provider/*`** | Transcaty **internal admin** (provider JWT / API key) |
+| **`GET /metrics`** | Prometheus metrics (ops; optional `METRICS_TOKEN` in production) |
+
+Your **merchant integration** (server-to-server `/v1/*`) stays the same: same API keys, same request signing, same endpoints.
+
 ---
 
 ## What You'll Do

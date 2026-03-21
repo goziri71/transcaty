@@ -8,6 +8,14 @@
 
 This API is a **separate admin surface** from merchant portal.
 
+| Surface | Auth | Postman doc |
+| --- | --- | --- |
+| **Merchant API** `/v1/*` | HMAC + API key | **`POSTMAN_MERCHANT_API_GUIDE.md`** — **not** covered here |
+| **Merchant portal** `/portal/*` | JWT (dashboard users) | **`POSTMAN_PORTAL_TESTING.md`** |
+| **Provider admin** `/provider/*` | Provider API key or provider JWT | **this document** |
+
+**Merchant API is unchanged** by portal MFA, provider MFA, password reset, or `/metrics`. Those features only add **dashboard/admin** flows.
+
 - Merchant portal routes: `/portal/*`
 - Provider (Transcaty super-admin) routes: `/provider/*`
 
@@ -104,7 +112,7 @@ Body:
 }
 ```
 
-### 2.2 Login
+### 2.2 Login (with optional MFA)
 
 POST `{{baseUrl}}/provider/auth/login`
 
@@ -115,22 +123,109 @@ POST `{{baseUrl}}/provider/auth/login`
 }
 ```
 
-Copy returned `token` into Postman env variable `providerToken`.
+**If MFA is not enabled** for this user, the response includes a normal session:
+
+```json
+{
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "authType": "jwt",
+  "tokenType": "Bearer",
+  "expiresIn": "12h",
+  "user": { "id": "...", "email": "...", "role": "super_admin", "...": "..." }
+}
+```
+
+Copy `token` into Postman env variable `providerToken`.
+
+**If MFA is enabled**, you get a **second step** (no session JWT yet):
+
+```json
+{
+  "requiresMfa": true,
+  "mfaToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "authType": "jwt",
+  "tokenType": "Bearer",
+  "expiresIn": "5m",
+  "user": { "id": "...", "email": "...", "role": "super_admin", "...": "..." }
+}
+```
+
+Then call **2.2c MFA verify** (below) with the **6-digit TOTP code** from the authenticator app. The **success** response from that call contains the real `token` → save **`providerToken`** from that response.
+
+### 2.2a Forgot password (email)
+
+POST `{{baseUrl}}/provider/auth/forgot-password`
+
+```json
+{
+  "email": "superadmin@transcaty.com"
+}
+```
+
+Response is generic (same whether the user exists). Configure `EMAIL_FROM` + `RESEND_API_KEY` (or SMTP) and `PROVIDER_PUBLIC_URL` (or `APP_BASE_URL`) on the server.
+
+### 2.2b Reset password
+
+POST `{{baseUrl}}/provider/auth/reset-password`
+
+```json
+{
+  "token": "<paste token from email link query string>",
+  "password": "NewSecurePassword123!"
+}
+```
+
+### 2.2c MFA verify (only when login returned `requiresMfa: true`)
+
+POST `{{baseUrl}}/provider/auth/mfa/verify`
+
+```json
+{
+  "mfaToken": "{{paste mfaToken from login response}}",
+  "code": "123456"
+}
+```
+
+Success `200` — same shape as a normal login without MFA (includes `token`, `expiresIn: "12h"`, `user`). Copy `token` → **`providerToken`**.
+
+Errors `401`: bad/expired `mfaToken`, wrong code, or MFA not enabled.
 
 ### 2.3 Verify auth
 
-Expected `200`:
+GET `{{baseUrl}}/provider/me`
+
+Headers: `Authorization: Bearer {{providerToken}}`
+
+Expected `200` (JWT users may include MFA flags):
 
 ```json
 {
   "role": "super_admin",
   "authType": "jwt",
-  "email": "superadmin@transcaty.com"
+  "email": "superadmin@transcaty.com",
+  "mfaEnabled": true,
+  "mfaPendingSetup": false
 }
 ```
 
+`mfaEnabled` / `mfaPendingSetup` appear when **JWT** auth is used (not for raw API key).
+
 If `401`: token/key invalid.
 If `500`: provider auth not configured on server.
+
+### 2.3a MFA enrollment (optional — JWT only)
+
+Use **provider JWT** (`Authorization: Bearer {{providerToken}}`). **API key** auth cannot manage MFA.
+
+| Step | Method | Path | Body / notes |
+| --- | --- | --- | --- |
+| Status | GET | `/provider/me/mfa/status` | — |
+| Start setup | POST | `/provider/me/mfa/setup` | Returns `otpauthUrl` (scan in Google Authenticator / Authy) |
+| Confirm | POST | `/provider/me/mfa/confirm` | `{ "code": "123456" }` |
+| Cancel setup | POST | `/provider/me/mfa/cancel` | Abandons enrollment |
+| Disable MFA | POST | `/provider/me/mfa/disable` | `{ "password": "...", "code": "123456" }` |
+
+Requires **`ENCRYPTION_MASTER_KEY`** on the server for encrypted TOTP secrets. Issuer labels: `PROVIDER_MFA_ISSUER` (optional; see `docs/MFA_AND_METRICS.md`).
 
 ### 2.4 Manage provider users (super admin)
 
@@ -364,6 +459,17 @@ POST `{{baseUrl}}/provider/approvals/<requestId>/reject`
 9. `GET /provider/transactions/:transactionId/reconcile` before force status change
 10. `GET /provider/approvals?status=pending`
 11. `POST /provider/approvals/:requestId/approve` (from different reviewer account)
+
+---
+
+## Metrics (ops / Prometheus)
+
+**GET** `{{baseUrl}}/metrics`
+
+- **Production:** set `METRICS_TOKEN` on the server; send `Authorization: Bearer <METRICS_TOKEN>`. Without `METRICS_TOKEN`, `/metrics` may return **404** when `NODE_ENV=production`.
+- **Local dev:** often open if `METRICS_TOKEN` is unset.
+
+Does **not** use provider or merchant credentials. See `docs/MFA_AND_METRICS.md`.
 
 ---
 

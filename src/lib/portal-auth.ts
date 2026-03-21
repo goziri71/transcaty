@@ -37,13 +37,57 @@ export function verifyPassword(password: string, hash: string): Promise<boolean>
 }
 
 export function signPortalToken(payload: PortalContext): string {
-  return jwt.sign(payload, getJwtSecret(), { expiresIn: JWT_EXPIRY });
+  return jwt.sign(
+    { ...payload, purpose: "portal_session" as const },
+    getJwtSecret(),
+    { expiresIn: JWT_EXPIRY }
+  );
 }
 
 export function verifyPortalToken(token: string): PortalContext | null {
   try {
-    const decoded = jwt.verify(token, getJwtSecret()) as PortalContext;
-    return decoded;
+    const decoded = jwt.verify(token, getJwtSecret()) as PortalContext & {
+      purpose?: string;
+      sub?: string;
+    };
+    if (decoded.sub === "mfa_pending") return null;
+    if (decoded.purpose != null && decoded.purpose !== "portal_session") return null;
+    return {
+      merchantUserId: decoded.merchantUserId,
+      merchantId: decoded.merchantId,
+      email: decoded.email,
+      role: decoded.role,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Short-lived token after password OK when MFA is enabled; exchange via POST /portal/auth/mfa/verify */
+export function signPortalMfaPendingToken(payload: PortalContext): string {
+  return jwt.sign(
+    {
+      sub: "mfa_pending" as const,
+      merchantUserId: payload.merchantUserId,
+      merchantId: payload.merchantId,
+      email: payload.email,
+      role: payload.role,
+    },
+    getJwtSecret(),
+    { expiresIn: "5m" }
+  );
+}
+
+export function verifyPortalMfaPendingToken(token: string): PortalContext | null {
+  try {
+    const decoded = jwt.verify(token, getJwtSecret()) as PortalContext & { sub?: string };
+    if (decoded.sub !== "mfa_pending") return null;
+    return {
+      merchantUserId: decoded.merchantUserId,
+      merchantId: decoded.merchantId,
+      email: decoded.email,
+      role: decoded.role,
+    };
   } catch {
     return null;
   }

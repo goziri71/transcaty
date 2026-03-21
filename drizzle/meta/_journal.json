@@ -50,6 +50,20 @@
       "when": 1773850256836,
       "tag": "0006_shocking_human_cannonball",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1774009000000,
+      "tag": "0007_password_reset_tokens",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1774010000000,
+      "tag": "0008_mfa_columns",
+      "breakpoints": true
     }
   ]
 }

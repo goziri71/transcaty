@@ -64,7 +64,11 @@ export function signProviderToken(payload: {
   email: string;
   role: ProviderRole;
 }): string {
-  return jwt.sign(payload, getProviderJwtSecret(), { expiresIn: PROVIDER_JWT_EXPIRY });
+  return jwt.sign(
+    { ...payload, purpose: "provider_session" as const },
+    getProviderJwtSecret(),
+    { expiresIn: PROVIDER_JWT_EXPIRY }
+  );
 }
 
 export function verifyProviderToken(token: string): {
@@ -73,10 +77,59 @@ export function verifyProviderToken(token: string): {
   role: ProviderRole;
 } | null {
   try {
-    return jwt.verify(token, getProviderJwtSecret()) as {
+    const decoded = jwt.verify(token, getProviderJwtSecret()) as {
       providerUserId: string;
       email: string;
       role: ProviderRole;
+      purpose?: string;
+      sub?: string;
+    };
+    if (decoded.sub === "mfa_pending") return null;
+    if (decoded.purpose != null && decoded.purpose !== "provider_session") return null;
+    return {
+      providerUserId: decoded.providerUserId,
+      email: decoded.email,
+      role: decoded.role,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function signProviderMfaPendingToken(payload: {
+  providerUserId: string;
+  email: string;
+  role: ProviderRole;
+}): string {
+  return jwt.sign(
+    {
+      sub: "mfa_pending" as const,
+      providerUserId: payload.providerUserId,
+      email: payload.email,
+      role: payload.role,
+    },
+    getProviderJwtSecret(),
+    { expiresIn: "5m" }
+  );
+}
+
+export function verifyProviderMfaPendingToken(token: string): {
+  providerUserId: string;
+  email: string;
+  role: ProviderRole;
+} | null {
+  try {
+    const decoded = jwt.verify(token, getProviderJwtSecret()) as {
+      providerUserId: string;
+      email: string;
+      role: ProviderRole;
+      sub?: string;
+    };
+    if (decoded.sub !== "mfa_pending") return null;
+    return {
+      providerUserId: decoded.providerUserId,
+      email: decoded.email,
+      role: decoded.role,
     };
   } catch {
     return null;

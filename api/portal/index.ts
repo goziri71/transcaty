@@ -10,9 +10,11 @@ import { registerPortalKycRoutes } from "./kyc.js";
 import { registerPortalApiKeysRoutes } from "./api-keys.js";
 import { registerPortalCustomersRoutes } from "./customers.js";
 import { registerPortalTransactionsRoutes } from "./transactions.js";
+import { registerPortalMfaRoutes } from "./mfa.js";
 
 export async function registerPortalRoutes(app: FastifyInstance) {
   await registerPortalAuthRoutes(app);
+  await registerPortalMfaRoutes(app);
   await registerPortalMeRoutes(app);
   await registerPortalKycRoutes(app);
   await registerPortalApiKeysRoutes(app);

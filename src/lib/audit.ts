@@ -10,6 +10,8 @@ export type AuditAction =
   | "payout.completed"
   | "payout.failed"
   | "auth.failed"
+  | "auth.password_reset_requested"
+  | "auth.password_reset_completed"
   | "config.changed"
   | "provider.merchant.status_changed"
   | "provider.merchant.kyc_changed"

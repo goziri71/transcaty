@@ -9,6 +9,7 @@ import {
   merchantKycDocuments,
   merchantPersons,
   merchants,
+  providerUsers,
   transactions,
   wallets,
 } from "../../src/db/schema/index.js";
@@ -143,6 +144,8 @@ export async function registerProviderRoutes(app: FastifyInstance) {
             role: z.enum(PROVIDER_ROLES),
             authType: z.enum(["api_key", "jwt"]),
             email: z.string().nullable(),
+            mfaEnabled: z.boolean().optional(),
+            mfaPendingSetup: z.boolean().optional(),
           }),
           401: errorResponse,
         },
@@ -150,11 +153,29 @@ export async function registerProviderRoutes(app: FastifyInstance) {
     },
     async (request, reply) => {
       if (!request.provider) return reply.status(401).send({ error: "Unauthorized" });
-      return {
+      const base = {
         role: request.provider.role,
         authType: request.provider.authType,
         email: request.provider.email ?? null,
       };
+      if (request.provider.authType === "jwt" && request.provider.providerUserId) {
+        const [row] = await db
+          .select({
+            mfaEnabled: providerUsers.mfaEnabled,
+            mfaPending: providerUsers.mfaPending,
+          })
+          .from(providerUsers)
+          .where(eq(providerUsers.id, request.provider.providerUserId))
+          .limit(1);
+        if (row) {
+          return {
+            ...base,
+            mfaEnabled: row.mfaEnabled,
+            mfaPendingSetup: row.mfaPending && !row.mfaEnabled,
+          };
+        }
+      }
+      return base;
     }
   );
 

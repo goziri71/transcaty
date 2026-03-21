@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import Fastify, { type FastifyRequest, type FastifyReply } from "fastify";
 import cors from "@fastify/cors";
@@ -41,14 +41,37 @@ import {
 import { LIMITS } from "./src/lib/limits.js";
 import { queueMerchantWebhook } from "./src/lib/merchant-webhook.js";
 import { encrypt } from "./src/lib/encryption.js";
+import { pingRedis } from "./src/lib/redis.js";
+import { recordHttpRequest, renderMetrics, getMetricsContentType } from "./src/lib/metrics.js";
+import { registerProviderMfaRoutes } from "./api/provider/mfa.js";
 
 export async function buildApp() {
-  const app = Fastify({ logger: true }).withTypeProvider<ZodTypeProvider>();
+  const app = Fastify({
+    logger: true,
+    genReqId: (req) => {
+      const x = req.headers["x-request-id"];
+      if (typeof x === "string" && x.trim()) return x.trim();
+      return randomUUID();
+    },
+  }).withTypeProvider<ZodTypeProvider>();
 
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
 
   const errorResponse = z.object({ error: z.string(), message: z.string().optional() });
+
+  app.addHook("onRequest", async (request) => {
+    (request as FastifyRequest & { metricsStart?: bigint }).metricsStart = process.hrtime.bigint();
+  });
+
+  app.addHook("onResponse", async (request, reply) => {
+    const path = request.url.split("?")[0];
+    if (path === "/metrics" || path === "/health") return;
+    const start = (request as FastifyRequest & { metricsStart?: bigint }).metricsStart;
+    if (start == null) return;
+    const seconds = Number(process.hrtime.bigint() - start) / 1e9;
+    recordHttpRequest({ request, reply, durationSeconds: seconds });
+  });
 
   app.addContentTypeParser("application/json", { parseAs: "string" }, (req, body, done) => {
     const raw = typeof body === "string" ? body : body?.toString("utf8") ?? "";
@@ -83,10 +106,26 @@ export async function buildApp() {
 
   app.addHook("preHandler", async (request, reply) => {
     const path = request.url.split("?")[0];
-    if (path === "/" || path === "/health") return;
+    if (path === "/" || path === "/health" || path === "/metrics") return;
     if (path.startsWith("/webhooks/payok/")) return;
-    if (path === "/portal/auth/signup" || path === "/portal/auth/login" || path === "/portal/auth/logout") return;
-    if (path === "/provider/auth/login") return;
+    if (
+      path === "/portal/auth/signup" ||
+      path === "/portal/auth/login" ||
+      path === "/portal/auth/logout" ||
+      path === "/portal/auth/forgot-password" ||
+      path === "/portal/auth/reset-password" ||
+      path === "/portal/auth/mfa/verify"
+    ) {
+      return;
+    }
+    if (
+      path === "/provider/auth/login" ||
+      path === "/provider/auth/forgot-password" ||
+      path === "/provider/auth/reset-password" ||
+      path === "/provider/auth/mfa/verify"
+    ) {
+      return;
+    }
     if (path.startsWith("/portal/")) return portalAuth(request, reply);
     if (path.startsWith("/provider/")) return providerAuth(request, reply);
     if (path.startsWith("/v1/")) return merchantAuth(request, reply);
@@ -95,6 +134,7 @@ export async function buildApp() {
 
   await registerPortalRoutes(app);
   await registerProviderAuthRoutes(app);
+  await registerProviderMfaRoutes(app);
   await registerProviderRoutes(app);
 
   app.get(
@@ -106,19 +146,42 @@ export async function buildApp() {
             status: z.literal("ok"),
             timestamp: z.string(),
             database: z.literal("connected"),
+            redis: z.enum(["ok", "skipped", "error"]).optional(),
           }),
         },
       },
     },
     async () => {
       await db.execute(sql`SELECT 1`);
+      const hasRedis = !!process.env.REDIS_URL?.trim();
+      const redis: "ok" | "skipped" | "error" = !hasRedis
+        ? "skipped"
+        : (await pingRedis())
+          ? "ok"
+          : "error";
       return {
         status: "ok" as const,
         timestamp: new Date().toISOString(),
         database: "connected" as const,
+        redis,
       };
     }
   );
+
+  app.get("/metrics", async (request, reply) => {
+    const token = process.env.METRICS_TOKEN?.trim();
+    if (token) {
+      const auth = request.headers.authorization;
+      const bearer = auth?.startsWith("Bearer ") ? auth.slice(7).trim() : undefined;
+      if (bearer !== token) {
+        return reply.status(401).type("text/plain").send("Unauthorized");
+      }
+    } else if (process.env.NODE_ENV === "production") {
+      return reply.status(404).send({ error: "Not Found", message: "Set METRICS_TOKEN to expose /metrics in production" });
+    }
+    reply.header("Content-Type", getMetricsContentType());
+    return reply.send(await renderMetrics());
+  });
 
   app.get(
     "/",

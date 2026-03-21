@@ -7,6 +7,7 @@ import {
   pgEnum,
   index,
   primaryKey,
+  boolean,
 } from "drizzle-orm/pg-core";
 
 export const merchantStatusEnum = pgEnum("merchant_status", [
@@ -87,6 +88,8 @@ export const providerActionStatusEnum = pgEnum("provider_action_status", [
   "executed",
   "cancelled",
 ]);
+
+export const passwordResetRealmEnum = pgEnum("password_reset_realm", ["portal", "provider"]);
 
 export const kycStatusEnum = pgEnum("kyc_status", ["pending", "verified", "rejected"]);
 
@@ -296,6 +299,9 @@ export const merchantUsers = pgTable(
     role: merchantUserRoleEnum("role").notNull().default("viewer"),
     merchantPersonId: uuid("merchant_person_id").references(() => merchantPersons.id, { onDelete: "set null" }),
     status: text("status").notNull().default("active"), // active, suspended
+    mfaEnabled: boolean("mfa_enabled").notNull().default(false),
+    mfaPending: boolean("mfa_pending").notNull().default(false),
+    mfaSecretEnc: text("mfa_secret_enc"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -315,6 +321,9 @@ export const providerUsers = pgTable(
     passwordHash: text("password_hash").notNull(),
     role: providerUserRoleEnum("role").notNull().default("ops"),
     status: text("status").notNull().default("active"), // active, suspended
+    mfaEnabled: boolean("mfa_enabled").notNull().default(false),
+    mfaPending: boolean("mfa_pending").notNull().default(false),
+    mfaSecretEnc: text("mfa_secret_enc"),
     lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -323,6 +332,23 @@ export const providerUsers = pgTable(
     index("provider_users_email_idx").on(t.email),
     index("provider_users_role_idx").on(t.role),
     index("provider_users_status_idx").on(t.status),
+  ]
+);
+
+export const passwordResetTokens = pgTable(
+  "password_reset_tokens",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    realm: passwordResetRealmEnum("realm").notNull(),
+    userId: uuid("user_id").notNull(),
+    tokenHash: text("token_hash").notNull().unique(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    usedAt: timestamp("used_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("password_reset_tokens_user_realm_idx").on(t.realm, t.userId),
+    index("password_reset_tokens_expires_at_idx").on(t.expiresAt),
   ]
 );
 

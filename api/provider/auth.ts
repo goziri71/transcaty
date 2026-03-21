@@ -10,10 +10,20 @@ import {
   getProviderPermissions,
   hashProviderPassword,
   signProviderToken,
+  signProviderMfaPendingToken,
+  verifyProviderMfaPendingToken,
   verifyProviderPassword,
   type ProviderRole,
 } from "../../src/lib/provider-auth.js";
+import { decryptTotpSecret, verifyTotp } from "../../src/lib/mfa-totp.js";
 import { audit } from "../../src/lib/audit.js";
+import { checkRedisRateLimit } from "../../src/lib/rate-limit-redis.js";
+import {
+  createProviderPasswordResetToken,
+  consumeProviderResetToken,
+} from "../../src/lib/password-reset.js";
+import { queueTransactionalEmail } from "../../src/lib/transactional-email-queue.js";
+import { getClientIp } from "../../src/lib/request-ip.js";
 
 const errorResponse = z.object({
   error: z.string(),
@@ -31,7 +41,9 @@ export async function registerProviderAuthRoutes(app: FastifyInstance) {
         }),
         response: {
           200: z.object({
-            token: z.string(),
+            requiresMfa: z.boolean().optional(),
+            mfaToken: z.string().optional(),
+            token: z.string().optional(),
             authType: z.literal("jwt"),
             tokenType: z.literal("Bearer"),
             expiresIn: z.string(),
@@ -61,6 +73,7 @@ export async function registerProviderAuthRoutes(app: FastifyInstance) {
           passwordHash: providerUsers.passwordHash,
           role: providerUsers.role,
           status: providerUsers.status,
+          mfaEnabled: providerUsers.mfaEnabled,
         })
         .from(providerUsers)
         .where(eq(providerUsers.email, email))
@@ -81,6 +94,30 @@ export async function registerProviderAuthRoutes(app: FastifyInstance) {
         .set({ lastLoginAt: now, updatedAt: now })
         .where(eq(providerUsers.id, user.id));
 
+      if (user.mfaEnabled) {
+        const mfaToken = signProviderMfaPendingToken({
+          providerUserId: user.id,
+          email: user.email,
+          role: user.role as ProviderRole,
+        });
+        return {
+          requiresMfa: true,
+          mfaToken,
+          authType: "jwt" as const,
+          tokenType: "Bearer" as const,
+          expiresIn: "5m",
+          user: {
+            id: user.id,
+            email: user.email,
+            fullName: user.fullName,
+            role: user.role as ProviderRole,
+            status: user.status,
+            lastLoginAt: now.toISOString(),
+            permissions: getProviderPermissions(user.role as ProviderRole),
+          },
+        };
+      }
+
       const token = signProviderToken({
         providerUserId: user.id,
         email: user.email,
@@ -100,6 +137,101 @@ export async function registerProviderAuthRoutes(app: FastifyInstance) {
           status: user.status,
           lastLoginAt: now.toISOString(),
           permissions: getProviderPermissions(user.role as ProviderRole),
+        },
+      };
+    }
+  );
+
+  app.post(
+    "/provider/auth/mfa/verify",
+    {
+      schema: {
+        body: z.object({
+          mfaToken: z.string().min(1),
+          code: z.string().min(6).max(12),
+        }),
+        response: {
+          200: z.object({
+            token: z.string(),
+            authType: z.literal("jwt"),
+            tokenType: z.literal("Bearer"),
+            expiresIn: z.string(),
+            user: z.object({
+              id: z.string(),
+              email: z.string(),
+              fullName: z.string().nullable(),
+              role: z.enum(PROVIDER_ROLES),
+              status: z.string(),
+              lastLoginAt: z.string(),
+              permissions: z.array(z.string()),
+            }),
+          }),
+          401: errorResponse,
+        },
+      },
+    },
+    async (request, reply) => {
+      const body = request.body as { mfaToken: string; code: string };
+      const pending = verifyProviderMfaPendingToken(body.mfaToken);
+      if (!pending) {
+        return reply.status(401).send({ error: "Unauthorized", message: "Invalid or expired MFA token" });
+      }
+
+      const [u] = await db
+        .select({
+          mfaEnabled: providerUsers.mfaEnabled,
+          mfaSecretEnc: providerUsers.mfaSecretEnc,
+          fullName: providerUsers.fullName,
+          status: providerUsers.status,
+        })
+        .from(providerUsers)
+        .where(eq(providerUsers.id, pending.providerUserId))
+        .limit(1);
+
+      if (!u?.mfaEnabled || !u.mfaSecretEnc) {
+        return reply.status(401).send({ error: "Unauthorized", message: "MFA not enabled for this account" });
+      }
+
+      let secret: string;
+      try {
+        secret = decryptTotpSecret(u.mfaSecretEnc);
+      } catch {
+        return reply.status(401).send({ error: "Unauthorized", message: "MFA misconfigured" });
+      }
+
+      if (!verifyTotp(secret, body.code)) {
+        audit({
+          action: "auth.failed",
+          meta: { reason: "provider_mfa_invalid_code", providerUserId: pending.providerUserId },
+        });
+        return reply.status(401).send({ error: "Unauthorized", message: "Invalid authenticator code" });
+      }
+
+      const now = new Date();
+      await db
+        .update(providerUsers)
+        .set({ lastLoginAt: now, updatedAt: now })
+        .where(eq(providerUsers.id, pending.providerUserId));
+
+      const token = signProviderToken({
+        providerUserId: pending.providerUserId,
+        email: pending.email,
+        role: pending.role,
+      });
+
+      return {
+        token,
+        authType: "jwt" as const,
+        tokenType: "Bearer" as const,
+        expiresIn: "12h",
+        user: {
+          id: pending.providerUserId,
+          email: pending.email,
+          fullName: u.fullName,
+          role: pending.role,
+          status: u.status,
+          lastLoginAt: now.toISOString(),
+          permissions: getProviderPermissions(pending.role),
         },
       };
     }
@@ -424,6 +556,111 @@ export async function registerProviderAuthRoutes(app: FastifyInstance) {
         role: updated.role as ProviderRole,
         status: updated.status,
       };
+    }
+  );
+
+  app.post(
+    "/provider/auth/forgot-password",
+    {
+      schema: {
+        body: z.object({ email: z.string().email() }),
+        response: {
+          200: z.object({
+            ok: z.literal(true),
+            message: z.string(),
+          }),
+          429: errorResponse,
+        },
+      },
+    },
+    async (request, reply) => {
+      const ip = getClientIp(request);
+      const perHour = Number(process.env.PASSWORD_RESET_REQUESTS_PER_IP_PER_HOUR ?? 5);
+      const { allowed } = await checkRedisRateLimit(
+        `provider:forgot:${ip}`,
+        Number.isFinite(perHour) && perHour > 0 ? perHour : 5,
+        3600
+      );
+      if (!allowed) {
+        return reply.status(429).send({
+          error: "Too Many Requests",
+          message: "Try again later",
+        });
+      }
+
+      const body = request.body as { email: string };
+      const email = body.email.toLowerCase().trim();
+      const created = await createProviderPasswordResetToken(email);
+      const message =
+        "If an account exists for this email, you will receive reset instructions shortly.";
+
+      if (created) {
+        const base = (
+          process.env.PROVIDER_PUBLIC_URL ??
+          process.env.APP_BASE_URL ??
+          "http://localhost:3000"
+        ).replace(/\/$/, "");
+        const resetUrl = `${base}/provider/reset-password?token=${encodeURIComponent(created.rawToken)}`;
+
+        await queueTransactionalEmail({
+          kind: "provider_password_reset",
+          to: email,
+          resetUrl,
+        });
+
+        audit({
+          action: "auth.password_reset_requested",
+          meta: { realm: "provider" },
+        });
+      }
+
+      return reply.send({ ok: true, message });
+    }
+  );
+
+  app.post(
+    "/provider/auth/reset-password",
+    {
+      schema: {
+        body: z.object({
+          token: z.string().min(1),
+          password: z.string().min(8).max(128),
+        }),
+        response: {
+          200: z.object({ ok: z.literal(true) }),
+          400: errorResponse,
+          429: errorResponse,
+        },
+      },
+    },
+    async (request, reply) => {
+      const ip = getClientIp(request);
+      const perHour = Number(process.env.PASSWORD_RESET_ATTEMPTS_PER_IP_PER_HOUR ?? 30);
+      const { allowed } = await checkRedisRateLimit(
+        `provider:reset:${ip}`,
+        Number.isFinite(perHour) && perHour > 0 ? perHour : 30,
+        3600
+      );
+      if (!allowed) {
+        return reply.status(429).send({
+          error: "Too Many Requests",
+          message: "Try again later",
+        });
+      }
+
+      const body = request.body as { token: string; password: string };
+      const result = await consumeProviderResetToken(body.token, body.password);
+      if (!result.ok) {
+        return reply.status(400).send({ error: "Bad Request", message: result.reason });
+      }
+
+      audit({
+        action: "auth.password_reset_completed",
+        resource: result.userId,
+        meta: { realm: "provider" },
+      });
+
+      return reply.send({ ok: true });
     }
   );
 }

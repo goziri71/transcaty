@@ -6,12 +6,14 @@
 
 ## Overview
 
-Merchants sign up with minimal info, log in, complete activation (KYC), then manage API keys. Two auth systems:
+Merchants sign up with minimal info, log in (optionally **MFA**), complete activation (KYC), then manage API keys. Two auth systems:
 
 | Context | Auth | Use |
 |--------|------|-----|
-| **Portal** | JWT (Bearer token) | Dashboard UI – signup, login, profile, KYC, API keys |
-| **API** | HMAC (API key + secret) | Programmatic – payins, payouts, balance (not covered here) |
+| **Portal** | JWT (Bearer token) | Dashboard UI – signup, login, **MFA**, **forgot password**, profile, KYC, API keys |
+| **API** | HMAC (API key + secret) | Programmatic – payins, payouts, balance (**not** this doc; unchanged by portal MFA) |
+
+**Implementation order for auth UI:** Login → if `requiresMfa`, show TOTP step → store session JWT → protected routes. Optional: **Forgot password** flow (email link to your SPA → reset form). Optional: **Security** settings for MFA enrollment (`/portal/me/mfa/*`).
 
 ---
 
@@ -28,22 +30,26 @@ Example: `https://api.transcaty.com/portal/auth/login`
 ## Flow
 
 ```
-┌─────────────┐     ┌─────────────┐     ┌─────────────────┐     ┌─────────────────────────────────┐
-│   Signup    │────▶│    Login     │────▶│ Activation      │────▶│  Operations (world-class)        │
-│ (minimal)   │     │ (email+pwd)  │     │ (KYC modal)     │     │  • API Keys  • Balance          │
-└─────────────┘     └─────────────┘     └─────────────────┘     │  • Customers • Transactions      │
-       │                    │                     │             │  • Transfers • Refunds           │
-       │                    │                     │             │  • Block/pending customer wallet │
-       ▼                    ▼                     ▼             └─────────────────────────────────┘
-  businessName         JWT token           business, persons,
-  email                needsActivation     documents, submit
+┌─────────────┐     ┌─────────────┐     ┌──────────────┐     ┌─────────────────┐     ┌─────────────────────────────────┐
+│   Signup    │────▶│    Login     │────▶│ MFA step?    │────▶│ Activation      │────▶│  Operations                      │
+│ (minimal)   │     │ (email+pwd)  │     │ (if enabled) │     │ (KYC modal)     │     │  • API Keys  • Balance          │
+└─────────────┘     └─────────────┘     └──────────────┘     └─────────────────┘     │  • Customers • Transactions      │
+       │                    │                   │                     │             │  • Transfers • Refunds • Payouts  │
+       │                    │                   │                     │             │  • Block/pending customer wallet │
+       ▼                    ▼                   ▼                     ▼             └─────────────────────────────────┘
+  businessName         See login           TOTP 6-digit        business, persons,
+  email                responses           code                documents, submit
   password
 ```
 
 1. **Signup** – Business name, email, password. Returns JWT + `needsActivation: true`.
-2. **Login** – Email + password. Returns JWT + `needsActivation`.
-3. **Activation** – If `needsActivation`, show modal/wizard: business profile → persons → documents → submit.
-4. **Operations** – Balance, customers, transactions, transfers, refunds, block/pending customer wallets.
+2. **Login** – Email + password.
+   - If MFA **off**: response includes `token` (session JWT) + `needsActivation` + `merchant`.
+   - If MFA **on**: response includes `requiresMfa: true` and `mfaToken` (short-lived, **not** the session). Show TOTP input → **`POST /portal/auth/mfa/verify`** → then store `token`.
+3. **Forgot password** (optional UX) – `POST /portal/auth/forgot-password` → email → user opens **`/reset-password?token=...`** on **your frontend** → `POST /portal/auth/reset-password`.
+4. **Activation** – If `needsActivation`, show modal/wizard: business profile → persons → documents → submit.
+5. **Operations** – Balance, customers, transactions, transfers, refunds, payouts, block/pending customer wallets.
+6. **MFA enrollment** (optional) – Settings page: `GET /portal/me/mfa/status` → setup → QR → confirm (see **MFA (TOTP) – management** below).
 
 ---
 
@@ -63,13 +69,24 @@ X-Portal-Token: <token>
 
 ### Token storage
 
-- Store JWT in `localStorage` or `sessionStorage`.
-- Include in all requests to `/portal/me/*` and `/portal/me/kyc/*`, `/portal/me/api-keys/*`.
+- Store **session** JWT in `localStorage` or `sessionStorage` after login **or** after successful **`/portal/auth/mfa/verify`**.
+- **Do not** persist `mfaToken` longer than needed — it is only for the second login step (minutes).
+- Include `Authorization: Bearer <session_token>` on all requests to `/portal/me/*`, `/portal/me/kyc/*`, `/portal/me/api-keys/*`, etc.
 
 ### Logout
 
 - Call `POST /portal/auth/logout` (optional).
 - Clear stored token and redirect to login.
+
+### Routes to implement (auth)
+
+| Route | Purpose |
+|-------|---------|
+| `/login` | Email + password |
+| `/login/mfa` or inline step | Shown when login returns `requiresMfa: true` — TOTP code + call `POST /portal/auth/mfa/verify` |
+| `/forgot-password` | Email → `POST /portal/auth/forgot-password` |
+| `/reset-password` | Read `token` from query `?token=` → new password → `POST /portal/auth/reset-password` |
+| `/settings/security` (optional) | MFA enrollment: `GET/POST /portal/me/mfa/*` |
 
 ---
 
@@ -140,7 +157,9 @@ X-Portal-Token: <token>
 }
 ```
 
-**Success (200)**
+**Success (200) when MFA is not enabled**
+
+Response includes a **session JWT** in `token`. Store it and use for all `/portal/me/*` calls.
 
 ```json
 {
@@ -157,6 +176,25 @@ X-Portal-Token: <token>
 }
 ```
 
+**Success (200) when MFA is enabled**
+
+No session `token` yet. User must complete **§ MFA login – second step** below.
+
+```json
+{
+  "requiresMfa": true,
+  "mfaToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "merchantId": "uuid",
+  "email": "admin@acme.com"
+}
+```
+
+| Field | Frontend action |
+|-------|------------------|
+| `requiresMfa` | If `true`, show TOTP (6-digit) step; **do not** navigate as logged-in yet |
+| `mfaToken` | Send with `POST /portal/auth/mfa/verify` together with the code from the authenticator app |
+| `merchantId` / `email` | Optional display; session is issued only after MFA verify |
+
 **Error (401)**
 
 ```json
@@ -168,11 +206,105 @@ X-Portal-Token: <token>
 
 ---
 
+### 2a. MFA login – second step
+
+**POST** `/portal/auth/mfa/verify`
+
+No `Authorization` header (public endpoint).
+
+**Body**
+
+```json
+{
+  "mfaToken": "<from login response when requiresMfa was true>",
+  "code": "123456"
+}
+```
+
+| Field | Notes |
+|-------|--------|
+| mfaToken | Short-lived JWT from login (`mfaToken`) |
+| code | 6-digit TOTP from authenticator app (spaces stripped server-side) |
+
+**Success (200)** — same shape as a normal login **without** MFA:
+
+```json
+{
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "merchantId": "uuid",
+  "email": "admin@acme.com",
+  "role": "admin",
+  "needsActivation": true,
+  "merchant": {
+    "name": "Acme Inc",
+    "status": "pending",
+    "kycStatus": "pending"
+  }
+}
+```
+
+Store `token` as the session JWT.
+
+**Error (401)** — invalid/expired `mfaToken`, wrong code, or MFA not enabled for user.
+
+---
+
 ### 3. Logout
 
 **POST** `/portal/auth/logout`
 
 No body. Returns `{ "ok": true }`. Client clears token.
+
+---
+
+### Forgot password
+
+**POST** `/portal/auth/forgot-password`
+
+**Body:** `{ "email": "admin@acme.com" }`
+
+**Success (200)** — same message whether or not the email exists:
+
+```json
+{
+  "ok": true,
+  "message": "If an account exists for this email, you will receive reset instructions shortly."
+}
+```
+
+Sends an email with a link. Base URL for the link: `PORTAL_PUBLIC_URL` (or `APP_BASE_URL`). Path: `/reset-password?token=...` on your **merchant frontend** (configure `PORTAL_PUBLIC_URL` to that origin).
+
+**Rate limit:** per IP (requires `REDIS_URL` for distributed limits). Env: `PASSWORD_RESET_REQUESTS_PER_IP_PER_HOUR` (default `5`).
+
+---
+
+### Reset password
+
+**POST** `/portal/auth/reset-password`
+
+**Body:** `{ "token": "<from email query string>", "password": "newSecurePassword123" }`
+
+**Success (200):** `{ "ok": true }`
+
+**Error (400):** invalid or expired token.
+
+---
+
+### MFA (TOTP) – management
+
+Requires **session JWT** (`Authorization: Bearer <token>`). Backend needs **`ENCRYPTION_MASTER_KEY`** to store secrets.
+
+| Step | Method | Path | Body | Notes |
+|------|--------|------|------|--------|
+| Status | GET | `/portal/me/mfa/status` | — | `{ enabled, pendingSetup }` |
+| Start setup | POST | `/portal/me/mfa/setup` | — | Returns `otpauthUrl`, `issuer`, `accountEmail` — render QR or open in authenticator |
+| Confirm | POST | `/portal/me/mfa/confirm` | `{ "code": "123456" }` | After user scans QR and app shows code |
+| Cancel setup | POST | `/portal/me/mfa/cancel` | — | Clears in-progress enrollment |
+| Disable | POST | `/portal/me/mfa/disable` | `{ "password": "...", "code": "123456" }` | Current password + current TOTP |
+
+**UX:** Settings → Security → “Enable two-factor” → show QR (`otpauthUrl` or QR from URL) → user enters code → confirm → next login will use **§2 + §2a** flow.
+
+**Issuer** in the app label: server env `PORTAL_MFA_ISSUER` (optional). See `docs/MFA_AND_METRICS.md`.
 
 ---
 
@@ -195,7 +327,9 @@ No body. Returns `{ "ok": true }`. Client clears token.
   "canCreateApiKeys": false,
   "businessProfile": null,
   "personsCount": 0,
-  "documentsCount": 0
+  "documentsCount": 0,
+  "mfaEnabled": false,
+  "mfaPendingSetup": false
 }
 ```
 
@@ -205,6 +339,8 @@ No body. Returns `{ "ok": true }`. Client clears token.
 | needsActivation | Show activation modal when `true` |
 | canCreateApiKeys | `true` only when `kycStatus === 'verified'` |
 | businessProfile | `null` until business profile is created |
+| mfaEnabled | `true` if TOTP MFA is active for this user |
+| mfaPendingSetup | `true` if enrollment started but not confirmed (show “finish setup” in UI) |
 
 ---
 
@@ -800,13 +936,33 @@ All errors follow:
 ### Login page
 
 - Fields: email, password.
-- On success: store token, redirect to dashboard. Check `needsActivation` to show modal.
+- **If response has `token`:** store as session JWT, redirect to dashboard. Check `needsActivation` for activation modal.
+- **If response has `requiresMfa: true`:** do **not** store session yet. Keep `mfaToken` in memory (or state) only. Show a **second screen** (same route or `/login/mfa`) with one field: 6-digit authenticator code → `POST /portal/auth/mfa/verify` with `{ mfaToken, code }`. On success, store returned `token` and redirect.
+- Link to **Forgot password** → `/forgot-password`.
+
+### Forgot password page
+
+- Single field: email → `POST /portal/auth/forgot-password`.
+- Always show the same success copy (do not reveal whether email exists).
+
+### Reset password page
+
+- Route must read **`token`** from query string: `/reset-password?token=...` (configure `PORTAL_PUBLIC_URL` on API so email links match this route).
+- Fields: new password (+ confirm) → `POST /portal/auth/reset-password` → redirect to login.
+
+### Security / MFA settings (optional)
+
+- `GET /portal/me` shows `mfaEnabled` and `mfaPendingSetup`.
+- **Enroll:** `POST /portal/me/mfa/setup` → display QR from `otpauthUrl` (or use a QR library) → `POST /portal/me/mfa/confirm` with `{ code }`.
+- **Disable:** password + TOTP → `POST /portal/me/mfa/disable`.
+- **Cancel in-progress:** `POST /portal/me/mfa/cancel` if user started setup but did not confirm.
 
 ### Dashboard layout
 
 - Header: business name, email, balance, logout.
-- Sidebar or tabs: Overview, Balance, Transactions, Customers, KYC, API Keys.
+- Sidebar or tabs: Overview, Balance, Transactions, Customers, KYC, API Keys, **Settings** (optional).
 - On load: `GET /portal/me`, `GET /portal/me/balance`. If `needsActivation`, show activation modal (or redirect to activation wizard).
+- If `mfaPendingSetup === true`, show banner: “Finish two-factor setup” linking to Security.
 
 ### Activation flow (modal or wizard)
 
@@ -836,7 +992,23 @@ All errors follow:
 
 ### Token expiry
 
-- JWT expires in 7 days. On 401, clear token and redirect to login.
+- Session JWT expires in **7 days**. On `401` from `/portal/me/*`, clear token and redirect to login.
+- `mfaToken` from login expires in **~5 minutes**; if verify fails, user must log in again from step 1.
+
+---
+
+## Frontend implementation checklist
+
+| Area | Tasks |
+|------|--------|
+| **Env** | `API_BASE` / `VITE_API_URL` (or equivalent) pointing at Transcaty API; SPA `PORTAL_PUBLIC_URL` aligned with reset links (server-side). |
+| **Auth** | Login; handle `requiresMfa` + MFA verify; logout; optional forgot/reset routes. |
+| **Session** | Attach `Authorization: Bearer` to all `/portal/me/*` requests; handle 401 globally. |
+| **Profile** | `GET /portal/me` on app shell load; use `mfaEnabled` / `mfaPendingSetup` for Security UI. |
+| **KYC** | Upload flow via Supabase `uploadToSignedUrl` per [File upload](#file-upload-documents). |
+| **Ops** | Balance, customers, transactions, transfers, refunds, payouts per sections below. |
+
+For **Postman-only** testing (no UI), see `docs/POSTMAN_PORTAL_TESTING.md`.
 
 ---
 
@@ -873,4 +1045,4 @@ Use for login. This user has `kycStatus: pending`; complete KYC to test API keys
 
 ---
 
-*Last updated: March 2025*
+*Last updated: March 2026 — includes MFA, forgot/reset password, profile MFA flags, implementation checklist.*
