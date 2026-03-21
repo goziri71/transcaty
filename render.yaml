@@ -4,3 +4,5 @@ services:
     runtime: node
     buildCommand: npm install && npm run build
     startCommand: npm start
+    # Run DB migrations before each deploy (requires DATABASE_URL)
+    releaseCommand: npm run db:migrate
