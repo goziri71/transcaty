@@ -4,6 +4,7 @@ import { and, count, desc, eq, ilike, inArray } from "drizzle-orm";
 import { db } from "../../src/db/index.js";
 import {
   ledgerEntries,
+  merchantPricing,
   providerActionRequests,
   merchantBusinessProfiles,
   merchantKycDocuments,
@@ -76,10 +77,12 @@ function derivePayokOutcome(payload: unknown): {
 function ensureProviderPermission(
   request: FastifyRequest,
   reply: FastifyReply,
-  permission:
+    permission:
     | "merchant.read"
     | "merchant.status.write"
     | "merchant.kyc.write"
+    | "merchant.pricing.read"
+    | "merchant.pricing.write"
     | "customer.read"
     | "customer.status.write"
     | "wallet.adjust"
@@ -484,6 +487,152 @@ export async function registerProviderRoutes(app: FastifyInstance) {
       });
 
       return { id: merchantId, kycStatus };
+    }
+  );
+
+  const BILLING_MODE = ["percentage_only", "monthly_only", "both"] as const;
+
+  app.get(
+    "/provider/merchants/:merchantId/pricing",
+    {
+      schema: {
+        params: z.object({ merchantId: z.string().uuid() }),
+        response: {
+          200: z.object({
+            billingMode: z.enum(BILLING_MODE),
+            feePercentagePayin: z.string().nullable(),
+            feePercentagePayout: z.string().nullable(),
+            feeMinPayin: z.string().nullable(),
+            feeMaxPayin: z.string().nullable(),
+            feeMinPayout: z.string().nullable(),
+            feeMaxPayout: z.string().nullable(),
+            monthlyAmount: z.string().nullable(),
+          }),
+          401: errorResponse,
+          404: errorResponse,
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!ensureProviderPermission(request, reply, "merchant.pricing.read")) return;
+      const { merchantId } = request.params as { merchantId: string };
+
+      const [m] = await db.select().from(merchants).where(eq(merchants.id, merchantId)).limit(1);
+      if (!m) {
+        return reply.status(404).send({ error: "Not found", message: "Merchant not found" });
+      }
+
+      const [row] = await db
+        .select()
+        .from(merchantPricing)
+        .where(eq(merchantPricing.merchantId, merchantId))
+        .limit(1);
+
+      return {
+        billingMode: row?.billingMode ?? "percentage_only",
+        feePercentagePayin: row?.feePercentagePayin ?? null,
+        feePercentagePayout: row?.feePercentagePayout ?? null,
+        feeMinPayin: row?.feeMinPayin ?? null,
+        feeMaxPayin: row?.feeMaxPayin ?? null,
+        feeMinPayout: row?.feeMinPayout ?? null,
+        feeMaxPayout: row?.feeMaxPayout ?? null,
+        monthlyAmount: row?.monthlyAmount ?? null,
+      };
+    }
+  );
+
+  app.patch(
+    "/provider/merchants/:merchantId/pricing",
+    {
+      schema: {
+        params: z.object({ merchantId: z.string().uuid() }),
+        body: z.object({
+          billingMode: z.enum(BILLING_MODE).optional(),
+          feePercentagePayin: z.string().optional(),
+          feePercentagePayout: z.string().optional(),
+          feeMinPayin: z.string().optional(),
+          feeMaxPayin: z.string().optional(),
+          feeMinPayout: z.string().optional(),
+          feeMaxPayout: z.string().optional(),
+          monthlyAmount: z.string().optional(),
+        }),
+        response: {
+          200: z.object({
+            id: z.string(),
+            billingMode: z.string(),
+          }),
+          401: errorResponse,
+          404: errorResponse,
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!ensureProviderPermission(request, reply, "merchant.pricing.write")) return;
+      const { merchantId } = request.params as { merchantId: string };
+      const body = request.body as {
+        billingMode?: (typeof BILLING_MODE)[number];
+        feePercentagePayin?: string;
+        feePercentagePayout?: string;
+        feeMinPayin?: string;
+        feeMaxPayin?: string;
+        feeMinPayout?: string;
+        feeMaxPayout?: string;
+        monthlyAmount?: string;
+      };
+
+      const [m] = await db.select().from(merchants).where(eq(merchants.id, merchantId)).limit(1);
+      if (!m) {
+        return reply.status(404).send({ error: "Not found", message: "Merchant not found" });
+      }
+
+      const setFields: Record<string, unknown> = { updatedAt: new Date() };
+      if (body.billingMode != null) setFields.billingMode = body.billingMode;
+      if (body.feePercentagePayin != null) setFields.feePercentagePayin = body.feePercentagePayin;
+      if (body.feePercentagePayout != null) setFields.feePercentagePayout = body.feePercentagePayout;
+      if (body.feeMinPayin != null) setFields.feeMinPayin = body.feeMinPayin;
+      if (body.feeMaxPayin != null) setFields.feeMaxPayin = body.feeMaxPayin;
+      if (body.feeMinPayout != null) setFields.feeMinPayout = body.feeMinPayout;
+      if (body.feeMaxPayout != null) setFields.feeMaxPayout = body.feeMaxPayout;
+      if (body.monthlyAmount != null) setFields.monthlyAmount = body.monthlyAmount;
+
+      const [existing] = await db
+        .select()
+        .from(merchantPricing)
+        .where(eq(merchantPricing.merchantId, merchantId))
+        .limit(1);
+
+      let billingMode: string;
+      if (existing) {
+        await db
+          .update(merchantPricing)
+          .set(setFields as Record<string, string | Date>)
+          .where(eq(merchantPricing.merchantId, merchantId));
+        billingMode = (setFields.billingMode as string) ?? existing.billingMode;
+      } else {
+        const [inserted] = await db
+          .insert(merchantPricing)
+          .values({
+            merchantId,
+            billingMode: body.billingMode ?? "percentage_only",
+            feePercentagePayin: body.feePercentagePayin ?? "0",
+            feePercentagePayout: body.feePercentagePayout ?? "0",
+            feeMinPayin: body.feeMinPayin ?? "0",
+            feeMaxPayin: body.feeMaxPayin ?? null,
+            feeMinPayout: body.feeMinPayout ?? "0",
+            feeMaxPayout: body.feeMaxPayout ?? null,
+            monthlyAmount: body.monthlyAmount ?? "0",
+          })
+          .returning();
+        billingMode = inserted?.billingMode ?? body.billingMode ?? "percentage_only";
+      }
+      audit({
+        action: "provider.merchant.pricing_changed",
+        actor: "provider:super_admin",
+        resource: merchantId,
+        meta: body,
+      });
+
+      return { id: merchantId, billingMode };
     }
   );
 

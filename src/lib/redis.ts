@@ -1,14 +1,15 @@
 /**
  * Optional Redis client for distributed rate limiting and future caching.
- * If REDIS_URL is unset, getRedis() returns null (callers should degrade gracefully).
+ * If REDIS_URL/REDIS_URL_ENC is unset, getRedis() returns null (callers should degrade gracefully).
  */
 import { Redis } from "ioredis";
+import { getSecret } from "./encryption.js";
 
 let client: InstanceType<typeof Redis> | null | undefined;
 
 export function getRedis(): InstanceType<typeof Redis> | null {
   if (client !== undefined) return client;
-  const url = process.env.REDIS_URL?.trim();
+  const url = getSecret("REDIS_URL", "REDIS_URL_ENC")?.trim();
   if (!url) {
     client = null;
     return null;

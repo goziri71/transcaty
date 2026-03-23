@@ -12,6 +12,8 @@ export type ProviderPermission =
   | "merchant.read"
   | "merchant.status.write"
   | "merchant.kyc.write"
+  | "merchant.pricing.read"
+  | "merchant.pricing.write"
   | "customer.read"
   | "customer.status.write"
   | "wallet.adjust"
@@ -149,6 +151,8 @@ const ROLE_PERMISSIONS: Record<ProviderRole, ProviderPermission[]> = {
     "merchant.read",
     "merchant.status.write",
     "merchant.kyc.write",
+    "merchant.pricing.read",
+    "merchant.pricing.write",
     "customer.read",
     "customer.status.write",
     "wallet.adjust",
@@ -174,6 +178,8 @@ const ROLE_PERMISSIONS: Record<ProviderRole, ProviderPermission[]> = {
   ],
   finance: [
     "merchant.read",
+    "merchant.pricing.read",
+    "merchant.pricing.write",
     "customer.read",
     "tx.read",
     "tx.reconcile",

@@ -765,6 +765,7 @@ Requires `kycStatus === 'verified'`.
       "platformOrderId": "payok-123",
       "customerWalletId": null,
       "refundOfTransactionId": null,
+      "metadata": null,
       "createdAt": "2025-03-09T12:00:00.000Z",
       "completedAt": "2025-03-09T12:01:00.000Z"
     }
@@ -775,6 +776,8 @@ Requires `kycStatus === 'verified'`.
 }
 ```
 
+List items include `metadata` when present. See [Transaction metadata](#22-transactions--get) below for field shapes by type.
+
 ---
 
 ### 22. Transactions – Get
@@ -782,6 +785,41 @@ Requires `kycStatus === 'verified'`.
 **GET** `/portal/me/transactions/:id`
 
 **Success (200)** Returns full transaction detail including metadata.
+
+```json
+{
+  "id": "uuid",
+  "type": "payin",
+  "status": "success",
+  "amount": "500.00",
+  "paidAmount": "500.00",
+  "platformOrderId": "payok-123",
+  "customerWalletId": null,
+  "refundOfTransactionId": null,
+  "metadata": { },
+  "createdAt": "2025-03-09T12:00:00.000Z",
+  "completedAt": "2025-03-09T12:01:00.000Z"
+}
+```
+
+**Transaction metadata** (by type)
+
+`metadata` is a JSON object. Shape varies by `type`:
+
+| type | metadata fields | Purpose |
+|------|-----------------|---------|
+| **payin** | `environment` | `"test"` or `"live"` |
+| | `paymentMethodCode` | Provider payment method (e.g. bKash, Nagad) |
+| **payout** | `environment` | `"test"` or `"live"` |
+| | `benificiaryAccountInfo` | `{ number, orgId, orgCode, orgName, holderName }` – recipient account |
+| | `failedStage` | If failed: `"account_inquiry"` or `"create_payout"` |
+| | `failureReason` | If failed: error message from provider |
+| **transfer** | `reason` | Optional note for the transfer |
+| **refund** | `refundOfTransactionId` | Original payin transaction ID |
+| | `reason` | Optional refund reason |
+| | `customerWalletId` | Customer wallet credited |
+
+**Internal fields** – Transcaty ops may add `providerFix: { fixedAt, ... }` when reconciling or fixing a transaction. Safe to ignore in merchant UI.
 
 ---
 

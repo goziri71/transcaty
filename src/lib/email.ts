@@ -1,8 +1,9 @@
 /**
  * Transactional email: Resend HTTP API or SMTP (nodemailer).
- * Configure one of: RESEND_API_KEY, or SMTP_HOST + SMTP_USER + SMTP_PASS.
+ * Configure one of: RESEND_API_KEY (or _ENC), or SMTP_HOST + SMTP_USER + SMTP_PASS (or _ENC).
  */
 import nodemailer from "nodemailer";
+import { getSecret } from "./encryption.js";
 
 export type SendEmailParams = {
   to: string;
@@ -12,7 +13,7 @@ export type SendEmailParams = {
 };
 
 function getFromAddress(): string | null {
-  const from = process.env.EMAIL_FROM?.trim();
+  const from = getSecret("EMAIL_FROM", "EMAIL_FROM_ENC")?.trim();
   return from || null;
 }
 
@@ -32,7 +33,7 @@ export async function sendTransactionalEmail(params: SendEmailParams): Promise<b
     return false;
   }
 
-  const resendKey = process.env.RESEND_API_KEY?.trim();
+  const resendKey = getSecret("RESEND_API_KEY", "RESEND_API_KEY_ENC")?.trim();
   if (resendKey) {
     try {
       const res = await fetch("https://api.resend.com/emails", {
@@ -75,8 +76,8 @@ export async function sendTransactionalEmail(params: SendEmailParams): Promise<b
   }
 
   const host = process.env.SMTP_HOST?.trim();
-  const user = process.env.SMTP_USER?.trim();
-  const pass = process.env.SMTP_PASS?.trim();
+  const user = getSecret("SMTP_USER", "SMTP_USER_ENC")?.trim();
+  const pass = getSecret("SMTP_PASS", "SMTP_PASS_ENC")?.trim();
   const port = Number(process.env.SMTP_PORT ?? "587");
 
   if (!host || !user || !pass) {

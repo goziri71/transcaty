@@ -8,6 +8,7 @@ import {
   index,
   primaryKey,
   boolean,
+  unique,
 } from "drizzle-orm/pg-core";
 
 export const merchantStatusEnum = pgEnum("merchant_status", [
@@ -93,6 +94,12 @@ export const passwordResetRealmEnum = pgEnum("password_reset_realm", ["portal", 
 
 export const kycStatusEnum = pgEnum("kyc_status", ["pending", "verified", "rejected"]);
 
+export const billingModeEnum = pgEnum("billing_mode", [
+  "percentage_only",
+  "monthly_only",
+  "both",
+]);
+
 export const merchants = pgTable("merchants", {
   id: uuid("id").primaryKey().defaultRandom(),
   name: text("name").notNull(),
@@ -159,6 +166,47 @@ export const ledgerEntries = pgTable(
   (t) => [
     index("ledger_entries_wallet_id_idx").on(t.walletId),
     index("ledger_entries_reference_id_idx").on(t.referenceId),
+  ]
+);
+
+export const merchantPricing = pgTable(
+  "merchant_pricing",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    merchantId: uuid("merchant_id")
+      .notNull()
+      .references(() => merchants.id, { onDelete: "cascade" })
+      .unique(),
+    billingMode: billingModeEnum("billing_mode").notNull().default("percentage_only"),
+    feePercentagePayin: decimal("fee_percentage_payin", { precision: 5, scale: 4 }).default("0"),
+    feePercentagePayout: decimal("fee_percentage_payout", { precision: 5, scale: 4 }).default("0"),
+    feeMinPayin: decimal("fee_min_payin", { precision: 18, scale: 2 }).default("0"),
+    feeMaxPayin: decimal("fee_max_payin", { precision: 18, scale: 2 }),
+    feeMinPayout: decimal("fee_min_payout", { precision: 18, scale: 2 }).default("0"),
+    feeMaxPayout: decimal("fee_max_payout", { precision: 18, scale: 2 }),
+    monthlyAmount: decimal("monthly_amount", { precision: 18, scale: 2 }).default("0"),
+    effectiveAt: timestamp("effective_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("merchant_pricing_merchant_id_idx").on(t.merchantId)]
+);
+
+export const monthlyBillingRecords = pgTable(
+  "monthly_billing_records",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    merchantId: uuid("merchant_id")
+      .notNull()
+      .references(() => merchants.id, { onDelete: "cascade" }),
+    billingMonth: text("billing_month").notNull(),
+    amount: decimal("amount", { precision: 18, scale: 2 }).notNull(),
+    ledgerEntryId: uuid("ledger_entry_id").references(() => ledgerEntries.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("monthly_billing_records_merchant_month_idx").on(t.merchantId, t.billingMonth),
+    unique().on(t.merchantId, t.billingMonth),
   ]
 );
 

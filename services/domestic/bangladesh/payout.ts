@@ -6,6 +6,7 @@ import { db } from "../../../src/db/index.js";
 import { transactions, wallets, ledgerEntries } from "../../../src/db/schema/index.js";
 import { payokPayoutAccountInquiry, payokPayoutCreate } from "./provider/client.js";
 import { audit } from "../../../src/lib/audit.js";
+import { tryApplyTransactionFee } from "../../../src/lib/billing/index.js";
 import type { PayokEnvironment } from "./provider/config.js";
 
 export class PayoutCreationError extends Error {
@@ -202,6 +203,12 @@ export async function handlePayoutCallback(body: {
     .where(eq(transactions.id, tx.id));
 
   if (isSuccess) {
+    await tryApplyTransactionFee({
+      merchantId: tx.merchantId,
+      transactionId: tx.id,
+      amount: String(tx.amount),
+      feeType: "payout",
+    });
     audit({
       action: "payout.completed",
       resource: tx.id,

@@ -9,6 +9,7 @@ import {
   type TransactionalEmailPayload,
 } from "./lib/transactional-email-queue.js";
 import { disconnectRedis } from "./lib/redis.js";
+import { runMonthlyBilling } from "./lib/billing/monthly-billing.js";
 
 const PORT = Number(process.env.PORT) || 3000;
 const HOST = process.env.HOST || "0.0.0.0";
@@ -51,6 +52,14 @@ async function main() {
       }
     }
   );
+
+  const MONTHLY_BILLING_JOB = "monthly-billing";
+  await queue.createQueue(MONTHLY_BILLING_JOB);
+  await queue.work(MONTHLY_BILLING_JOB, async () => {
+    const result = await runMonthlyBilling();
+    console.log(JSON.stringify({ monthlyBilling: result }));
+  });
+  await queue.schedule(MONTHLY_BILLING_JOB, "0 0 1 * *", {});
 
   const app = await buildApp();
 

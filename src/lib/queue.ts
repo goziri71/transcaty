@@ -16,4 +16,5 @@ if (!connectionString) {
 export const queue = new PgBoss({
   connectionString,
   max: 5,
+  schedule: true,
 });

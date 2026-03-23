@@ -15,10 +15,13 @@ export type AuditAction =
   | "config.changed"
   | "provider.merchant.status_changed"
   | "provider.merchant.kyc_changed"
+  | "provider.merchant.pricing_changed"
   | "provider.customer.status_changed"
   | "provider.wallet.adjusted"
   | "provider.transaction.status_changed"
-  | "provider.transaction.reconciled";
+  | "provider.transaction.reconciled"
+  | "billing.fee_applied"
+  | "billing.fee_skipped";
 
 export interface AuditEntry {
   action: AuditAction;

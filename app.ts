@@ -40,7 +40,7 @@ import {
 } from "./services/domestic/bangladesh/index.js";
 import { LIMITS } from "./src/lib/limits.js";
 import { queueMerchantWebhook } from "./src/lib/merchant-webhook.js";
-import { encrypt } from "./src/lib/encryption.js";
+import { encrypt, getSecret } from "./src/lib/encryption.js";
 import { pingRedis } from "./src/lib/redis.js";
 import { recordHttpRequest, renderMetrics, getMetricsContentType } from "./src/lib/metrics.js";
 import { registerProviderMfaRoutes } from "./api/provider/mfa.js";
@@ -153,7 +153,7 @@ export async function buildApp() {
     },
     async () => {
       await db.execute(sql`SELECT 1`);
-      const hasRedis = !!process.env.REDIS_URL?.trim();
+      const hasRedis = !!getSecret("REDIS_URL", "REDIS_URL_ENC")?.trim();
       const redis: "ok" | "skipped" | "error" = !hasRedis
         ? "skipped"
         : (await pingRedis())
