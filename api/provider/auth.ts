@@ -124,7 +124,10 @@ export async function registerProviderAuthRoutes(app: FastifyInstance) {
         role: user.role as ProviderRole,
       });
 
-      queueTransactionalEmail({ kind: "provider_login", to: user.email }).catch(() => {});
+      console.log(`[email] Queueing provider_login to ${user.email}`);
+      queueTransactionalEmail({ kind: "provider_login", to: user.email }).catch((e) => {
+        console.error("[email] Failed to queue provider_login:", e);
+      });
 
       return {
         token,
@@ -221,7 +224,10 @@ export async function registerProviderAuthRoutes(app: FastifyInstance) {
         role: pending.role,
       });
 
-      queueTransactionalEmail({ kind: "provider_login", to: pending.email }).catch(() => {});
+      console.log(`[email] Queueing provider_login (MFA) to ${pending.email}`);
+      queueTransactionalEmail({ kind: "provider_login", to: pending.email }).catch((e) => {
+        console.error("[email] Failed to queue provider_login (MFA):", e);
+      });
 
       return {
         token,

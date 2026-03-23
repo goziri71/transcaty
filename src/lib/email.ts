@@ -31,6 +31,7 @@ function parseFrom(from: string): { address: string; name: string } {
  * Returns true if email was accepted by provider; false if email is not configured or send failed.
  */
 export async function sendTransactionalEmail(params: SendEmailParams): Promise<boolean> {
+  console.log(`[email] sendTransactionalEmail: to=${params.to} subject="${params.subject?.slice(0, 50)}..."`);
   const from = getFromAddress();
   if (!from) {
     console.error(

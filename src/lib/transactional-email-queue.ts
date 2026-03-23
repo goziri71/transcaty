@@ -34,14 +34,17 @@ export type TransactionalEmailPayload =
     };
 
 export async function queueTransactionalEmail(payload: TransactionalEmailPayload): Promise<void> {
+  console.log(`[email] Sending job to queue: kind=${payload.kind} to=${payload.to}`);
   await queue.send(TRANSACTIONAL_EMAIL_JOB, payload, {
     retryLimit: 5,
     retryDelay: 30,
   });
+  console.log(`[email] Job queued successfully: kind=${payload.kind}`);
 }
 
 export async function deliverTransactionalEmail(payload: TransactionalEmailPayload): Promise<void> {
   const appName = process.env.EMAIL_APP_NAME?.trim() || "Transcaty";
+  console.log(`[email] Worker processing: kind=${payload.kind} to=${payload.to}`);
 
   if (payload.kind === "portal_login") {
     const ok = await sendTransactionalEmail({
@@ -60,6 +63,7 @@ export async function deliverTransactionalEmail(payload: TransactionalEmailPaylo
       `.trim(),
     });
     if (!ok) throw new Error("portal_login email delivery failed");
+    console.log(`[email] portal_login sent successfully to ${payload.to}`);
     return;
   }
 
@@ -80,6 +84,7 @@ export async function deliverTransactionalEmail(payload: TransactionalEmailPaylo
       `.trim(),
     });
     if (!ok) throw new Error("provider_login email delivery failed");
+    console.log(`[email] provider_login sent successfully to ${payload.to}`);
     return;
   }
 
@@ -103,6 +108,7 @@ export async function deliverTransactionalEmail(payload: TransactionalEmailPaylo
       `.trim(),
     });
     if (!ok) throw new Error("merchant_portal_payout email delivery failed");
+    console.log(`[email] merchant_portal_payout sent successfully to ${payload.to}`);
     return;
   }
 

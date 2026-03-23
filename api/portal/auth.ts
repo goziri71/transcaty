@@ -273,6 +273,11 @@ export async function registerPortalAuthRoutes(app: FastifyInstance) {
         role: existing.role,
       });
 
+      console.log(`[email] Queueing portal_login to ${existing.email}`);
+      queueTransactionalEmail({ kind: "portal_login", to: existing.email }).catch((e) => {
+        console.error("[email] Failed to queue portal_login:", e);
+      });
+
       return reply.send({
         token,
         merchantId: existing.merchantId,
@@ -380,7 +385,10 @@ export async function registerPortalAuthRoutes(app: FastifyInstance) {
         role: pending.role,
       });
 
-      queueTransactionalEmail({ kind: "portal_login", to: pending.email }).catch(() => {});
+      console.log(`[email] Queueing portal_login (MFA) to ${pending.email}`);
+      queueTransactionalEmail({ kind: "portal_login", to: pending.email }).catch((e) => {
+        console.error("[email] Failed to queue portal_login (MFA):", e);
+      });
 
       return reply.send({
         token,

@@ -43,12 +43,20 @@ async function main() {
     }
   );
 
+  await queue.createQueue(TRANSACTIONAL_EMAIL_JOB);
   await queue.work(
     TRANSACTIONAL_EMAIL_JOB,
     { batchSize: 3 },
     async (jobs) => {
       for (const job of jobs) {
-        await deliverTransactionalEmail(job.data as TransactionalEmailPayload);
+        try {
+          console.log(`[email] Worker received job id=${job.id} kind=${(job.data as TransactionalEmailPayload).kind}`);
+          await deliverTransactionalEmail(job.data as TransactionalEmailPayload);
+          console.log(`[email] Worker completed job id=${job.id}`);
+        } catch (err) {
+          console.error(`[email] Worker failed job id=${job.id}:`, err);
+          throw err;
+        }
       }
     }
   );
