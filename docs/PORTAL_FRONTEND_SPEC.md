@@ -272,9 +272,23 @@ No body. Returns `{ "ok": true }`. Client clears token.
 }
 ```
 
-Sends an email with a link. Base URL for the link: `PORTAL_PUBLIC_URL` (or `APP_BASE_URL`). Path: `/reset-password?token=...` on your **merchant frontend** (configure `PORTAL_PUBLIC_URL` to that origin).
+Sends an email with a link: `{base}/reset-password?token=...`
+
+**Base URL:** `PORTAL_PUBLIC_URL` (falls back to `APP_BASE_URL` if unset).
+- **PORTAL_PUBLIC_URL** must be your merchant dashboard SPA origin (e.g. `https://dashboard.transacty.ai`) — **not** the API URL.
+- If only `APP_BASE_URL` is set (e.g. `https://api.transacty.ai`), the link points to the API, which has no reset page → user gets 404 or wrong content.
+- **Set `PORTAL_PUBLIC_URL`** in backend env to the exact origin where your SPA runs.
 
 **Rate limit:** per IP (requires `REDIS_URL` for distributed limits). Env: `PASSWORD_RESET_REQUESTS_PER_IP_PER_HOUR` (default `5`).
+
+**Full flow (frontend):**
+1. User visits `/forgot-password`, enters email, submits.
+2. Frontend: `POST {API_BASE}/portal/auth/forgot-password` with `{ "email": "..." }`.
+3. Backend (if user exists): queues email with link `{PORTAL_PUBLIC_URL}/reset-password?token={hex}`.
+4. User receives email, clicks link → lands on `{PORTAL_PUBLIC_URL}/reset-password?token=...`.
+5. Frontend `/reset-password` route: read `token` from `?token=`, show password form.
+6. User submits → `POST {API_BASE}/portal/auth/reset-password` with `{ "token": "...", "password": "..." }`.
+7. On 200: redirect to `/login`.
 
 ---
 
@@ -980,13 +994,21 @@ All errors follow:
 
 ### Forgot password page
 
-- Single field: email → `POST /portal/auth/forgot-password`.
+- **URL:** `{SPA_ORIGIN}/forgot-password` (e.g. `https://dashboard.transacty.ai/forgot-password`)
+- Single field: email.
+- **Request:** `POST {API_BASE}/portal/auth/forgot-password` with `{ "email": "user@example.com" }`
 - Always show the same success copy (do not reveal whether email exists).
+- **Headers:** `Content-Type: application/json` (no auth required).
 
 ### Reset password page
 
-- Route must read **`token`** from query string: `/reset-password?token=...` (configure `PORTAL_PUBLIC_URL` on API so email links match this route).
-- Fields: new password (+ confirm) → `POST /portal/auth/reset-password` → redirect to login.
+- **URL:** `{SPA_ORIGIN}/reset-password?token=...` — the email link sends users here.
+- **Critical:** Backend must have `PORTAL_PUBLIC_URL={SPA_ORIGIN}` (e.g. `https://dashboard.transacty.ai`). If unset, it falls back to `APP_BASE_URL` (the API URL), and the link will point to the wrong place (API has no reset page).
+- Route must read **`token`** from query string: `?token=` (use `window.location.search`, `URLSearchParams`, or your router).
+- Fields: new password (+ confirm).
+- **Request:** `POST {API_BASE}/portal/auth/reset-password` with `{ "token": "<from query>", "password": "newSecurePassword123" }`
+- On success: redirect to `/login`.
+- **Headers:** `Content-Type: application/json` (no auth required).
 
 ### Security / MFA settings (optional)
 
@@ -1039,8 +1061,8 @@ All errors follow:
 
 | Area | Tasks |
 |------|--------|
-| **Env** | `API_BASE` / `VITE_API_URL` (or equivalent) pointing at Transcaty API; SPA `PORTAL_PUBLIC_URL` aligned with reset links (server-side). |
-| **Auth** | Login; handle `requiresMfa` + MFA verify; logout; optional forgot/reset routes. |
+| **Env** | `API_BASE` / `VITE_API_URL` = Transcaty API. **Backend:** `PORTAL_PUBLIC_URL` = SPA origin for reset links. |
+| **Auth** | Login; handle `requiresMfa` + MFA verify; logout; forgot/reset routes. |
 | **Session** | Attach `Authorization: Bearer` to all `/portal/me/*` requests; handle 401 globally. |
 | **Profile** | `GET /portal/me` on app shell load; use `mfaEnabled` / `mfaPendingSetup` for Security UI. |
 | **KYC** | Upload flow via Supabase `uploadToSignedUrl` per [File upload](#file-upload-documents). |

@@ -54,4 +54,4 @@ Migration `0007_password_reset_tokens` adds table `password_reset_tokens`.
 
 3. **ZeptoMail checks** – Domain verified? `EMAIL_FROM` must use a verified domain. Token includes `Zoho-enczapikey ` prefix?
 
-4. **PORTAL_PUBLIC_URL** – Must be your SPA origin (e.g. `https://dashboard.transacty.ai`), not the API URL.
+4. **PORTAL_PUBLIC_URL** – **Critical.** Must be your merchant dashboard SPA origin (e.g. `https://dashboard.transacty.ai`), **not** the API URL. If unset, the backend uses `APP_BASE_URL` (API), and the reset link in the email will point to the wrong place (404).

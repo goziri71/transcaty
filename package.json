@@ -19,7 +19,8 @@
     "payok:test": "tsx scripts/payok-test.ts",
     "payok:env-check": "tsx scripts/payok-env-check.ts",
     "payok:key-check": "tsx scripts/payok-key-check.ts",
-    "payok:platform-key-check": "tsx scripts/payok-platform-key-check.ts"
+    "payok:platform-key-check": "tsx scripts/payok-platform-key-check.ts",
+    "zepto:test": "tsx scripts/zepto-test.ts"
   },
   "keywords": [
     "payment",
