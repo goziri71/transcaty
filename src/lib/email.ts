@@ -57,13 +57,27 @@ export async function sendTransactionalEmail(params: SendEmailParams): Promise<b
         textbody: params.text,
         htmlbody: params.html ?? params.text.replace(/\n/g, "<br/>"),
       });
+      console.log(JSON.stringify({ level: "info", msg: "ZeptoMail send succeeded", to: params.to }));
       return true;
-    } catch (e) {
+    } catch (e: unknown) {
+      let errorDetail: string;
+      let apiBody: unknown;
+      const resp = e && typeof e === "object" && "json" in e ? (e as { json: () => Promise<unknown> }) : null;
+      if (resp?.json) {
+        try {
+          apiBody = await resp.json();
+          errorDetail = typeof apiBody === "object" ? JSON.stringify(apiBody) : String(apiBody);
+        } catch {
+          errorDetail = e instanceof Error ? e.message : String(e);
+        }
+      } else {
+        errorDetail = e instanceof Error ? e.message : String(e);
+      }
       console.error(
         JSON.stringify({
           level: "error",
           msg: "ZeptoMail send failed",
-          error: e instanceof Error ? e.message : String(e),
+          error: errorDetail,
           to: params.to,
         })
       );

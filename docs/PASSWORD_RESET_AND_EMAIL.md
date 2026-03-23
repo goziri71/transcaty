@@ -41,3 +41,17 @@ Migration `0007_password_reset_tokens` adds table `password_reset_tokens`.
 
 - Merchant app should implement routes that read `token` from the query string and call `POST /portal/auth/reset-password`.
 - Provider app: same for `POST /provider/auth/reset-password`.
+
+## Troubleshooting: No email received
+
+1. **Use an email that has a portal account** – The API always returns the same success message, but **no email is sent** if the address has no portal account (or the user is not `active`). Test with an email you used to sign up.
+
+2. **Check Render logs** – Look for:
+   - `"ZeptoMail send succeeded"` – email was sent; check spam/junk
+   - `"ZeptoMail send failed"` – API error (see `error` field for details)
+   - `"EMAIL_FROM not set"` – set `EMAIL_FROM` in Render Environment
+   - `"No email provider"` – set `ZEPTOMAIL_TOKEN`, `RESEND_API_KEY`, or SMTP vars
+
+3. **ZeptoMail checks** – Domain verified? `EMAIL_FROM` must use a verified domain. Token includes `Zoho-enczapikey ` prefix?
+
+4. **PORTAL_PUBLIC_URL** – Must be your SPA origin (e.g. `https://dashboard.transacty.ai`), not the API URL.
