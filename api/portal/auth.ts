@@ -273,8 +273,21 @@ export async function registerPortalAuthRoutes(app: FastifyInstance) {
         role: existing.role,
       });
 
+      const portalBase = (
+        process.env.PORTAL_PUBLIC_URL ??
+        process.env.APP_BASE_URL ??
+        `http://localhost:${process.env.PORT ?? 3000}`
+      ).replace(/\/$/, "");
+      const changePasswordUrl = `${portalBase}/forgot-password`;
+
       console.log(`[email] Queueing portal_login to ${existing.email}`);
-      queueTransactionalEmail({ kind: "portal_login", to: existing.email }).catch((e) => {
+      queueTransactionalEmail({
+        kind: "portal_login",
+        to: existing.email,
+        ip: getClientIp(request),
+        timestamp: new Date().toISOString(),
+        changePasswordUrl,
+      }).catch((e) => {
         console.error("[email] Failed to queue portal_login:", e);
       });
 
@@ -385,8 +398,21 @@ export async function registerPortalAuthRoutes(app: FastifyInstance) {
         role: pending.role,
       });
 
+      const portalBase = (
+        process.env.PORTAL_PUBLIC_URL ??
+        process.env.APP_BASE_URL ??
+        `http://localhost:${process.env.PORT ?? 3000}`
+      ).replace(/\/$/, "");
+      const changePasswordUrl = `${portalBase}/forgot-password`;
+
       console.log(`[email] Queueing portal_login (MFA) to ${pending.email}`);
-      queueTransactionalEmail({ kind: "portal_login", to: pending.email }).catch((e) => {
+      queueTransactionalEmail({
+        kind: "portal_login",
+        to: pending.email,
+        ip: getClientIp(request),
+        timestamp: new Date().toISOString(),
+        changePasswordUrl,
+      }).catch((e) => {
         console.error("[email] Failed to queue portal_login (MFA):", e);
       });
 

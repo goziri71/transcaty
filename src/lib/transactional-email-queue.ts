@@ -6,6 +6,27 @@ import { sendTransactionalEmail } from "./email.js";
 
 export const TRANSACTIONAL_EMAIL_JOB = "transactional-email";
 
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function formatLoginTimestamp(iso: string): string {
+  try {
+    const d = new Date(iso);
+    return d.toLocaleString(undefined, {
+      dateStyle: "medium",
+      timeStyle: "short",
+      hour12: true,
+    });
+  } catch {
+    return iso;
+  }
+}
+
 export type TransactionalEmailPayload =
   | {
       kind: "portal_password_reset";
@@ -20,10 +41,16 @@ export type TransactionalEmailPayload =
   | {
       kind: "portal_login";
       to: string;
+      ip: string;
+      timestamp: string;
+      changePasswordUrl: string;
     }
   | {
       kind: "provider_login";
       to: string;
+      ip: string;
+      timestamp: string;
+      changePasswordUrl: string;
     }
   | {
       kind: "merchant_portal_payout";
@@ -47,19 +74,31 @@ export async function deliverTransactionalEmail(payload: TransactionalEmailPaylo
   console.log(`[email] Worker processing: kind=${payload.kind} to=${payload.to}`);
 
   if (payload.kind === "portal_login") {
+    const whenFormatted = formatLoginTimestamp(payload.timestamp);
     const ok = await sendTransactionalEmail({
       to: payload.to,
       subject: `New login to your ${appName} merchant portal`,
       text: [
         `We detected a new login to your ${appName} merchant portal account.`,
         "",
+        `When: ${whenFormatted}`,
+        `IP address: ${payload.ip}`,
+        "",
         `If this was you, no action is needed.`,
-        `If you did not log in, please change your password immediately.`,
+        `If you did not log in, secure your account: ${payload.changePasswordUrl}`,
       ].join("\n"),
       html: `
-        <p>We detected a new login to your <strong>${appName}</strong> merchant portal account.</p>
-        <p>If this was you, no action is needed.</p>
-        <p>If you did not log in, please change your password immediately.</p>
+        <div style="font-family: system-ui, sans-serif; max-width: 480px; padding: 24px;">
+          <h2 style="margin: 0 0 16px; font-size: 18px;">New login to your ${appName} account</h2>
+          <p style="margin: 0 0 16px; color: #374151;">We detected a new login to your merchant portal.</p>
+          <div style="background: #f3f4f6; padding: 16px; border-radius: 8px; margin: 16px 0;">
+            <p style="margin: 0 0 8px; font-size: 14px;"><strong>When:</strong> ${escapeHtml(whenFormatted)}</p>
+            <p style="margin: 0; font-size: 14px;"><strong>IP address:</strong> ${escapeHtml(payload.ip)}</p>
+          </div>
+          <p style="margin: 16px 0; color: #374151;">If this was you, no action is needed.</p>
+          <p style="margin: 0 0 16px; color: #374151;">If you did not log in, secure your account immediately:</p>
+          <p style="margin: 0;"><a href="${escapeHtml(payload.changePasswordUrl)}" style="display: inline-block; background: #dc2626; color: white; padding: 10px 20px; border-radius: 6px; text-decoration: none; font-weight: 500;">Change password</a></p>
+        </div>
       `.trim(),
     });
     if (!ok) throw new Error("portal_login email delivery failed");
@@ -68,19 +107,31 @@ export async function deliverTransactionalEmail(payload: TransactionalEmailPaylo
   }
 
   if (payload.kind === "provider_login") {
+    const whenFormatted = formatLoginTimestamp(payload.timestamp);
     const ok = await sendTransactionalEmail({
       to: payload.to,
       subject: `New login to your ${appName} provider dashboard`,
       text: [
         `We detected a new login to your ${appName} provider admin dashboard.`,
         "",
+        `When: ${whenFormatted}`,
+        `IP address: ${payload.ip}`,
+        "",
         `If this was you, no action is needed.`,
-        `If you did not log in, please change your password immediately.`,
+        `If you did not log in, secure your account: ${payload.changePasswordUrl}`,
       ].join("\n"),
       html: `
-        <p>We detected a new login to your <strong>${appName}</strong> provider admin dashboard.</p>
-        <p>If this was you, no action is needed.</p>
-        <p>If you did not log in, please change your password immediately.</p>
+        <div style="font-family: system-ui, sans-serif; max-width: 480px; padding: 24px;">
+          <h2 style="margin: 0 0 16px; font-size: 18px;">New login to your ${appName} dashboard</h2>
+          <p style="margin: 0 0 16px; color: #374151;">We detected a new login to your provider admin dashboard.</p>
+          <div style="background: #f3f4f6; padding: 16px; border-radius: 8px; margin: 16px 0;">
+            <p style="margin: 0 0 8px; font-size: 14px;"><strong>When:</strong> ${escapeHtml(whenFormatted)}</p>
+            <p style="margin: 0; font-size: 14px;"><strong>IP address:</strong> ${escapeHtml(payload.ip)}</p>
+          </div>
+          <p style="margin: 16px 0; color: #374151;">If this was you, no action is needed.</p>
+          <p style="margin: 0 0 16px; color: #374151;">If you did not log in, secure your account immediately:</p>
+          <p style="margin: 0;"><a href="${escapeHtml(payload.changePasswordUrl)}" style="display: inline-block; background: #dc2626; color: white; padding: 10px 20px; border-radius: 6px; text-decoration: none; font-weight: 500;">Change password</a></p>
+        </div>
       `.trim(),
     });
     if (!ok) throw new Error("provider_login email delivery failed");

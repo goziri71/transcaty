@@ -124,8 +124,21 @@ export async function registerProviderAuthRoutes(app: FastifyInstance) {
         role: user.role as ProviderRole,
       });
 
+      const providerBase = (
+        process.env.PROVIDER_PUBLIC_URL ??
+        process.env.APP_BASE_URL ??
+        `http://localhost:${process.env.PORT ?? 3000}`
+      ).replace(/\/$/, "");
+      const changePasswordUrl = `${providerBase}/provider/forgot-password`;
+
       console.log(`[email] Queueing provider_login to ${user.email}`);
-      queueTransactionalEmail({ kind: "provider_login", to: user.email }).catch((e) => {
+      queueTransactionalEmail({
+        kind: "provider_login",
+        to: user.email,
+        ip: getClientIp(request),
+        timestamp: new Date().toISOString(),
+        changePasswordUrl,
+      }).catch((e) => {
         console.error("[email] Failed to queue provider_login:", e);
       });
 
@@ -224,8 +237,21 @@ export async function registerProviderAuthRoutes(app: FastifyInstance) {
         role: pending.role,
       });
 
+      const providerBase = (
+        process.env.PROVIDER_PUBLIC_URL ??
+        process.env.APP_BASE_URL ??
+        `http://localhost:${process.env.PORT ?? 3000}`
+      ).replace(/\/$/, "");
+      const changePasswordUrl = `${providerBase}/provider/forgot-password`;
+
       console.log(`[email] Queueing provider_login (MFA) to ${pending.email}`);
-      queueTransactionalEmail({ kind: "provider_login", to: pending.email }).catch((e) => {
+      queueTransactionalEmail({
+        kind: "provider_login",
+        to: pending.email,
+        ip: getClientIp(request),
+        timestamp: new Date().toISOString(),
+        changePasswordUrl,
+      }).catch((e) => {
         console.error("[email] Failed to queue provider_login (MFA):", e);
       });
 
