@@ -9,7 +9,7 @@
 import "dotenv/config";
 import { eq } from "drizzle-orm";
 import { db } from "../src/db/index.js";
-import { merchants, merchantUsers, wallets } from "../src/db/schema/index.js";
+import { merchantPricing, merchants, merchantUsers, wallets } from "../src/db/schema/index.js";
 import { hashPassword } from "../src/lib/portal-auth.js";
 
 const EMAIL = "merchant@example.com";
@@ -57,6 +57,15 @@ async function main() {
     balance: "0",
     currency: "BDT",
     status: "active",
+  });
+
+  await db.insert(merchantPricing).values({
+    merchantId: merchant.id,
+    billingMode: "percentage_only",
+    feePercentagePayin: "3",
+    feePercentagePayout: "2",
+    feeMinPayin: "0",
+    feeMinPayout: "0",
   });
 
   console.log("\nPortal user created:\n");

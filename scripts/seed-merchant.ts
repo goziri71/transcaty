@@ -6,7 +6,7 @@
 import "dotenv/config";
 import { randomBytes, createHash, createHmac } from "node:crypto";
 import { db } from "../src/db/index.js";
-import { merchants, merchantApiKeys, wallets } from "../src/db/schema/index.js";
+import { merchantApiKeys, merchantPricing, merchants, wallets } from "../src/db/schema/index.js";
 import { encrypt } from "../src/lib/encryption.js";
 
 const masterKey = process.env.ENCRYPTION_MASTER_KEY;
@@ -62,6 +62,15 @@ async function main() {
     balance: "0",
     currency: "BDT",
     status: "active",
+  });
+
+  await db.insert(merchantPricing).values({
+    merchantId: merchant.id,
+    billingMode: "percentage_only",
+    feePercentagePayin: "3",
+    feePercentagePayout: "2",
+    feeMinPayin: "0",
+    feeMinPayout: "0",
   });
 
   console.log("\nTest merchant created:\n");

@@ -8,6 +8,7 @@ import { eq } from "drizzle-orm";
 import { db } from "../../src/db/index.js";
 import {
   merchants,
+  merchantPricing,
   merchantUsers,
   wallets,
 } from "../../src/db/schema/index.js";
@@ -122,6 +123,15 @@ export async function registerPortalAuthRoutes(app: FastifyInstance) {
         balance: "0",
         currency: "BDT",
         status: "active",
+      });
+
+      await db.insert(merchantPricing).values({
+        merchantId: merchant.id,
+        billingMode: "percentage_only",
+        feePercentagePayin: "3",
+        feePercentagePayout: "2",
+        feeMinPayin: "0",
+        feeMinPayout: "0",
       });
 
       const token = signPortalToken({
@@ -369,6 +379,8 @@ export async function registerPortalAuthRoutes(app: FastifyInstance) {
         email: pending.email,
         role: pending.role,
       });
+
+      queueTransactionalEmail({ kind: "portal_login", to: pending.email }).catch(() => {});
 
       return reply.send({
         token,

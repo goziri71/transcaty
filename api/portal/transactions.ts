@@ -15,6 +15,7 @@ import {
   PayoutCreationError,
 } from "../../services/domestic/bangladesh/payout.js";
 import { LIMITS } from "../../src/lib/limits.js";
+import { queueTransactionalEmail } from "../../src/lib/transactional-email-queue.js";
 
 const errorResponse = z.object({
   error: z.string(),
@@ -313,6 +314,14 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
           benificiaryAccountInfo: body.benificiaryAccountInfo,
           cardHolderInfo: body.cardHolderInfo,
         });
+
+        queueTransactionalEmail({
+          kind: "merchant_portal_payout",
+          to: user.email,
+          amount: body.amount,
+          transactionId: result.transactionId,
+          recipientMasked: maskRecipient(body.benificiaryAccountInfo.number),
+        }).catch(() => {});
 
         return reply.status(201).send({
           transactionId: result.transactionId,

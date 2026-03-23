@@ -124,6 +124,8 @@ export async function registerProviderAuthRoutes(app: FastifyInstance) {
         role: user.role as ProviderRole,
       });
 
+      queueTransactionalEmail({ kind: "provider_login", to: user.email }).catch(() => {});
+
       return {
         token,
         authType: "jwt" as const,
@@ -218,6 +220,8 @@ export async function registerProviderAuthRoutes(app: FastifyInstance) {
         email: pending.email,
         role: pending.role,
       });
+
+      queueTransactionalEmail({ kind: "provider_login", to: pending.email }).catch(() => {});
 
       return {
         token,

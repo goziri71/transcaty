@@ -627,7 +627,6 @@ export async function buildApp() {
     "/api-pay/remit/V3.5/order/notify",
   ];
 
-  const skipWebhookVerify = process.env.PAYOK_WEBHOOK_SKIP_VERIFY === "1" || process.env.PAYOK_WEBHOOK_SKIP_VERIFY === "true";
   const debugWebhookBody = process.env.PAYOK_WEBHOOK_DEBUG_BODY === "1" || process.env.PAYOK_WEBHOOK_DEBUG_BODY === "true";
 
   app.post(PAYIN_WEBHOOK_PATH, async (request, reply) => {
@@ -635,17 +634,15 @@ export async function buildApp() {
     const sign = (request.headers.sign ?? request.headers.Sign) as string | undefined;
     const callbackPublicKeys = getPayokCallbackPublicKeys();
     const verifyDebug =
-      !skipWebhookVerify && !!sign && debugWebhookBody
+      !!sign && debugWebhookBody
         ? callbackPublicKeys
             .map((key) => verifyPayokCallbackWithFallbacksDebug(rawBody, payinPathCandidates, sign, key))
             .find((d) => d.verified) ?? null
         : null;
     const verified =
-      skipWebhookVerify ||
-      (!!sign && (
-        verifyDebug?.verified ??
-        callbackPublicKeys.some((key) => verifyPayokCallbackWithFallbacks(rawBody, payinPathCandidates, sign, key))
-      ));
+      !!sign &&
+      (verifyDebug?.verified ??
+        callbackPublicKeys.some((key) => verifyPayokCallbackWithFallbacks(rawBody, payinPathCandidates, sign, key)));
     if (!verified) {
       const debugPayload: Record<string, unknown> = {
         hasSign: !!sign,
@@ -672,7 +669,6 @@ export async function buildApp() {
         "payin webhook signature matched"
       );
     }
-    if (skipWebhookVerify) app.log.warn("payin webhook: PAYOK_WEBHOOK_SKIP_VERIFY enabled – signature not verified");
     const body = typeof request.body === "object" ? request.body : {};
     try {
       const webhook = await handlePayinCallback(body as Parameters<typeof handlePayinCallback>[0]);
@@ -691,17 +687,15 @@ export async function buildApp() {
     const sign = (request.headers.sign ?? request.headers.Sign) as string | undefined;
     const callbackPublicKeys = getPayokCallbackPublicKeys();
     const verifyDebug =
-      !skipWebhookVerify && !!sign && debugWebhookBody
+      !!sign && debugWebhookBody
         ? callbackPublicKeys
             .map((key) => verifyPayokCallbackWithFallbacksDebug(rawBody, payoutPathCandidates, sign, key))
             .find((d) => d.verified) ?? null
         : null;
     const verified =
-      skipWebhookVerify ||
-      (!!sign && (
-        verifyDebug?.verified ??
-        callbackPublicKeys.some((key) => verifyPayokCallbackWithFallbacks(rawBody, payoutPathCandidates, sign, key))
-      ));
+      !!sign &&
+      (verifyDebug?.verified ??
+        callbackPublicKeys.some((key) => verifyPayokCallbackWithFallbacks(rawBody, payoutPathCandidates, sign, key)));
     if (!verified) {
       const debugPayload: Record<string, unknown> = {
         hasSign: !!sign,
@@ -728,7 +722,6 @@ export async function buildApp() {
         "payout webhook signature matched"
       );
     }
-    if (skipWebhookVerify) app.log.warn("payout webhook: PAYOK_WEBHOOK_SKIP_VERIFY enabled – signature not verified");
     const body = typeof request.body === "object" ? request.body : {};
     try {
       const webhook = await handlePayoutCallback(body as Parameters<typeof handlePayoutCallback>[0]);
@@ -813,7 +806,7 @@ export async function buildApp() {
       }
       const body = request.body as { amount: string; paymentMethodCode: string; customer: { name: string; email: string; phone: string; deviceId: string }; goodsInfo: { name: string; id?: string; price?: string } };
       const amount = parseFloat(body.amount);
-      if (amount < LIMITS.payin.min || amount > LIMITS.payin.max) {
+      if (!Number.isFinite(amount) || amount < LIMITS.payin.min || amount > LIMITS.payin.max) {
         return reply.status(400).send({ error: `Amount must be between ${LIMITS.payin.min} and ${LIMITS.payin.max} BDT` });
       }
       try {
@@ -925,7 +918,7 @@ export async function buildApp() {
       }
       const body = request.body as { amount: string; benificiaryAccountInfo: { number: string; orgId: string; orgCode: string; orgName: string; holderName: string }; cardHolderInfo: { firstName: string; lastName: string; email: string; phone: string } };
       const amount = parseFloat(body.amount);
-      if (amount < LIMITS.payout.min || amount > LIMITS.payout.max) {
+      if (!Number.isFinite(amount) || amount < LIMITS.payout.min || amount > LIMITS.payout.max) {
         return reply.status(400).send({ error: `Amount must be between ${LIMITS.payout.min} and ${LIMITS.payout.max} BDT` });
       }
       try {
