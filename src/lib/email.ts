@@ -46,7 +46,8 @@ export async function sendTransactionalEmail(params: SendEmailParams): Promise<b
   const zeptoToken = getSecret("ZEPTOMAIL_TOKEN", "ZEPTOMAIL_TOKEN_ENC")?.trim();
   if (zeptoToken) {
     try {
-      const baseUrl = process.env.ZEPTOMAIL_URL?.trim() || "https://api.zeptomail.com/v1.1";
+      // Base URL only – zeptomail client appends "v1.1/email". Use "https://api.zeptomail.com/" or "api.zeptomail.com/"
+      const baseUrl = process.env.ZEPTOMAIL_URL?.trim() || "https://api.zeptomail.com/";
       const client = new SendMailClient({ url: baseUrl, token: zeptoToken });
       const parsed = parseFrom(from);
       await client.sendMail({
