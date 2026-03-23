@@ -12,7 +12,8 @@ Emails are sent **asynchronously** via **pg-boss** so HTTP handlers stay fast. W
 | Variable | Purpose |
 | --- | --- |
 | `EMAIL_FROM` | Required to send mail (e.g. `Transcaty <noreply@yourdomain.com>`) |
-| `RESEND_API_KEY` | Use [Resend](https://resend.com) HTTP API (simplest) |
+| `ZEPTOMAIL_TOKEN` | [ZeptoMail (Zoho)](https://www.zoho.com/zeptomail/) – full token including `Zoho-enczapikey ` prefix |
+| `RESEND_API_KEY` | [Resend](https://resend.com) HTTP API |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS` | Alternative: any SMTP provider |
 | `PORTAL_PUBLIC_URL` | Origin of **merchant** SPA for reset links (defaults to `APP_BASE_URL`) |
 | `PROVIDER_PUBLIC_URL` | Origin of **provider** SPA for reset links |
