@@ -1,0 +1,21 @@
+---
+description: Required checklist for risky backend changes
+alwaysApply: true
+---
+
+# Change Control Checklist
+
+Before finalizing changes to money/auth/security paths, confirm:
+
+- Validation: amount, enum status, required fields, and finite-number checks are enforced.
+- Authorization: route permission checks and role boundaries are unchanged or tightened.
+- Security: no new bypasses for signature, replay protection, idempotency, or MFA.
+- Observability: add or preserve audit events and actionable logs for failures.
+- Error strategy: unexpected external/provider responses fail safe with explicit error.
+- Lint/quality: run lints for edited files and fix newly introduced issues.
+
+## Deployment Discipline
+
+- Any migration affecting billing/wallet tables must include backward-safe defaults.
+- Never rely on manual runtime setup when defaults can be encoded in migration + code.
+- Document required env vars whenever auth/email/security behavior depends on them.

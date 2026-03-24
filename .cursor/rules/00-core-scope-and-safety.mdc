@@ -1,0 +1,18 @@
+---
+description: Core scope boundaries and fail-safe behavior for Transcaty
+alwaysApply: true
+---
+
+# Transcaty Scope and Safety
+
+- Build only what supports payment processing, wallet ledgering, merchant/provider auth, KYC gating, billing, and auditability.
+- Do not add unrelated product features (CRM, chat, marketing, analytics-only work) unless explicitly requested.
+- Any change touching money, auth, webhook verification, or provider admin controls must preserve backward-safe behavior.
+- Prefer fail-safe outcomes: reject request or mark transaction failed instead of guessing success.
+- Never remove or bypass signature checks, idempotency checks, balance checks, or role checks.
+- Keep PII/secret exposure minimal: do not log plaintext secrets, API keys, tokens, or decrypted credential values.
+
+## Out of Scope Guard
+
+- If a request expands scope, propose a phased plan and implement only the approved phase.
+- If security and feature speed conflict, prioritize security and explicit approval before weakening controls.

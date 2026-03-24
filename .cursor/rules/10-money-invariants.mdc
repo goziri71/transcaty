@@ -1,0 +1,24 @@
+---
+description: Non-negotiable money movement and ledger invariants
+globs: "{app.ts,api/**/*.ts,services/**/*.ts,src/lib/billing/**/*.ts,src/db/schema/**/*.ts}"
+alwaysApply: false
+---
+
+# Money Invariants
+
+- Every balance mutation must be paired with ledger entries and reference IDs.
+- No negative or non-finite amounts in payin, payout, transfer, refund, fee, or adjustment flows.
+- Never allow debit paths that produce negative wallet balances, unless explicitly defined and approved.
+- Transaction status must move through valid transitions only; no direct forced success outside controlled admin flow.
+- Idempotency must be used on external-facing create/pay endpoints to prevent duplicate charging.
+- Billing defaults must be deterministic (merchant pricing row or explicit fallback policy), never "silent no-fee" by accident.
+
+## Provider Response Handling
+
+- Validate provider response status/code and required fields before committing success.
+- If provider response is unexpected, fail closed: keep pending/failed state and log actionable audit context.
+
+## Example
+
+- Bad: Mark transaction `success` when provider returns unknown status payload.
+- Good: Treat unknown payload as failure path, persist diagnostic metadata, and return controlled error.

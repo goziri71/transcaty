@@ -1,0 +1,25 @@
+---
+description: Auth, webhook, replay, and privilege security requirements
+globs: "{app.ts,api/**/*.ts,src/lib/*auth*.ts,src/lib/request-ip.ts,services/domestic/bangladesh/provider/**/*.ts}"
+alwaysApply: false
+---
+
+# Auth and Webhook Security
+
+- Merchant API requests must require valid HMAC signature and replay-window timestamp checks.
+- Provider webhooks must require signature verification; no production bypass flags.
+- Keep role and permission checks explicit on each protected route.
+- High-risk provider actions must remain maker-checker protected unless user explicitly approves policy change.
+- MFA login flows must not skip final verification before issuing long-lived auth tokens.
+- Include security audit events for failed auth, privileged actions, and status overrides.
+
+## Security Response Rules
+
+- Invalid signature -> `401` only, do not continue processing.
+- Missing required auth headers or malformed token -> fail immediately.
+- If verification dependencies fail, prefer denial over permissive fallback.
+
+## Example
+
+- Bad: Continue webhook processing when signature header is missing.
+- Good: Return `401 Invalid signature`, log diagnostics, and stop execution.
