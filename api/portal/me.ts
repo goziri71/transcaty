@@ -26,6 +26,9 @@ export async function registerPortalMeRoutes(app: FastifyInstance) {
     "/portal/me",
     {
       schema: {
+        querystring: z.object({
+          environment: z.enum(["test", "live"]).default("test"),
+        }),
         response: {
           200: z.object({
             merchantId: z.string(),
@@ -184,6 +187,7 @@ export async function registerPortalMeRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const user = request.portalUser;
       if (!user) return reply.status(401).send({ error: "Unauthorized" });
+      const { environment } = request.query as { environment: "test" | "live" };
 
       const [w] = await db
         .select({
@@ -195,7 +199,7 @@ export async function registerPortalMeRoutes(app: FastifyInstance) {
         .where(
           and(
             eq(wallets.merchantId, user.merchantId),
-            eq(wallets.environment, "test"),
+            eq(wallets.environment, environment),
             eq(wallets.type, "merchant"),
             eq(wallets.status, "active")
           )

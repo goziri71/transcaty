@@ -42,6 +42,7 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
     {
       schema: {
         querystring: z.object({
+          environment: z.enum(["test", "live"]).default("test"),
           type: z.enum(["payin", "payout", "transfer", "refund"]).optional(),
           status: z.enum(["pending", "success", "failed"]).optional(),
           customerId: z.string().uuid().optional(),
@@ -76,7 +77,8 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
       const user = request.portalUser;
       if (!user) return reply.status(401).send({ error: "Unauthorized" });
 
-      const { type, status, customerId, limit, offset } = request.query as {
+      const { environment, type, status, customerId, limit, offset } = request.query as {
+        environment: "test" | "live";
         type?: "payin" | "payout" | "transfer" | "refund";
         status?: "pending" | "success" | "failed";
         customerId?: string;
@@ -84,7 +86,7 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
         offset: number;
       };
 
-      const conditions = [eq(transactions.merchantId, user.merchantId)];
+      const conditions = [eq(transactions.merchantId, user.merchantId), eq(transactions.environment, environment)];
       if (type) conditions.push(eq(transactions.type, type));
       if (status) conditions.push(eq(transactions.status, status));
       if (customerId) conditions.push(eq(transactions.walletId, customerId));
@@ -151,6 +153,9 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
     {
       schema: {
         params: z.object({ id: z.string().uuid() }),
+        querystring: z.object({
+          environment: z.enum(["test", "live"]).default("test"),
+        }),
         response: {
           200: z.object({
             id: z.string(),
@@ -175,12 +180,13 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
       if (!user) return reply.status(401).send({ error: "Unauthorized" });
 
       const { id } = request.params as { id: string };
+      const { environment } = request.query as { environment: "test" | "live" };
 
       const [tx] = await db
         .select()
         .from(transactions)
         .where(
-          and(eq(transactions.id, id), eq(transactions.merchantId, user.merchantId))
+          and(eq(transactions.id, id), eq(transactions.merchantId, user.merchantId), eq(transactions.environment, environment))
         )
         .limit(1);
 
@@ -363,6 +369,7 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
     {
       schema: {
         body: z.object({
+          environment: z.enum(["test", "live"]).default("test"),
           customerWalletId: z.string().uuid(),
           amount: z.string(),
           reason: z.string().max(500).optional(),
@@ -386,6 +393,7 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
       if (!user) return reply.status(401).send({ error: "Unauthorized" });
 
       const body = request.body as {
+        environment: "test" | "live";
         customerWalletId: string;
         amount: string;
         reason?: string;
@@ -394,6 +402,7 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
       try {
         const tx = await transferToCustomer({
           merchantId: user.merchantId,
+          environment: body.environment,
           customerWalletId: body.customerWalletId,
           amount: body.amount,
           reason: body.reason,
@@ -419,6 +428,7 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
     {
       schema: {
         body: z.object({
+          environment: z.enum(["test", "live"]).default("test"),
           customerWalletId: z.string().uuid(),
           amount: z.string(),
           refundOfTransactionId: z.string().uuid(),
@@ -444,6 +454,7 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
       if (!user) return reply.status(401).send({ error: "Unauthorized" });
 
       const body = request.body as {
+        environment: "test" | "live";
         customerWalletId: string;
         amount: string;
         refundOfTransactionId: string;
@@ -453,6 +464,7 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
       try {
         const tx = await refundToCustomer({
           merchantId: user.merchantId,
+          environment: body.environment,
           customerWalletId: body.customerWalletId,
           amount: body.amount,
           refundOfTransactionId: body.refundOfTransactionId,

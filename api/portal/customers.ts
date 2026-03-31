@@ -21,6 +21,7 @@ export async function registerPortalCustomersRoutes(app: FastifyInstance) {
     {
       schema: {
         querystring: z.object({
+          environment: z.enum(["test", "live"]).default("test"),
           limit: z.coerce.number().min(1).max(100).default(20),
           offset: z.coerce.number().min(0).default(0),
           status: z.enum(["active", "frozen", "pending", "closed"]).optional(),
@@ -49,7 +50,8 @@ export async function registerPortalCustomersRoutes(app: FastifyInstance) {
       const user = request.portalUser;
       if (!user) return reply.status(401).send({ error: "Unauthorized" });
 
-      const { limit, offset, status } = request.query as {
+      const { environment, limit, offset, status } = request.query as {
+        environment: "test" | "live";
         limit: number;
         offset: number;
         status?: (typeof WALLET_STATUS)[number];
@@ -57,7 +59,7 @@ export async function registerPortalCustomersRoutes(app: FastifyInstance) {
 
       const conditions = [
         eq(wallets.merchantId, user.merchantId),
-        eq(wallets.environment, "test"),
+        eq(wallets.environment, environment),
         eq(wallets.type, "customer"),
       ];
       if (status) conditions.push(eq(wallets.status, status));
@@ -103,6 +105,7 @@ export async function registerPortalCustomersRoutes(app: FastifyInstance) {
     {
       schema: {
         body: z.object({
+          environment: z.enum(["test", "live"]).default("test"),
           label: z.string().max(200).optional(),
         }),
         response: {
@@ -122,11 +125,11 @@ export async function registerPortalCustomersRoutes(app: FastifyInstance) {
       const user = request.portalUser;
       if (!user) return reply.status(401).send({ error: "Unauthorized" });
 
-      const body = request.body as { label?: string };
+      const body = request.body as { environment: "test" | "live"; label?: string };
 
       const customer = await createCustomerWallet({
         merchantId: user.merchantId,
-        environment: "test",
+        environment: body.environment,
         label: body.label?.trim() || undefined,
       });
 
@@ -146,6 +149,9 @@ export async function registerPortalCustomersRoutes(app: FastifyInstance) {
     {
       schema: {
         params: z.object({ id: z.string().uuid() }),
+        querystring: z.object({
+          environment: z.enum(["test", "live"]).default("test"),
+        }),
         response: {
           200: z.object({
             id: z.string(),
@@ -166,6 +172,7 @@ export async function registerPortalCustomersRoutes(app: FastifyInstance) {
       if (!user) return reply.status(401).send({ error: "Unauthorized" });
 
       const { id } = request.params as { id: string };
+      const { environment } = request.query as { environment: "test" | "live" };
 
       const [wallet] = await db
         .select()
@@ -174,7 +181,7 @@ export async function registerPortalCustomersRoutes(app: FastifyInstance) {
           and(
             eq(wallets.id, id),
             eq(wallets.merchantId, user.merchantId),
-            eq(wallets.environment, "test"),
+            eq(wallets.environment, environment),
             eq(wallets.type, "customer")
           )
         )
@@ -201,6 +208,9 @@ export async function registerPortalCustomersRoutes(app: FastifyInstance) {
     {
       schema: {
         params: z.object({ id: z.string().uuid() }),
+        querystring: z.object({
+          environment: z.enum(["test", "live"]).default("test"),
+        }),
         body: z.object({
           status: z.enum(["active", "frozen", "pending", "closed"]),
           reason: z.string().max(500).optional(),
@@ -221,6 +231,7 @@ export async function registerPortalCustomersRoutes(app: FastifyInstance) {
       if (!user) return reply.status(401).send({ error: "Unauthorized" });
 
       const { id } = request.params as { id: string };
+      const { environment } = request.query as { environment: "test" | "live" };
       const body = request.body as { status: string; reason?: string };
 
       const [wallet] = await db
@@ -230,7 +241,7 @@ export async function registerPortalCustomersRoutes(app: FastifyInstance) {
           and(
             eq(wallets.id, id),
             eq(wallets.merchantId, user.merchantId),
-            eq(wallets.environment, "test"),
+            eq(wallets.environment, environment),
             eq(wallets.type, "customer")
           )
         )
@@ -262,6 +273,7 @@ export async function registerPortalCustomersRoutes(app: FastifyInstance) {
       schema: {
         params: z.object({ id: z.string().uuid() }),
         querystring: z.object({
+          environment: z.enum(["test", "live"]).default("test"),
           limit: z.coerce.number().min(1).max(100).default(20),
           offset: z.coerce.number().min(0).default(0),
         }),
@@ -293,7 +305,7 @@ export async function registerPortalCustomersRoutes(app: FastifyInstance) {
       if (!user) return reply.status(401).send({ error: "Unauthorized" });
 
       const { id } = request.params as { id: string };
-      const { limit, offset } = request.query as { limit: number; offset: number };
+      const { environment, limit, offset } = request.query as { environment: "test" | "live"; limit: number; offset: number };
 
       const [wallet] = await db
         .select()
@@ -302,7 +314,7 @@ export async function registerPortalCustomersRoutes(app: FastifyInstance) {
           and(
             eq(wallets.id, id),
             eq(wallets.merchantId, user.merchantId),
-            eq(wallets.environment, "test"),
+            eq(wallets.environment, environment),
             eq(wallets.type, "customer")
           )
         )
@@ -315,7 +327,7 @@ export async function registerPortalCustomersRoutes(app: FastifyInstance) {
       const [totalResult] = await db
         .select({ count: count() })
         .from(transactions)
-        .where(eq(transactions.walletId, id));
+        .where(and(eq(transactions.walletId, id), eq(transactions.environment, environment)));
 
       const rows = await db
         .select({
@@ -329,7 +341,7 @@ export async function registerPortalCustomersRoutes(app: FastifyInstance) {
           updatedAt: transactions.updatedAt,
         })
         .from(transactions)
-        .where(eq(transactions.walletId, id))
+        .where(and(eq(transactions.walletId, id), eq(transactions.environment, environment)))
         .orderBy(desc(transactions.createdAt))
         .limit(limit)
         .offset(offset);
