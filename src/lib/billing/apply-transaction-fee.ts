@@ -5,6 +5,7 @@ import { applyTransactionFee } from "./fee-applier.js";
 export interface TryApplyTransactionFeeInput {
   merchantId: string;
   transactionId: string;
+  environment: "test" | "live";
   amount: string;
   feeType: TransactionFeeType;
 }
@@ -16,7 +17,7 @@ export interface TryApplyTransactionFeeInput {
 export async function tryApplyTransactionFee(
   input: TryApplyTransactionFeeInput
 ): Promise<{ applied: boolean; feeAmount?: string }> {
-  const { merchantId, transactionId, amount, feeType } = input;
+  const { merchantId, transactionId, environment, amount, feeType } = input;
 
   const pricing = await getMerchantPricing(merchantId);
   if (!pricing) {
@@ -31,6 +32,7 @@ export async function tryApplyTransactionFee(
   const applied = await applyTransactionFee({
     merchantId,
     transactionId,
+    environment,
     amount,
     feeAmount: computed.feeAmount,
     feeType,

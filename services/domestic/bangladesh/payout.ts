@@ -41,6 +41,7 @@ export async function createPayoutOrder(params: {
     .where(
       and(
         eq(wallets.merchantId, params.merchantId),
+        eq(wallets.environment, params.environment),
         eq(wallets.type, "merchant"),
         eq(wallets.status, "active")
       )
@@ -56,6 +57,7 @@ export async function createPayoutOrder(params: {
     .insert(transactions)
     .values({
       merchantId: params.merchantId,
+      environment: params.environment,
       type: "payout",
       status: "pending",
       amount: params.amount,
@@ -136,6 +138,7 @@ export async function createPayoutOrder(params: {
 
   await db.insert(ledgerEntries).values({
     walletId: wallet.id,
+    environment: params.environment,
     amount: params.amount,
     direction: "debit",
     type: "payout",
@@ -206,6 +209,7 @@ export async function handlePayoutCallback(body: {
     await tryApplyTransactionFee({
       merchantId: tx.merchantId,
       transactionId: tx.id,
+      environment: tx.environment,
       amount: String(tx.amount),
       feeType: "payout",
     });
@@ -221,6 +225,7 @@ export async function handlePayoutCallback(body: {
       .where(
         and(
           eq(wallets.merchantId, tx.merchantId),
+          eq(wallets.environment, tx.environment),
           eq(wallets.type, "merchant")
         )
       )
@@ -229,6 +234,7 @@ export async function handlePayoutCallback(body: {
     if (wallet) {
       await db.insert(ledgerEntries).values({
         walletId: wallet.id,
+        environment: tx.environment,
         amount: String(tx.amount),
         direction: "credit",
         type: "payout_refund",

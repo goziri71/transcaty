@@ -1005,6 +1005,7 @@ export async function buildApp() {
         .where(
           and(
             eq(wallets.merchantId, m.merchantId),
+            eq(wallets.environment, m.environment),
             eq(wallets.type, "merchant"),
             eq(wallets.status, "active")
           )
@@ -1070,7 +1071,14 @@ export async function buildApp() {
           updatedAt: transactions.updatedAt,
         })
         .from(transactions)
-        .where(and(eq(transactions.id, id), eq(transactions.merchantId, m.merchantId), eq(transactions.type, "payin")))
+        .where(
+          and(
+            eq(transactions.id, id),
+            eq(transactions.merchantId, m.merchantId),
+            eq(transactions.environment, m.environment),
+            eq(transactions.type, "payin")
+          )
+        )
         .limit(1);
       if (!tx) return reply.status(404).send({ error: "Not found" });
       const meta = tx.metadata ? (JSON.parse(tx.metadata) as { paymentMethodCode?: string }) : {};
@@ -1124,7 +1132,14 @@ export async function buildApp() {
           updatedAt: transactions.updatedAt,
         })
         .from(transactions)
-        .where(and(eq(transactions.id, id), eq(transactions.merchantId, m.merchantId), eq(transactions.type, "payout")))
+        .where(
+          and(
+            eq(transactions.id, id),
+            eq(transactions.merchantId, m.merchantId),
+            eq(transactions.environment, m.environment),
+            eq(transactions.type, "payout")
+          )
+        )
         .limit(1);
       if (!tx) return reply.status(404).send({ error: "Not found" });
       const meta = tx.metadata ? (JSON.parse(tx.metadata) as { benificiaryAccountInfo?: { number?: string } }) : {};
@@ -1179,7 +1194,7 @@ export async function buildApp() {
       if (!m) return reply.status(401).send({ error: "Unauthorized" });
       const { type, limit, offset } = request.query as { type?: "payin" | "payout"; limit: number; offset: number };
 
-      const conditions = [eq(transactions.merchantId, m.merchantId)];
+      const conditions = [eq(transactions.merchantId, m.merchantId), eq(transactions.environment, m.environment)];
       if (type) conditions.push(eq(transactions.type, type));
 
       const [countResult] = await db

@@ -51,13 +51,24 @@ async function main() {
     role: "admin",
   });
 
-  await db.insert(wallets).values({
-    merchantId: merchant.id,
-    type: "merchant",
-    balance: "0",
-    currency: "BDT",
-    status: "active",
-  });
+  await db.insert(wallets).values([
+    {
+      merchantId: merchant.id,
+      type: "merchant",
+      environment: "test",
+      balance: "0",
+      currency: "BDT",
+      status: "active",
+    },
+    {
+      merchantId: merchant.id,
+      type: "merchant",
+      environment: "live",
+      balance: "0",
+      currency: "BDT",
+      status: "active",
+    },
+  ]);
 
   await db.insert(merchantPricing).values({
     merchantId: merchant.id,

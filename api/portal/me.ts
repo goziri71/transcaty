@@ -195,6 +195,7 @@ export async function registerPortalMeRoutes(app: FastifyInstance) {
         .where(
           and(
             eq(wallets.merchantId, user.merchantId),
+            eq(wallets.environment, "test"),
             eq(wallets.type, "merchant"),
             eq(wallets.status, "active")
           )

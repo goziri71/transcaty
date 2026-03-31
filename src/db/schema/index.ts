@@ -44,6 +44,8 @@ export const transactionStatusEnum = pgEnum("transaction_status", [
   "failed",
 ]);
 
+export const payokEnvironmentEnum = pgEnum("payok_environment", ["test", "live"]);
+
 export const kycProfileStatusEnum = pgEnum("kyc_profile_status", [
   "draft",
   "submitted",
@@ -136,6 +138,7 @@ export const wallets = pgTable(
       .notNull()
       .references(() => merchants.id, { onDelete: "cascade" }),
     type: walletTypeEnum("type").notNull(),
+    environment: payokEnvironmentEnum("environment").notNull().default("test"),
     parentId: uuid("parent_id"), // for customer wallets, references merchant wallet
     label: text("label"), // customer display name (e.g. "John Doe", "user@example.com")
     balance: decimal("balance", { precision: 18, scale: 2 }).notNull().default("0"),
@@ -146,6 +149,7 @@ export const wallets = pgTable(
   },
   (t) => [
     index("wallets_merchant_id_idx").on(t.merchantId),
+    index("wallets_merchant_env_type_idx").on(t.merchantId, t.environment, t.type),
     index("wallets_parent_id_idx").on(t.parentId),
   ]
 );
@@ -157,6 +161,7 @@ export const ledgerEntries = pgTable(
     walletId: uuid("wallet_id")
       .notNull()
       .references(() => wallets.id, { onDelete: "cascade" }),
+    environment: payokEnvironmentEnum("environment").notNull().default("test"),
     amount: decimal("amount", { precision: 18, scale: 2 }).notNull(),
     direction: ledgerDirectionEnum("direction").notNull(),
     type: text("type").notNull(), // payin, payout, transfer, etc.
@@ -165,6 +170,7 @@ export const ledgerEntries = pgTable(
   },
   (t) => [
     index("ledger_entries_wallet_id_idx").on(t.walletId),
+    index("ledger_entries_wallet_env_idx").on(t.walletId, t.environment),
     index("ledger_entries_reference_id_idx").on(t.referenceId),
   ]
 );
@@ -218,6 +224,7 @@ export const transactions = pgTable(
       .notNull()
       .references(() => merchants.id, { onDelete: "cascade" }),
     walletId: uuid("wallet_id").references(() => wallets.id, { onDelete: "set null" }), // customer wallet for transfer/refund
+    environment: payokEnvironmentEnum("environment").notNull().default("test"),
     type: transactionTypeEnum("type").notNull(),
     status: transactionStatusEnum("status").notNull().default("pending"),
     amount: decimal("amount", { precision: 18, scale: 2 }).notNull(),
@@ -230,6 +237,7 @@ export const transactions = pgTable(
   },
   (t) => [
     index("transactions_merchant_id_idx").on(t.merchantId),
+    index("transactions_merchant_env_idx").on(t.merchantId, t.environment),
     index("transactions_wallet_id_idx").on(t.walletId),
     index("transactions_external_id_idx").on(t.externalId),
   ]

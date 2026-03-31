@@ -8,14 +8,17 @@ import { wallets, ledgerEntries, transactions } from "../../src/db/schema/index.
 
 export async function createCustomerWallet(params: {
   merchantId: string;
+  environment?: "test" | "live";
   label?: string;
 }) {
+  const environment = params.environment ?? "test";
   const [merchantWallet] = await db
     .select()
     .from(wallets)
     .where(
       and(
         eq(wallets.merchantId, params.merchantId),
+        eq(wallets.environment, environment),
         eq(wallets.type, "merchant"),
         eq(wallets.status, "active")
       )
@@ -30,6 +33,7 @@ export async function createCustomerWallet(params: {
     .insert(wallets)
     .values({
       merchantId: params.merchantId,
+      environment,
       type: "customer",
       parentId: merchantWallet.id,
       label: params.label ?? null,
@@ -46,9 +50,11 @@ export async function createCustomerWallet(params: {
 export async function transferToCustomer(params: {
   merchantId: string;
   customerWalletId: string;
+  environment?: "test" | "live";
   amount: string;
   reason?: string;
 }) {
+  const environment = params.environment ?? "test";
   const amount = parseFloat(params.amount);
   if (amount <= 0 || isNaN(amount)) {
     throw new Error("Invalid amount");
@@ -60,6 +66,7 @@ export async function transferToCustomer(params: {
     .where(
       and(
         eq(wallets.merchantId, params.merchantId),
+        eq(wallets.environment, environment),
         eq(wallets.type, "merchant"),
         eq(wallets.status, "active")
       )
@@ -73,6 +80,7 @@ export async function transferToCustomer(params: {
       and(
         eq(wallets.id, params.customerWalletId),
         eq(wallets.merchantId, params.merchantId),
+        eq(wallets.environment, environment),
         eq(wallets.type, "customer")
       )
     )
@@ -96,6 +104,7 @@ export async function transferToCustomer(params: {
     .values({
       merchantId: params.merchantId,
       walletId: customerWallet.id,
+      environment,
       type: "transfer",
       status: "success",
       amount: params.amount,
@@ -111,6 +120,7 @@ export async function transferToCustomer(params: {
   await db.insert(ledgerEntries).values([
     {
       walletId: merchantWallet.id,
+      environment,
       amount: params.amount,
       direction: "debit",
       type: "transfer",
@@ -118,6 +128,7 @@ export async function transferToCustomer(params: {
     },
     {
       walletId: customerWallet.id,
+      environment,
       amount: params.amount,
       direction: "credit",
       type: "transfer",
@@ -147,10 +158,12 @@ export async function transferToCustomer(params: {
 export async function refundToCustomer(params: {
   merchantId: string;
   customerWalletId: string;
+  environment?: "test" | "live";
   amount: string;
   refundOfTransactionId: string;
   reason?: string;
 }) {
+  const environment = params.environment ?? "test";
   const amount = parseFloat(params.amount);
   if (amount <= 0 || isNaN(amount)) {
     throw new Error("Invalid amount");
@@ -162,6 +175,7 @@ export async function refundToCustomer(params: {
     .where(
       and(
         eq(wallets.merchantId, params.merchantId),
+        eq(wallets.environment, environment),
         eq(wallets.type, "merchant"),
         eq(wallets.status, "active")
       )
@@ -175,6 +189,7 @@ export async function refundToCustomer(params: {
       and(
         eq(wallets.id, params.customerWalletId),
         eq(wallets.merchantId, params.merchantId),
+        eq(wallets.environment, environment),
         eq(wallets.type, "customer")
       )
     )
@@ -203,6 +218,7 @@ export async function refundToCustomer(params: {
     .values({
       merchantId: params.merchantId,
       walletId: customerWallet.id,
+      environment,
       type: "refund",
       status: "success",
       amount: params.amount,
@@ -216,6 +232,7 @@ export async function refundToCustomer(params: {
   await db.insert(ledgerEntries).values([
     {
       walletId: merchantWallet.id,
+      environment,
       amount: params.amount,
       direction: "debit",
       type: "refund",
@@ -223,6 +240,7 @@ export async function refundToCustomer(params: {
     },
     {
       walletId: customerWallet.id,
+      environment,
       amount: params.amount,
       direction: "credit",
       type: "refund",

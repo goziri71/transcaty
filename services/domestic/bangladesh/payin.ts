@@ -22,6 +22,7 @@ export async function createPayinOrder(params: {
     .insert(transactions)
     .values({
       merchantId: params.merchantId,
+      environment: params.environment,
       type: "payin",
       status: "pending",
       amount: params.amount,
@@ -120,6 +121,7 @@ export async function handlePayinCallback(body: {
       .where(
         and(
           eq(wallets.merchantId, tx.merchantId),
+          eq(wallets.environment, tx.environment),
           eq(wallets.type, "merchant"),
           eq(wallets.status, "active")
         )
@@ -129,6 +131,7 @@ export async function handlePayinCallback(body: {
     if (wallet) {
       await db.insert(ledgerEntries).values({
         walletId: wallet.id,
+        environment: tx.environment,
         amount: String(paidAmount),
         direction: "credit",
         type: "payin",
@@ -146,6 +149,7 @@ export async function handlePayinCallback(body: {
       await tryApplyTransactionFee({
         merchantId: tx.merchantId,
         transactionId: tx.id,
+        environment: tx.environment,
         amount: String(paidAmount),
         feeType: "payin",
       });

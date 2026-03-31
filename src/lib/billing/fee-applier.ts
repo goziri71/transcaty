@@ -8,6 +8,7 @@ import type { TransactionFeeType } from "./fee-calculator.js";
 export interface ApplyFeeInput {
   merchantId: string;
   transactionId: string;
+  environment: "test" | "live";
   amount: string;
   feeAmount: string;
   feeType: TransactionFeeType;
@@ -18,7 +19,7 @@ export interface ApplyFeeInput {
  * Skips if merchant has insufficient balance (logs audit, no throw).
  */
 export async function applyTransactionFee(input: ApplyFeeInput): Promise<boolean> {
-  const { merchantId, transactionId, amount, feeAmount, feeType } = input;
+  const { merchantId, transactionId, environment, amount, feeAmount, feeType } = input;
 
   const fee = Number(feeAmount);
   if (fee <= 0 || !Number.isFinite(fee)) {
@@ -31,6 +32,7 @@ export async function applyTransactionFee(input: ApplyFeeInput): Promise<boolean
     .where(
       and(
         eq(wallets.merchantId, merchantId),
+        eq(wallets.environment, environment),
         eq(wallets.type, "merchant"),
         eq(wallets.status, "active")
       )
@@ -68,6 +70,7 @@ export async function applyTransactionFee(input: ApplyFeeInput): Promise<boolean
     await tx.insert(ledgerEntries).values([
       {
         walletId: merchantWallet.id,
+        environment,
         amount: feeAmount,
         direction: "debit",
         type: "platform_fee",
@@ -75,6 +78,7 @@ export async function applyTransactionFee(input: ApplyFeeInput): Promise<boolean
       },
       {
         walletId: PLATFORM_WALLET_ID,
+        environment,
         amount: feeAmount,
         direction: "credit",
         type: "platform_fee",

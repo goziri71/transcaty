@@ -61,6 +61,7 @@ export async function runMonthlyBilling(): Promise<{
       .where(
         and(
           eq(wallets.merchantId, merchantId),
+          eq(wallets.environment, "live"),
           eq(wallets.type, "merchant"),
           eq(wallets.status, "active")
         )
@@ -86,6 +87,7 @@ export async function runMonthlyBilling(): Promise<{
           .insert(ledgerEntries)
           .values({
             walletId: PLATFORM_WALLET_ID,
+            environment: "live",
             amount: String(amount),
             direction: "credit",
             type: "monthly_fee",
@@ -97,6 +99,7 @@ export async function runMonthlyBilling(): Promise<{
           .insert(ledgerEntries)
           .values({
             walletId: merchantWallet.id,
+            environment: "live",
             amount: String(amount),
             direction: "debit",
             type: "monthly_fee",

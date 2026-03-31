@@ -255,7 +255,7 @@ export async function registerProviderRoutes(app: FastifyInstance) {
               balance: wallets.balance,
             })
             .from(wallets)
-            .where(and(eq(wallets.type, "merchant"), inArray(wallets.merchantId, merchantIds)))
+            .where(and(eq(wallets.type, "merchant"), eq(wallets.environment, "live"), inArray(wallets.merchantId, merchantIds)))
         : [];
       const balanceMap = new Map(walletRows.map((w) => [w.merchantId, String(w.balance)]));
 
@@ -326,7 +326,7 @@ export async function registerProviderRoutes(app: FastifyInstance) {
       const [merchantWallet] = await db
         .select()
         .from(wallets)
-        .where(and(eq(wallets.merchantId, merchantId), eq(wallets.type, "merchant")))
+        .where(and(eq(wallets.merchantId, merchantId), eq(wallets.environment, "live"), eq(wallets.type, "merchant")))
         .limit(1);
 
       const [profile] = await db
@@ -778,6 +778,7 @@ export async function registerProviderRoutes(app: FastifyInstance) {
       schema: {
         params: z.object({ merchantId: z.string().uuid() }),
         body: z.object({
+          environment: z.enum(["test", "live"]).default("live"),
           direction: z.enum(ADJUSTMENT_DIRECTION),
           amount: z.string().regex(/^\d+(\.\d{1,2})?$/),
           reason: z.string().min(3).max(500),
@@ -807,6 +808,7 @@ export async function registerProviderRoutes(app: FastifyInstance) {
       if (!ensureProviderPermission(request, reply, "wallet.adjust")) return;
       const { merchantId } = request.params as { merchantId: string };
       const body = request.body as {
+        environment: "test" | "live";
         direction: (typeof ADJUSTMENT_DIRECTION)[number];
         amount: string;
         reason: string;
@@ -836,6 +838,7 @@ export async function registerProviderRoutes(app: FastifyInstance) {
             resourceId: merchantId,
             payload: JSON.stringify({
               merchantId,
+              environment: body.environment,
               direction: body.direction,
               amount: toMoneyString(amount),
               reason: body.reason,
@@ -873,7 +876,7 @@ export async function registerProviderRoutes(app: FastifyInstance) {
         const [wallet] = await tx
           .select()
           .from(wallets)
-          .where(and(eq(wallets.merchantId, merchantId), eq(wallets.type, "merchant")))
+          .where(and(eq(wallets.merchantId, merchantId), eq(wallets.environment, body.environment), eq(wallets.type, "merchant")))
           .limit(1);
         if (!wallet) return { error: "WALLET_NOT_FOUND" as const };
 
@@ -884,6 +887,7 @@ export async function registerProviderRoutes(app: FastifyInstance) {
 
         await tx.insert(ledgerEntries).values({
           walletId: wallet.id,
+          environment: wallet.environment,
           amount: toMoneyString(amount),
           direction: body.direction,
           type: "provider_adjustment",
@@ -1309,6 +1313,7 @@ export async function registerProviderRoutes(app: FastifyInstance) {
         const payload = parsePayload(req.payload);
         if (req.actionType === "wallet_adjustment") {
           const merchantId = String(payload.merchantId ?? "");
+          const environment = String(payload.environment ?? "live") as "test" | "live";
           const direction = String(payload.direction ?? "") as "credit" | "debit";
           const amount = Number(payload.amount ?? 0);
           const referenceId = String(payload.referenceId ?? "");
@@ -1317,7 +1322,7 @@ export async function registerProviderRoutes(app: FastifyInstance) {
           const [wallet] = await tx
             .select()
             .from(wallets)
-            .where(and(eq(wallets.merchantId, merchantId), eq(wallets.type, "merchant")))
+            .where(and(eq(wallets.merchantId, merchantId), eq(wallets.environment, environment), eq(wallets.type, "merchant")))
             .limit(1);
           if (!wallet) return { error: "WALLET_NOT_FOUND" as const };
 
@@ -1327,6 +1332,7 @@ export async function registerProviderRoutes(app: FastifyInstance) {
 
           await tx.insert(ledgerEntries).values({
             walletId: wallet.id,
+            environment: wallet.environment,
             amount: toMoneyString(amount),
             direction,
             type: "provider_adjustment",

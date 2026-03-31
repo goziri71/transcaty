@@ -57,6 +57,7 @@ export async function registerPortalCustomersRoutes(app: FastifyInstance) {
 
       const conditions = [
         eq(wallets.merchantId, user.merchantId),
+        eq(wallets.environment, "test"),
         eq(wallets.type, "customer"),
       ];
       if (status) conditions.push(eq(wallets.status, status));
@@ -125,6 +126,7 @@ export async function registerPortalCustomersRoutes(app: FastifyInstance) {
 
       const customer = await createCustomerWallet({
         merchantId: user.merchantId,
+        environment: "test",
         label: body.label?.trim() || undefined,
       });
 
@@ -172,6 +174,7 @@ export async function registerPortalCustomersRoutes(app: FastifyInstance) {
           and(
             eq(wallets.id, id),
             eq(wallets.merchantId, user.merchantId),
+            eq(wallets.environment, "test"),
             eq(wallets.type, "customer")
           )
         )
@@ -227,6 +230,7 @@ export async function registerPortalCustomersRoutes(app: FastifyInstance) {
           and(
             eq(wallets.id, id),
             eq(wallets.merchantId, user.merchantId),
+            eq(wallets.environment, "test"),
             eq(wallets.type, "customer")
           )
         )
@@ -298,6 +302,7 @@ export async function registerPortalCustomersRoutes(app: FastifyInstance) {
           and(
             eq(wallets.id, id),
             eq(wallets.merchantId, user.merchantId),
+            eq(wallets.environment, "test"),
             eq(wallets.type, "customer")
           )
         )
