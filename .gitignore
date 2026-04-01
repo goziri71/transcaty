@@ -9,3 +9,4 @@ dist/
 # IDE
 .idea/
 .vscode/
+*.pem
