@@ -12,7 +12,7 @@ import { getSecret } from "../src/lib/encryption.js";
 function parseFrom(from: string): { address: string; name: string } {
   const match = from.match(/^(.+?)\s*<([^>]+)>$/);
   if (match) return { address: match[2].trim(), name: match[1].trim() };
-  return { address: from.trim(), name: "noreply" };
+  return { address: from.trim(), name: "Transacty" };
 }
 
 async function main() {
