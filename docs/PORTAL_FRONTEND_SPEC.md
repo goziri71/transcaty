@@ -1,6 +1,6 @@
 # Merchant Portal – Frontend Spec
 
-> API contract and UX flow for the Transcaty merchant dashboard. Use this to build the portal UI.
+> API contract and UX flow for the Transacty merchant dashboard. Use this to build the portal UI.
 
 ---
 
@@ -23,7 +23,7 @@ Merchants sign up with minimal info, log in (optionally **MFA**), complete activ
 {API_BASE}/portal/...
 ```
 
-Example: `https://api.transcaty.com/portal/auth/login`
+Example: `https://api.transacty.com/portal/auth/login`
 
 ---
 
@@ -639,7 +639,7 @@ Requires `kycStatus === 'verified'`.
 ```json
 {
   "id": "uuid",
-  "apiKey": "transcaty_abc123...",
+  "apiKey": "transacty_abc123...",
   "secret": "64-char-hex",
   "environment": "test",
   "scopes": "payin:create,payout:create,balance:read,*",
@@ -833,7 +833,7 @@ List items include `metadata` when present. See [Transaction metadata](#22-trans
 | | `reason` | Optional refund reason |
 | | `customerWalletId` | Customer wallet credited |
 
-**Internal fields** – Transcaty ops may add `providerFix: { fixedAt, ... }` when reconciling or fixing a transaction. Safe to ignore in merchant UI.
+**Internal fields** – Transacty ops may add `providerFix: { fixedAt, ... }` when reconciling or fixing a transaction. Safe to ignore in merchant UI.
 
 ---
 
@@ -1061,7 +1061,7 @@ All errors follow:
 
 | Area | Tasks |
 |------|--------|
-| **Env** | `API_BASE` / `VITE_API_URL` = Transcaty API. **Backend:** `PORTAL_PUBLIC_URL` = SPA origin for reset links. |
+| **Env** | `API_BASE` / `VITE_API_URL` = Transacty API. **Backend:** `PORTAL_PUBLIC_URL` = SPA origin for reset links. |
 | **Auth** | Login; handle `requiresMfa` + MFA verify; logout; forgot/reset routes. |
 | **Session** | Attach `Authorization: Bearer` to all `/portal/me/*` requests; handle 401 globally. |
 | **Profile** | `GET /portal/me` on app shell load; use `mfaEnabled` / `mfaPendingSetup` for Security UI. |

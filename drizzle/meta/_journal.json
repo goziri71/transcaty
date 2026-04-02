@@ -92,6 +92,13 @@
       "when": 1774131100000,
       "tag": "0012_environment_separation",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1774131200000,
+      "tag": "0013_transacty_platform_name",
+      "breakpoints": true
     }
   ]
 }

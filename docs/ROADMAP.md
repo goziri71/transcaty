@@ -1,4 +1,4 @@
-# Transcaty Roadmap
+# Transacty Roadmap
 
 > Real money flows. Merchants build fintechs. Customers under merchants. Do it right.
 
@@ -35,7 +35,7 @@ See **[ARCHITECTURE.md](./ARCHITECTURE.md)** for separation plan: Bangladesh iso
 ### 1.2 Merchant authentication
 
 - [x] API key + secret model (live/test)
-- [x] HMAC request signing (X-Transcaty-Key, X-Transcaty-Signature, X-Transcaty-Timestamp)
+- [x] HMAC request signing (X-Transacty-Key, X-Transacty-Signature, X-Transacty-Timestamp)
 - [x] Replay protection (±5 min timestamp)
 - [x] Scope-based authorization (payin:create, payout:create, etc.)
 
@@ -90,7 +90,7 @@ See **[ARCHITECTURE.md](./ARCHITECTURE.md)** for separation plan: Bangladesh iso
 ### 3.2 Our webhooks to merchants
 
 - [x] Webhook URL per merchant
-- [x] Sign payload (HMAC-SHA256, X-Transcaty-Webhook-Signature)
+- [x] Sign payload (HMAC-SHA256, X-Transacty-Webhook-Signature)
 - [x] Events: payin.completed, payin.failed, payout.completed, payout.failed
 - [x] Retry policy (pg-boss: 5 retries, 60s delay)
 - [ ] Idempotent delivery (merchant dedupes by event_id)

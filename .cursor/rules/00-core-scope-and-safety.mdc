@@ -1,9 +1,9 @@
 ---
-description: Core scope boundaries and fail-safe behavior for Transcaty
+description: Core scope boundaries and fail-safe behavior for Transacty
 alwaysApply: true
 ---
 
-# Transcaty Scope and Safety
+# Transacty Scope and Safety
 
 - Build only what supports payment processing, wallet ledgering, merchant/provider auth, KYC gating, billing, and auditability.
 - Do not add unrelated product features (CRM, chat, marketing, analytics-only work) unless explicitly requested.

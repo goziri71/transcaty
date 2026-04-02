@@ -50,7 +50,7 @@ async function main() {
     await client.sendMail({
       from: { address: parsed.address, name: parsed.name },
       to: [{ email_address: { address: to, name: to.split("@")[0] } }],
-      subject: "Transcaty ZeptoMail test",
+      subject: "Transacty ZeptoMail test",
       textbody: "If you receive this, ZeptoMail is working correctly.",
       htmlbody: "<p>If you receive this, ZeptoMail is working correctly.</p>",
     });

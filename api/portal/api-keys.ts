@@ -16,7 +16,7 @@ const errorResponse = z.object({
 });
 
 function generateKey(): string {
-  return "transcaty_" + randomBytes(24).toString("hex");
+  return "transacty_" + randomBytes(24).toString("hex");
 }
 
 function generateSecret(): string {

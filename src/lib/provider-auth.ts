@@ -38,7 +38,7 @@ declare module "fastify" {
 }
 
 /**
- * Provider (Transcaty admin) auth.
+ * Provider (Transacty admin) auth.
  * Headers:
  * - API key: X-Provider-Key or Authorization: Bearer <key>
  * - JWT: Authorization: Bearer <token> or X-Provider-Token

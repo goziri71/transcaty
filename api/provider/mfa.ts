@@ -25,7 +25,7 @@ const errorResponse = z.object({
 const issuer =
   process.env.PROVIDER_MFA_ISSUER?.trim() ||
   process.env.EMAIL_APP_NAME?.trim() ||
-  "Transcaty Provider";
+  "Transacty Provider";
 
 type ProviderJwtActor = {
   providerUserId: string;

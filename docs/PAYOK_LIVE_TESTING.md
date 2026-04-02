@@ -36,16 +36,16 @@ Balance inquiry returns 200 → Payok API is reachable and credentials are valid
 
 ```bash
 curl -X GET "http://localhost:3000/v1/balance" \
-  -H "X-Transcaty-Key: <api_key>" \
-  -H "X-Transcaty-Signature: <hmac>" \
-  -H "X-Transcaty-Timestamp: $(date +%s000)"
+  -H "X-Transacty-Key: <api_key>" \
+  -H "X-Transacty-Signature: <hmac>" \
+  -H "X-Transacty-Timestamp: $(date +%s000)"
 ```
 
 **Pay-in** – creates order in DB, calls Payok, returns `paymentInfo`:
 
 ```bash
 curl -X POST "http://localhost:3000/v1/payins" \
-  -H "X-Transcaty-Key: ..." -H "X-Transcaty-Signature: ..." -H "X-Transcaty-Timestamp: ..." \
+  -H "X-Transacty-Key: ..." -H "X-Transacty-Signature: ..." -H "X-Transacty-Timestamp: ..." \
   -H "Content-Type: application/json" \
   -d '{"amount":"500","paymentMethodCode":"BKASH","customer":{"name":"Test","email":"t@t.com","phone":"01712345678","deviceId":"dev1"},"goodsInfo":{"name":"Test order"}}'
 ```
@@ -54,7 +54,7 @@ curl -X POST "http://localhost:3000/v1/payins" \
 
 ```bash
 curl -X POST "http://localhost:3000/v1/payouts" \
-  -H "X-Transcaty-Key: ..." -H "X-Transcaty-Signature: ..." -H "X-Transcaty-Timestamp: ..." \
+  -H "X-Transacty-Key: ..." -H "X-Transacty-Signature: ..." -H "X-Transacty-Timestamp: ..." \
   -H "Content-Type: application/json" \
   -d '{"amount":"100","benificiaryAccountInfo":{"number":"...","orgId":"...","orgCode":"...","orgName":"...","holderName":"..."},"cardHolderInfo":{"firstName":"A","lastName":"B","email":"a@b.com","phone":"01712345678"}}'
 ```

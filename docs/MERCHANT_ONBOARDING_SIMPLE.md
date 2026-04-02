@@ -1,4 +1,4 @@
-# Transcaty Merchant API Guide (Simple + Full Examples)
+# Transacty Merchant API Guide (Simple + Full Examples)
 
 This is a merchant-facing guide.  
 It shows the full flow with request and response examples.
@@ -16,9 +16,9 @@ When a merchant is onboarded, they receive:
 Example:
 
 ```text
-apiKey: transcaty_test_xxxxxxxxxxxxxxxxx
+apiKey: transacty_test_xxxxxxxxxxxxxxxxx
 secret: 64-char-secret-hex
-baseUrl: https://api.transcaty.com
+baseUrl: https://api.transacty.com
 ```
 
 ---
@@ -27,9 +27,9 @@ baseUrl: https://api.transcaty.com
 
 Every merchant API call to `/v1/*` must include:
 
-- `X-Transcaty-Key`
-- `X-Transcaty-Signature`
-- `X-Transcaty-Timestamp`
+- `X-Transacty-Key`
+- `X-Transacty-Signature`
+- `X-Transacty-Timestamp`
 - `Content-Type: application/json` (for POST/PATCH)
 
 Signature payload format:
@@ -266,7 +266,7 @@ Response (200):
 
 ```json
 {
-  "webhookUrl": "https://merchant.com/webhooks/transcaty"
+  "webhookUrl": "https://merchant.com/webhooks/transacty"
 }
 ```
 
@@ -274,7 +274,7 @@ Response (200):
 
 ```json
 {
-  "webhookUrl": "https://merchant.com/webhooks/transcaty",
+  "webhookUrl": "https://merchant.com/webhooks/transacty",
   "webhookSecret": "generated-secret-value"
 }
 ```
@@ -302,8 +302,8 @@ Event types:
 
 Webhook headers:
 
-- `X-Transcaty-Event`
-- `X-Transcaty-Webhook-Signature`
+- `X-Transacty-Event`
+- `X-Transacty-Webhook-Signature`
 
 Example payload:
 
@@ -323,12 +323,12 @@ Example payload:
 
 ## 5) Customer Mapping (Important)
 
-Merchant should map internal customer IDs to Transcaty wallet IDs.
+Merchant should map internal customer IDs to Transacty wallet IDs.
 
 Store in merchant DB:
 
 - `merchant_customer_id`
-- `transcaty_customer_wallet_id`
+- `transacty_customer_wallet_id`
 
 Use this mapping in your own app/services when showing customer balances and histories.
 

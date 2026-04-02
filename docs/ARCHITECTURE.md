@@ -1,4 +1,4 @@
-# Transcaty Architecture – Separation Plan
+# Transacty Architecture – Separation Plan
 
 > Isolate markets so we never touch Bangladesh when adding Nigeria, Kenya, or other changes. Fixed structure, ready for the future.
 
@@ -59,7 +59,7 @@ flowchart TD
 ## Target Folder Structure
 
 ```
-transcaty/
+transacty/
 ├── app.ts                    # Thin router – delegates to modules
 ├── src/
 │   ├── server.ts
@@ -152,7 +152,7 @@ transcaty/
 
 Merchant API needs to know which country to use. Options:
 
-1. **Header** – `X-Transcaty-Country: BD` (default BD for now)
+1. **Header** – `X-Transacty-Country: BD` (default BD for now)
 2. **Merchant config** – `merchants.country` or `merchant_api_keys.country`
 3. **URL** – `/v1/bd/payins` vs `/v1/ng/payins` (explicit)
 

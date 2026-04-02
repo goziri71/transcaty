@@ -1,4 +1,4 @@
-# Provider Admin API – Postman Testing Guide (Transcaty Super Admin)
+# Provider Admin API – Postman Testing Guide (Transacty Super Admin)
 
 > Step-by-step guide for testing the provider (master) admin endpoints under `/provider/*`.
 
@@ -17,7 +17,7 @@ This API is a **separate admin surface** from merchant portal.
 **Merchant API is unchanged** by portal MFA, provider MFA, password reset, or `/metrics`. Those features only add **dashboard/admin** flows.
 
 - Merchant portal routes: `/portal/*`
-- Provider (Transcaty super-admin) routes: `/provider/*`
+- Provider (Transacty super-admin) routes: `/provider/*`
 
 Provider auth supports two modes:
 
@@ -73,11 +73,11 @@ Never expose this key in frontend code.
 
 ## Step 1: Postman Environment
 
-Create environment, e.g. **Transcaty Provider Admin**.
+Create environment, e.g. **Transacty Provider Admin**.
 
 | Variable | Value |
 | --- | --- |
-| `baseUrl` | `https://transcaty-building-technology-1.onrender.com` |
+| `baseUrl` | `https://transacty-building-technology-1.onrender.com` |
 | `providerKey` | your `PROVIDER_API_KEY` |
 | `providerToken` | (leave empty initially) |
 
@@ -106,9 +106,9 @@ Body:
 
 ```json
 {
-  "email": "superadmin@transcaty.com",
+  "email": "superadmin@transacty.com",
   "password": "ChangeMe123!",
-  "fullName": "Transcaty Super Admin"
+  "fullName": "Transacty Super Admin"
 }
 ```
 
@@ -118,7 +118,7 @@ POST `{{baseUrl}}/provider/auth/login`
 
 ```json
 {
-  "email": "superadmin@transcaty.com",
+  "email": "superadmin@transacty.com",
   "password": "ChangeMe123!"
 }
 ```
@@ -158,7 +158,7 @@ POST `{{baseUrl}}/provider/auth/forgot-password`
 
 ```json
 {
-  "email": "superadmin@transcaty.com"
+  "email": "superadmin@transacty.com"
 }
 ```
 
@@ -202,7 +202,7 @@ Expected `200` (JWT users may include MFA flags):
 {
   "role": "super_admin",
   "authType": "jwt",
-  "email": "superadmin@transcaty.com",
+  "email": "superadmin@transacty.com",
   "mfaEnabled": true,
   "mfaPendingSetup": false
 }

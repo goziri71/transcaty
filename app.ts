@@ -196,7 +196,7 @@ export async function buildApp() {
       },
     },
     async () => ({
-      name: "transcaty",
+      name: "transacty",
       version: "0.1.0",
     })
   );

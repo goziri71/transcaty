@@ -1,14 +1,14 @@
 ---
-title: Transcaty Superadmin Dashboard Frontend Spec
+title: Transacty Superadmin Dashboard Frontend Spec
 ---
 
-# Transcaty Superadmin Dashboard - Frontend Spec
+# Transacty Superadmin Dashboard - Frontend Spec
 
-> Product and API contract spec for building the Transcaty internal provider/admin dashboard (`/provider/*`).
+> Product and API contract spec for building the Transacty internal provider/admin dashboard (`/provider/*`).
 
 ## 1) Scope
 
-This dashboard is for **Transcaty internal team members** (super admin, ops, risk, finance, support), not merchant users.
+This dashboard is for **Transacty internal team members** (super admin, ops, risk, finance, support), not merchant users.
 
 Core responsibilities:
 - Provider authentication and MFA
@@ -27,7 +27,7 @@ Backend API base:
 - `{API_BASE}/provider/...`
 
 Example:
-- `https://api.transcaty.com/provider/auth/login`
+- `https://api.transacty.com/provider/auth/login`
 
 Suggested SPA route map:
 - `/login`

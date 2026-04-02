@@ -4,17 +4,17 @@
 
 ## Scope (important)
 
-This guide covers **only** the **Merchant API** under **`/v1/*`**, authenticated with **HMAC** headers (`X-Transcaty-Key`, `X-Transcaty-Signature`, `X-Transcaty-Timestamp`).
+This guide covers **only** the **Merchant API** under **`/v1/*`**, authenticated with **HMAC** headers (`X-Transacty-Key`, `X-Transacty-Signature`, `X-Transacty-Timestamp`).
 
 The following **do not change** merchant API contracts, signing, or routes:
 
 | Surface | Purpose |
 | --- | --- |
 | **`/portal/*`** | Merchant **dashboard** (JWT login, MFA, password reset, KYC uploads) |
-| **`/provider/*`** | Transcaty **internal admin** (provider JWT / API key) |
+| **`/provider/*`** | Transacty **internal admin** (provider JWT / API key) |
 | **`GET /metrics`** | Prometheus metrics (ops; optional `METRICS_TOKEN` in production) |
 
-Your **merchant integration** (server-to-server `/v1/*`) stays the same: same API keys, same request signing, same endpoints.
+Your **merchant integration** (server-to-server `/v1/*`) uses these routes and HMAC signing; new API keys use the `transacty_` prefix.
 
 ---
 
@@ -54,7 +54,7 @@ You'll see something like:
 Test merchant created:
 
   Merchant ID: abc123-uuid-here
-  API Key: transcaty_test_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+  API Key: transacty_test_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
   Secret: yyyy...64 hex chars...
 ```
 
@@ -68,12 +68,12 @@ Test merchant created:
 
 1. Open Postman
 2. Click **New** → **Collection**
-3. Name it "Transcaty Merchant API"
+3. Name it "Transacty Merchant API"
 
 ### 1.2 Set environment variables
 
 1. Click **Environments** (left sidebar) → **Create Environment**
-2. Name it "Transcaty Local"
+2. Name it "Transacty Local"
 3. Add these variables:
 
 | Variable   | Initial Value | Current Value |
@@ -93,7 +93,7 @@ Every `/v1/*` request needs 3 headers. We'll auto-generate them.
 3. Paste this:
 
 ```javascript
-// Transcaty HMAC signing – runs before every request in this collection
+// Transacty HMAC signing – runs before every request in this collection
 const apiKey = pm.environment.get("apiKey");
 const secret = pm.environment.get("secret");
 
@@ -121,9 +121,9 @@ pm.environment.set("signature", signature);
 
 | Key                    | Value              |
 |------------------------|--------------------|
-| X-Transcaty-Key        | `{{apiKey}}`       |
-| X-Transcaty-Signature  | `{{signature}}`    |
-| X-Transcaty-Timestamp | `{{timestamp}}`    |
+| X-Transacty-Key        | `{{apiKey}}`       |
+| X-Transacty-Signature  | `{{signature}}`    |
+| X-Transacty-Timestamp | `{{timestamp}}`    |
 | Content-Type           | application/json   |
 
 These will be sent with every request. The Pre-request Script fills in `signature` and `timestamp` before each call.
@@ -446,7 +446,7 @@ Body:
 
 ```json
 {
-  "webhookUrl": "https://your-server.com/webhooks/transcaty"
+  "webhookUrl": "https://your-server.com/webhooks/transacty"
 }
 ```
 

@@ -1,6 +1,6 @@
 /**
  * Merchant auth: HMAC-SHA256 request signing.
- * Headers: X-Transcaty-Key, X-Transcaty-Signature, X-Transcaty-Timestamp
+ * Headers: X-Transacty-Key, X-Transacty-Signature, X-Transacty-Timestamp
  */
 import type { FastifyRequest, FastifyReply } from "fastify";
 import { createHmac, createHash } from "node:crypto";
@@ -39,14 +39,14 @@ export async function merchantAuth(
   request: FastifyRequest,
   reply: FastifyReply
 ): Promise<void> {
-  const key = request.headers["x-transcaty-key"] as string | undefined;
-  const signature = request.headers["x-transcaty-signature"] as string | undefined;
-  const timestamp = request.headers["x-transcaty-timestamp"] as string | undefined;
+  const key = request.headers["x-transacty-key"] as string | undefined;
+  const signature = request.headers["x-transacty-signature"] as string | undefined;
+  const timestamp = request.headers["x-transacty-timestamp"] as string | undefined;
 
   if (!key || !signature || !timestamp) {
     return reply.status(401).send({
       error: "Unauthorized",
-      message: "Missing X-Transcaty-Key, X-Transcaty-Signature, or X-Transcaty-Timestamp",
+      message: "Missing X-Transacty-Key, X-Transacty-Signature, or X-Transacty-Timestamp",
     });
   }
 
@@ -54,7 +54,7 @@ export async function merchantAuth(
   if (isNaN(ts)) {
     return reply.status(401).send({
       error: "Unauthorized",
-      message: "Invalid X-Transcaty-Timestamp",
+      message: "Invalid X-Transacty-Timestamp",
     });
   }
 

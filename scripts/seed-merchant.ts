@@ -16,7 +16,7 @@ if (!masterKey) {
 }
 
 function generateKey(): string {
-  return "transcaty_test_" + randomBytes(24).toString("hex");
+  return "transacty_test_" + randomBytes(24).toString("hex");
 }
 
 function generateSecret(): string {
@@ -89,7 +89,7 @@ async function main() {
   console.log("  API Key:", apiKey);
   console.log("  Secret:", secret);
   console.log("\nTo sign requests: HMAC-SHA256(timestamp + '.' + body, secret)");
-  console.log("Headers: X-Transcaty-Key, X-Transcaty-Signature, X-Transcaty-Timestamp");
+  console.log("Headers: X-Transacty-Key, X-Transacty-Signature, X-Transacty-Timestamp");
   console.log("");
 }
 

@@ -70,7 +70,7 @@ export async function queueTransactionalEmail(payload: TransactionalEmailPayload
 }
 
 export async function deliverTransactionalEmail(payload: TransactionalEmailPayload): Promise<void> {
-  const appName = process.env.EMAIL_APP_NAME?.trim() || "Transcaty";
+  const appName = process.env.EMAIL_APP_NAME?.trim() || "Transacty";
   console.log(`[email] Worker processing: kind=${payload.kind} to=${payload.to}`);
 
   if (payload.kind === "portal_login") {

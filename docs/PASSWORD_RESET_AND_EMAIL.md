@@ -1,9 +1,9 @@
-# Password reset & email (Transcaty)
+# Password reset & email (Transacty)
 
 ## Overview
 
 - **Portal (merchants):** `POST /portal/auth/forgot-password`, `POST /portal/auth/reset-password`
-- **Provider (Transcaty admins):** `POST /provider/auth/forgot-password`, `POST /provider/auth/reset-password`
+- **Provider (Transacty admins):** `POST /provider/auth/forgot-password`, `POST /provider/auth/reset-password`
 
 Emails are sent **asynchronously** via **pg-boss** so HTTP handlers stay fast. Workers run in `src/server.ts` next to merchant webhook delivery.
 
@@ -11,13 +11,13 @@ Emails are sent **asynchronously** via **pg-boss** so HTTP handlers stay fast. W
 
 | Variable | Purpose |
 | --- | --- |
-| `EMAIL_FROM` | Required to send mail (e.g. `Transcaty <noreply@yourdomain.com>`) |
+| `EMAIL_FROM` | Required to send mail (e.g. `Transacty <noreply@yourdomain.com>`) |
 | `ZEPTOMAIL_TOKEN` | [ZeptoMail (Zoho)](https://www.zoho.com/zeptomail/) – full token including `Zoho-enczapikey ` prefix |
 | `RESEND_API_KEY` | [Resend](https://resend.com) HTTP API |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS` | Alternative: any SMTP provider |
 | `PORTAL_PUBLIC_URL` | Origin of **merchant** SPA for reset links (defaults to `APP_BASE_URL`) |
 | `PROVIDER_PUBLIC_URL` | Origin of **provider** SPA for reset links |
-| `EMAIL_APP_NAME` | Display name in email subject/body (default: `Transcaty`) |
+| `EMAIL_APP_NAME` | Display name in email subject/body (default: `Transacty`) |
 | `REDIS_URL` | Optional; enables distributed per-IP rate limits for forgot/reset |
 | `PASSWORD_RESET_TOKEN_TTL_MINUTES` | Default `60` |
 | `PASSWORD_RESET_REQUESTS_PER_IP_PER_HOUR` | Default `5` (forgot-password) |

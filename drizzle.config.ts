@@ -8,7 +8,7 @@ function withSsl(url: string): string {
   return url.includes("?") ? `${url}&${ssl}` : `${url}?${ssl}`;
 }
 
-const dbUrl = process.env.DATABASE_URL ?? "postgresql://localhost:5432/transcaty";
+const dbUrl = process.env.DATABASE_URL ?? "postgresql://localhost:5432/transacty";
 
 export default defineConfig({
   schema: "./src/db/schema/index.ts",

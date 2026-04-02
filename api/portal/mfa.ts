@@ -25,7 +25,7 @@ const errorResponse = z.object({
 const issuer =
   process.env.PORTAL_MFA_ISSUER?.trim() ||
   process.env.EMAIL_APP_NAME?.trim() ||
-  "Transcaty Portal";
+  "Transacty Portal";
 
 export async function registerPortalMfaRoutes(app: FastifyInstance) {
   app.get(

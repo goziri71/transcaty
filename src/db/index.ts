@@ -5,7 +5,7 @@ import { ensureDbSsl, getSecret } from "../lib/encryption.js";
 
 const raw = getSecret("DATABASE_URL", "DATABASE_URL_ENC");
 const connectionString = ensureDbSsl(
-  raw ?? (process.env.RENDER ? "" : "postgresql://localhost:5432/transcaty")
+  raw ?? (process.env.RENDER ? "" : "postgresql://localhost:5432/transacty")
 );
 
 if (!connectionString) {

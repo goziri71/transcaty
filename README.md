@@ -1,4 +1,4 @@
-# Transcaty
+# Transacty
 
 B2B payment platform for domestic and cross-border pay-in and pay-out.
 
@@ -38,7 +38,7 @@ B2B payment platform for domestic and cross-border pay-in and pay-out.
 3. **Create database**
 
    ```bash
-   createdb transcaty
+   createdb transacty
    ```
 
 4. **Run migrations**

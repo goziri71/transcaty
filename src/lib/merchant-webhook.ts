@@ -1,6 +1,6 @@
 /**
  * Emit webhooks to merchants when pay-in/payout events complete.
- * Payload is signed with HMAC-SHA256. Header: X-Transcaty-Webhook-Signature.
+ * Payload is signed with HMAC-SHA256. Header: X-Transacty-Webhook-Signature.
  */
 import { createHmac } from "node:crypto";
 import { eq } from "drizzle-orm";
@@ -63,8 +63,8 @@ export async function sendMerchantWebhook(merchantId: string, event: WebhookEven
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-Transcaty-Webhook-Signature": signature,
-      "X-Transcaty-Event": event.type,
+      "X-Transacty-Webhook-Signature": signature,
+      "X-Transacty-Event": event.type,
     },
     body: payload,
   });
