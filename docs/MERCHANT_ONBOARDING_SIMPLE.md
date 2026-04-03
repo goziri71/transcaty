@@ -289,6 +289,8 @@ Disable webhook:
 }
 ```
 
+**Merchant dashboard (browser):** use portal JWT, not HMAC. `GET /portal/me/webhook` returns the current URL; `PATCH /portal/me/webhook` accepts the same JSON body and response as above. Requires KYC `verified`.
+
 ---
 
 ## 4) Webhook Events Merchant Receives
