@@ -100,6 +100,7 @@ Request:
 {
   "amount": "500.00",
   "paymentMethodCode": "BKASH",
+  "returnUrl": "https://merchant.example.com/checkout/success",
   "customer": {
     "name": "Rahim",
     "email": "rahim@example.com",
@@ -132,6 +133,8 @@ Response (200):
 ```
 
 Use `transactionId` as your main reference in your system.
+
+`returnUrl` is **your** HTTPS page where the customer returns after completing payment in the hosted checkout. Transacty forwards it to the payment provider; you do not configure the provider directly.
 
 ---
 

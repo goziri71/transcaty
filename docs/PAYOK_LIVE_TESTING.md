@@ -47,7 +47,7 @@ curl -X GET "http://localhost:3000/v1/balance" \
 curl -X POST "http://localhost:3000/v1/payins" \
   -H "X-Transacty-Key: ..." -H "X-Transacty-Signature: ..." -H "X-Transacty-Timestamp: ..." \
   -H "Content-Type: application/json" \
-  -d '{"amount":"500","paymentMethodCode":"BKASH","customer":{"name":"Test","email":"t@t.com","phone":"01712345678","deviceId":"dev1"},"goodsInfo":{"name":"Test order"}}'
+  -d '{"amount":"500","paymentMethodCode":"BKASH","returnUrl":"https://your-merchant-site.com/payment/done","customer":{"name":"Test","email":"t@t.com","phone":"01712345678","deviceId":"dev1"},"goodsInfo":{"name":"Test order"}}'
 ```
 
 **Payout** – debits wallet, calls Payok:

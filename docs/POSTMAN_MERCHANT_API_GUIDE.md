@@ -194,6 +194,7 @@ At first, balance is 0. To test payouts, you can add balance in the DB (see "Qui
 {
   "amount": "500",
   "paymentMethodCode": "BKASH",
+  "returnUrl": "https://your-site.com/payment/complete",
   "customer": {
     "name": "Test Customer",
     "email": "customer@example.com",

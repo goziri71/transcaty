@@ -39,6 +39,7 @@ import {
   verifyPayokCallbackWithFallbacksDebug,
 } from "./services/domestic/bangladesh/index.js";
 import { LIMITS } from "./src/lib/limits.js";
+import { validateMerchantReturnUrl } from "./src/lib/merchant-return-url.js";
 import { queueMerchantWebhook } from "./src/lib/merchant-webhook.js";
 import { encrypt, getSecret } from "./src/lib/encryption.js";
 import { pingRedis } from "./src/lib/redis.js";
@@ -754,6 +755,8 @@ export async function buildApp() {
         body: z.object({
           amount: z.string(),
           paymentMethodCode: z.enum(["BKASH", "NAGAD", "UPAY"]),
+          /** Where the customer is sent after PayOK checkout (your site/app). Forwarded to the provider; never exposed to the merchant as PayOK. */
+          returnUrl: z.string().min(1),
           customer: z.object({
             name: z.string(),
             email: z.string().email(),
@@ -804,10 +807,20 @@ export async function buildApp() {
           .limit(1);
         if (cached) return JSON.parse(cached.responseSnapshot);
       }
-      const body = request.body as { amount: string; paymentMethodCode: string; customer: { name: string; email: string; phone: string; deviceId: string }; goodsInfo: { name: string; id?: string; price?: string } };
+      const body = request.body as {
+        amount: string;
+        paymentMethodCode: string;
+        returnUrl: string;
+        customer: { name: string; email: string; phone: string; deviceId: string };
+        goodsInfo: { name: string; id?: string; price?: string };
+      };
       const amount = parseFloat(body.amount);
       if (!Number.isFinite(amount) || amount < LIMITS.payin.min || amount > LIMITS.payin.max) {
         return reply.status(400).send({ error: `Amount must be between ${LIMITS.payin.min} and ${LIMITS.payin.max} BDT` });
+      }
+      const returnCheck = validateMerchantReturnUrl(body.returnUrl);
+      if (!returnCheck.ok) {
+        return reply.status(400).send({ error: "Bad Request", message: returnCheck.message });
       }
       try {
         const result = await createPayinOrder({
@@ -816,6 +829,7 @@ export async function buildApp() {
           amount: body.amount,
           paymentMethodCode: body.paymentMethodCode,
           baseUrl,
+          merchantReturnUrl: returnCheck.normalized,
           customer: body.customer,
           goodsInfo: body.goodsInfo,
         });

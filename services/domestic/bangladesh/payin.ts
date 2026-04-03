@@ -15,6 +15,8 @@ export async function createPayinOrder(params: {
   amount: string;
   paymentMethodCode: string;
   baseUrl: string;
+  /** Where PayOK redirects the customer after payment; merchant-facing only (forwarded to PayOK). */
+  merchantReturnUrl: string;
   customer: { name: string; email: string; phone: string; deviceId: string };
   goodsInfo: { name: string; id?: string; price?: string };
 }) {
@@ -27,14 +29,18 @@ export async function createPayinOrder(params: {
       status: "pending",
       amount: params.amount,
       currency: "BDT",
-      metadata: JSON.stringify({ paymentMethodCode: params.paymentMethodCode, environment: params.environment }),
+      metadata: JSON.stringify({
+        paymentMethodCode: params.paymentMethodCode,
+        environment: params.environment,
+        merchantReturnUrl: params.merchantReturnUrl,
+      }),
     })
     .returning();
 
   if (!tx) throw new Error("Failed to create transaction");
 
   const notificationUrl = `${params.baseUrl.replace(/\/$/, "")}/webhooks/payok/payin`;
-  const returnUrl = params.baseUrl;
+  const returnUrl = params.merchantReturnUrl;
 
   const { status, body } = await payokPayinCreateOrder({
     environment: params.environment,
