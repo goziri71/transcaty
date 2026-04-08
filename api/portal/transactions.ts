@@ -16,6 +16,7 @@ import {
 } from "../../services/domestic/bangladesh/payout.js";
 import { LIMITS } from "../../src/lib/limits.js";
 import { queueTransactionalEmail } from "../../src/lib/transactional-email-queue.js";
+import { audit } from "../../src/lib/audit.js";
 
 const errorResponse = z.object({
   error: z.string(),
@@ -319,6 +320,7 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
           baseUrl,
           benificiaryAccountInfo: body.benificiaryAccountInfo,
           cardHolderInfo: body.cardHolderInfo,
+          portalActor: { merchantUserId: user.merchantUserId, email: user.email },
         });
 
         queueTransactionalEmail({
@@ -408,6 +410,19 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
           reason: body.reason,
         });
 
+        audit({
+          action: "portal.transfer.created",
+          merchantId: user.merchantId,
+          merchantUserId: user.merchantUserId,
+          actorEmail: user.email,
+          resource: tx.id,
+          meta: {
+            environment: body.environment,
+            amount: body.amount,
+            customerWalletId: body.customerWalletId,
+          },
+        });
+
         return reply.status(201).send({
           id: tx.id,
           type: tx.type,
@@ -469,6 +484,20 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
           amount: body.amount,
           refundOfTransactionId: body.refundOfTransactionId,
           reason: body.reason,
+        });
+
+        audit({
+          action: "portal.refund.created",
+          merchantId: user.merchantId,
+          merchantUserId: user.merchantUserId,
+          actorEmail: user.email,
+          resource: tx.id,
+          meta: {
+            environment: body.environment,
+            amount: body.amount,
+            customerWalletId: body.customerWalletId,
+            refundOfTransactionId: body.refundOfTransactionId,
+          },
         });
 
         return reply.status(201).send({

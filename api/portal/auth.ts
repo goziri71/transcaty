@@ -152,6 +152,14 @@ export async function registerPortalAuthRoutes(app: FastifyInstance) {
         role: "admin",
       });
 
+      audit({
+        action: "portal.signup",
+        merchantId: merchant.id,
+        merchantUserId: user.id,
+        actorEmail: user.email,
+        resource: merchant.id,
+      });
+
       return reply.status(201).send({
         token,
         merchantId: merchant.id,
@@ -302,6 +310,14 @@ export async function registerPortalAuthRoutes(app: FastifyInstance) {
         console.error("[email] Failed to queue portal_login:", e);
       });
 
+      audit({
+        action: "portal.session.login",
+        merchantId: existing.merchantId,
+        merchantUserId: existing.id,
+        actorEmail: existing.email,
+        meta: { mfa: false },
+      });
+
       return reply.send({
         token,
         merchantId: existing.merchantId,
@@ -379,7 +395,10 @@ export async function registerPortalAuthRoutes(app: FastifyInstance) {
       if (!verifyTotp(secret, body.code)) {
         audit({
           action: "auth.failed",
-          meta: { reason: "portal_mfa_invalid_code", merchantUserId: pending.merchantUserId },
+          merchantId: pending.merchantId,
+          merchantUserId: pending.merchantUserId,
+          actorEmail: pending.email,
+          meta: { reason: "portal_mfa_invalid_code" },
         });
         return reply.status(401).send({
           error: "Unauthorized",
@@ -425,6 +444,14 @@ export async function registerPortalAuthRoutes(app: FastifyInstance) {
         changePasswordUrl,
       }).catch((e) => {
         console.error("[email] Failed to queue portal_login (MFA):", e);
+      });
+
+      audit({
+        action: "portal.session.mfa_completed",
+        merchantId: pending.merchantId,
+        merchantUserId: pending.merchantUserId,
+        actorEmail: pending.email,
+        meta: { mfa: true },
       });
 
       return reply.send({
@@ -507,6 +534,9 @@ export async function registerPortalAuthRoutes(app: FastifyInstance) {
 
         audit({
           action: "auth.password_reset_requested",
+          merchantId: created.merchantId,
+          merchantUserId: created.userId,
+          actorEmail: email,
           meta: { realm: "portal" },
         });
       }
@@ -551,9 +581,17 @@ export async function registerPortalAuthRoutes(app: FastifyInstance) {
         return reply.status(400).send({ error: "Bad Request", message: result.reason });
       }
 
+      const [mu] = await db
+        .select({ merchantId: merchantUsers.merchantId })
+        .from(merchantUsers)
+        .where(eq(merchantUsers.id, result.userId))
+        .limit(1);
+
       audit({
         action: "auth.password_reset_completed",
         resource: result.userId,
+        merchantId: mu?.merchantId,
+        merchantUserId: result.userId,
         meta: { realm: "portal" },
       });
 

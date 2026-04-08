@@ -19,6 +19,8 @@ export async function createPayinOrder(params: {
   merchantReturnUrl: string;
   customer: { name: string; email: string; phone: string; deviceId: string };
   goodsInfo: { name: string; id?: string; price?: string };
+  /** When set, audit log includes portal user (dashboard-initiated pay-in). */
+  portalActor?: { merchantUserId: string; email: string };
 }) {
   const [tx] = await db
     .insert(transactions)
@@ -64,7 +66,17 @@ export async function createPayinOrder(params: {
     .set({ externalId: res.platformOrderId, updatedAt: new Date() })
     .where(eq(transactions.id, tx.id));
 
-  audit({ action: "payment.created", resource: tx.id, meta: { platformOrderId: res.platformOrderId } });
+  audit({
+    action: "payment.created",
+    resource: tx.id,
+    merchantId: params.merchantId,
+    merchantUserId: params.portalActor?.merchantUserId,
+    actorEmail: params.portalActor?.email,
+    meta: {
+      platformOrderId: res.platformOrderId,
+      source: params.portalActor ? "portal" : "api",
+    },
+  });
 
   return {
     transactionId: tx.id,
@@ -164,10 +176,16 @@ export async function handlePayinCallback(body: {
     audit({
       action: "payment.completed",
       resource: tx.id,
+      merchantId: tx.merchantId,
       meta: { paidAmount, platformOrderId: body.platformOrderId },
     });
   } else {
-    audit({ action: "payment.failed", resource: tx.id, meta: { reason: body.code } });
+    audit({
+      action: "payment.failed",
+      resource: tx.id,
+      merchantId: tx.merchantId,
+      meta: { reason: body.code },
+    });
   }
 
   return {

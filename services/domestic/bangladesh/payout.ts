@@ -34,6 +34,8 @@ export async function createPayoutOrder(params: {
     holderName: string;
   };
   cardHolderInfo: { firstName: string; lastName: string; email: string; phone: string };
+  /** Dashboard-initiated payout (audit). */
+  portalActor?: { merchantUserId: string; email: string };
 }) {
   const [wallet] = await db
     .select()
@@ -153,7 +155,17 @@ export async function createPayoutOrder(params: {
     })
     .where(eq(wallets.id, wallet.id));
 
-  audit({ action: "payout.created", resource: tx.id, meta: { platformOrderId: create.platformOrderId } });
+  audit({
+    action: "payout.created",
+    resource: tx.id,
+    merchantId: params.merchantId,
+    merchantUserId: params.portalActor?.merchantUserId,
+    actorEmail: params.portalActor?.email,
+    meta: {
+      platformOrderId: create.platformOrderId,
+      source: params.portalActor ? "portal" : "api",
+    },
+  });
 
   return {
     transactionId: tx.id,
@@ -216,6 +228,7 @@ export async function handlePayoutCallback(body: {
     audit({
       action: "payout.completed",
       resource: tx.id,
+      merchantId: tx.merchantId,
       meta: { platformOrderId: body.platformOrderId },
     });
   } else {
@@ -250,7 +263,12 @@ export async function handlePayoutCallback(body: {
         .where(eq(wallets.id, wallet.id));
     }
 
-    audit({ action: "payout.failed", resource: tx.id, meta: { reason: body.code } });
+    audit({
+      action: "payout.failed",
+      resource: tx.id,
+      merchantId: tx.merchantId,
+      meta: { reason: body.code },
+    });
   }
 
   return {

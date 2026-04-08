@@ -12,6 +12,8 @@ import { registerPortalCustomersRoutes } from "./customers.js";
 import { registerPortalTransactionsRoutes } from "./transactions.js";
 import { registerPortalMfaRoutes } from "./mfa.js";
 import { registerPortalWebhookRoutes } from "./webhook.js";
+import { registerPortalPayinsRoutes } from "./payins.js";
+import { registerPortalAuditLogRoutes } from "./audit-log.js";
 
 export async function registerPortalRoutes(app: FastifyInstance) {
   await registerPortalAuthRoutes(app);
@@ -22,4 +24,6 @@ export async function registerPortalRoutes(app: FastifyInstance) {
   await registerPortalWebhookRoutes(app);
   await registerPortalCustomersRoutes(app);
   await registerPortalTransactionsRoutes(app);
+  await registerPortalPayinsRoutes(app);
+  await registerPortalAuditLogRoutes(app);
 }

@@ -99,6 +99,13 @@
       "when": 1774131200000,
       "tag": "0013_transacty_platform_name",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1774131300000,
+      "tag": "0014_merchant_audit_log",
+      "breakpoints": true
     }
   ]
 }

@@ -9,6 +9,7 @@ import { eq, and } from "drizzle-orm";
 import { db } from "../../src/db/index.js";
 import { merchants, merchantApiKeys } from "../../src/db/schema/index.js";
 import { encrypt } from "../../src/lib/encryption.js";
+import { audit } from "../../src/lib/audit.js";
 
 const errorResponse = z.object({
   error: z.string(),
@@ -163,6 +164,15 @@ export async function registerPortalApiKeysRoutes(app: FastifyInstance) {
         })
         .returning({ id: merchantApiKeys.id });
 
+      audit({
+        action: "portal.api_key.created",
+        merchantId: user.merchantId,
+        merchantUserId: user.merchantUserId,
+        actorEmail: user.email,
+        resource: inserted!.id,
+        meta: { environment },
+      });
+
       return reply.status(201).send({
         id: inserted!.id,
         apiKey,
@@ -225,6 +235,14 @@ export async function registerPortalApiKeysRoutes(app: FastifyInstance) {
         .update(merchantApiKeys)
         .set({ status: "revoked" })
         .where(eq(merchantApiKeys.id, keyId));
+
+      audit({
+        action: "portal.api_key.revoked",
+        merchantId: user.merchantId,
+        merchantUserId: user.merchantUserId,
+        actorEmail: user.email,
+        resource: keyId,
+      });
 
       return { ok: true };
     }

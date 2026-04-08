@@ -9,6 +9,7 @@ import {
   primaryKey,
   boolean,
   unique,
+  json,
 } from "drizzle-orm/pg-core";
 
 export const merchantStatusEnum = pgEnum("merchant_status", [
@@ -365,6 +366,29 @@ export const merchantUsers = pgTable(
     index("merchant_users_merchant_id_idx").on(t.merchantId),
     index("merchant_users_email_idx").on(t.email),
     index("merchant_users_merchant_email_idx").on(t.merchantId, t.email),
+  ]
+);
+
+/** Per-merchant audit trail for the portal (money movements, auth, API keys, etc.). */
+export const merchantAuditLog = pgTable(
+  "merchant_audit_log",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    merchantId: uuid("merchant_id")
+      .notNull()
+      .references(() => merchants.id, { onDelete: "cascade" }),
+    merchantUserId: uuid("merchant_user_id").references(() => merchantUsers.id, {
+      onDelete: "set null",
+    }),
+    actorEmail: text("actor_email"),
+    action: text("action").notNull(),
+    resource: text("resource"),
+    meta: json("meta").$type<Record<string, unknown> | null>(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("merchant_audit_log_merchant_created_idx").on(t.merchantId, t.createdAt),
+    index("merchant_audit_log_action_idx").on(t.merchantId, t.action),
   ]
 );
 

@@ -31,10 +31,11 @@ function getTtlMs(): number {
 export async function createPortalPasswordResetToken(email: string): Promise<{
   rawToken: string;
   userId: string;
+  merchantId: string;
 } | null> {
   const normalized = email.toLowerCase().trim();
   const [user] = await db
-    .select({ id: merchantUsers.id })
+    .select({ id: merchantUsers.id, merchantId: merchantUsers.merchantId })
     .from(merchantUsers)
     .where(and(eq(merchantUsers.email, normalized), eq(merchantUsers.status, "active")))
     .limit(1);
@@ -62,7 +63,7 @@ export async function createPortalPasswordResetToken(email: string): Promise<{
     expiresAt,
   });
 
-  return { rawToken, userId: user.id };
+  return { rawToken, userId: user.id, merchantId: user.merchantId };
 }
 
 export async function createProviderPasswordResetToken(email: string): Promise<{

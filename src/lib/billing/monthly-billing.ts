@@ -140,6 +140,7 @@ export async function runMonthlyBilling(): Promise<{
       audit({
         action: "billing.fee_applied",
         resource: merchantId,
+        merchantId,
         meta: { type: "monthly", billingMonth, amount: String(amount) },
       });
     } catch (err) {

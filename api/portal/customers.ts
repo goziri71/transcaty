@@ -7,6 +7,7 @@ import { eq, and, count, desc } from "drizzle-orm";
 import { db } from "../../src/db/index.js";
 import { wallets, transactions } from "../../src/db/schema/index.js";
 import { createCustomerWallet } from "../../services/operations/transfers.js";
+import { audit } from "../../src/lib/audit.js";
 
 const errorResponse = z.object({
   error: z.string(),
@@ -131,6 +132,15 @@ export async function registerPortalCustomersRoutes(app: FastifyInstance) {
         merchantId: user.merchantId,
         environment: body.environment,
         label: body.label?.trim() || undefined,
+      });
+
+      audit({
+        action: "portal.customer.wallet_created",
+        merchantId: user.merchantId,
+        merchantUserId: user.merchantUserId,
+        actorEmail: user.email,
+        resource: customer.id,
+        meta: { environment: body.environment, label: customer.label },
       });
 
       return reply.status(201).send({
@@ -258,10 +268,26 @@ export async function registerPortalCustomersRoutes(app: FastifyInstance) {
         });
       }
 
+      const previousStatus = wallet.status;
+
       await db
         .update(wallets)
         .set({ status: body.status as "active" | "frozen" | "pending" | "closed", updatedAt: new Date() })
         .where(eq(wallets.id, id));
+
+      audit({
+        action: "portal.customer.wallet_status_changed",
+        merchantId: user.merchantId,
+        merchantUserId: user.merchantUserId,
+        actorEmail: user.email,
+        resource: id,
+        meta: {
+          environment,
+          from: previousStatus,
+          to: body.status,
+          reason: body.reason,
+        },
+      });
 
       return { id, status: body.status };
     }

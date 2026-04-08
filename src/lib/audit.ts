@@ -1,7 +1,11 @@
 /**
  * Audit trail for important actions.
  * Logs structured JSON to stdout for aggregation (e.g. Datadog, CloudWatch).
+ * When merchantId is set, also persists to merchant_audit_log for portal visibility.
  */
+import { db } from "../db/index.js";
+import { merchantAuditLog } from "../db/schema/index.js";
+
 export type AuditAction =
   | "payment.created"
   | "payment.completed"
@@ -21,7 +25,17 @@ export type AuditAction =
   | "provider.transaction.status_changed"
   | "provider.transaction.reconciled"
   | "billing.fee_applied"
-  | "billing.fee_skipped";
+  | "billing.fee_skipped"
+  | "portal.session.login"
+  | "portal.session.mfa_completed"
+  | "portal.signup"
+  | "portal.payin.failed"
+  | "portal.transfer.created"
+  | "portal.refund.created"
+  | "portal.customer.wallet_created"
+  | "portal.customer.wallet_status_changed"
+  | "portal.api_key.created"
+  | "portal.api_key.revoked";
 
 export interface AuditEntry {
   action: AuditAction;
@@ -29,6 +43,28 @@ export interface AuditEntry {
   resource?: string;
   meta?: Record<string, unknown>;
   timestamp: string;
+  /** When set, event is stored for merchant portal audit log. */
+  merchantId?: string;
+  merchantUserId?: string;
+  actorEmail?: string;
+}
+
+function persistMerchantAudit(entry: Omit<AuditEntry, "timestamp">): void {
+  if (!entry.merchantId) return;
+  void db
+    .insert(merchantAuditLog)
+    .values({
+      merchantId: entry.merchantId,
+      merchantUserId: entry.merchantUserId,
+      actorEmail: entry.actorEmail,
+      action: entry.action,
+      resource: entry.resource,
+      meta: entry.meta ?? null,
+    })
+    .catch((err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.log(JSON.stringify({ audit_persist_failed: msg }));
+    });
 }
 
 export function audit(entry: Omit<AuditEntry, "timestamp">): void {
@@ -37,4 +73,5 @@ export function audit(entry: Omit<AuditEntry, "timestamp">): void {
     timestamp: new Date().toISOString(),
   };
   console.log(JSON.stringify({ audit: full }));
+  persistMerchantAudit(entry);
 }

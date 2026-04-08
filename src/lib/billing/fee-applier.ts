@@ -43,7 +43,8 @@ export async function applyTransactionFee(input: ApplyFeeInput): Promise<boolean
     audit({
       action: "billing.fee_skipped",
       resource: transactionId,
-      meta: { reason: "merchant_wallet_not_found", merchantId, feeType, feeAmount },
+      merchantId,
+      meta: { reason: "merchant_wallet_not_found", feeType, feeAmount },
     });
     return false;
   }
@@ -53,9 +54,9 @@ export async function applyTransactionFee(input: ApplyFeeInput): Promise<boolean
     audit({
       action: "billing.fee_skipped",
       resource: transactionId,
+      merchantId,
       meta: {
         reason: "insufficient_balance",
-        merchantId,
         feeType,
         feeAmount,
         balance: String(balance),
@@ -112,7 +113,8 @@ export async function applyTransactionFee(input: ApplyFeeInput): Promise<boolean
   audit({
     action: "billing.fee_applied",
     resource: transactionId,
-    meta: { merchantId, feeType, amount: String(amount), feeAmount },
+    merchantId,
+    meta: { feeType, amount: String(amount), feeAmount },
   });
 
   return true;

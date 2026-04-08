@@ -131,6 +131,9 @@ export async function registerPortalMfaRoutes(app: FastifyInstance) {
         action: "config.changed",
         actor: user.merchantUserId,
         resource: user.merchantId,
+        merchantId: user.merchantId,
+        merchantUserId: user.merchantUserId,
+        actorEmail: user.email,
         meta: { mfa: "portal_setup_started" },
       });
 
@@ -205,6 +208,9 @@ export async function registerPortalMfaRoutes(app: FastifyInstance) {
         action: "config.changed",
         actor: user.merchantUserId,
         resource: user.merchantId,
+        merchantId: user.merchantId,
+        merchantUserId: user.merchantUserId,
+        actorEmail: user.email,
         meta: { mfa: "portal_enabled" },
       });
 
@@ -241,6 +247,9 @@ export async function registerPortalMfaRoutes(app: FastifyInstance) {
         action: "config.changed",
         actor: user.merchantUserId,
         resource: user.merchantId,
+        merchantId: user.merchantId,
+        merchantUserId: user.merchantUserId,
+        actorEmail: user.email,
         meta: { mfa: "portal_setup_cancelled" },
       });
 
@@ -318,6 +327,9 @@ export async function registerPortalMfaRoutes(app: FastifyInstance) {
         action: "config.changed",
         actor: user.merchantUserId,
         resource: user.merchantId,
+        merchantId: user.merchantId,
+        merchantUserId: user.merchantUserId,
+        actorEmail: user.email,
         meta: { mfa: "portal_disabled" },
       });
 
