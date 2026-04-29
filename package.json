@@ -20,6 +20,7 @@
     "payok:env-check": "tsx scripts/payok-env-check.ts",
     "payok:key-check": "tsx scripts/payok-key-check.ts",
     "payok:platform-key-check": "tsx scripts/payok-platform-key-check.ts",
+    "test:tylt": "node --import tsx --test services/integrations/tylt/*.test.ts",
     "zepto:test": "tsx scripts/zepto-test.ts"
   },
   "keywords": [

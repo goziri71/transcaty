@@ -1,6 +1,12 @@
 /**
  * Payok HTTP client – signed requests for pay-in, payout, balance.
  */
+import {
+  PAYOK_CIRCUIT_KEY,
+  assertCircuitClosed,
+  recordProviderFailure,
+  recordProviderSuccess,
+} from "../../../../src/lib/provider-circuit-breaker.js";
 import { getPayokConfig } from "./config.js";
 import { getPayokConfigForEnvironment, type PayokEnvironment } from "./config.js";
 import { signPayokRequest } from "./signature.js";
@@ -17,6 +23,8 @@ async function payokPost<T = unknown>(
   body: object,
   environment?: PayokEnvironment
 ): Promise<{ status: number; body: T }> {
+  assertCircuitClosed(PAYOK_CIRCUIT_KEY);
+
   const config = environment ? getPayokConfigForEnvironment(environment) : getPayokConfig();
   const baseUrl = config.baseUrl.replace(/\/$/, "");
   const url = `${baseUrl}${path}`;
@@ -33,6 +41,7 @@ async function payokPost<T = unknown>(
       body: jsonBody,
     });
   } catch (err) {
+    recordProviderFailure(PAYOK_CIRCUIT_KEY);
     const msg = err instanceof Error ? err.message : String(err);
     const cause = err instanceof Error && err.cause ? (err.cause instanceof Error ? err.cause.message : String(err.cause)) : "";
     throw new Error(`Payok request failed: ${msg}${cause ? `. ${cause}` : ""} (URL: ${url})`);
@@ -44,6 +53,12 @@ async function payokPost<T = unknown>(
     bodyParsed = (text ? JSON.parse(text) : {}) as T;
   } catch {
     bodyParsed = { raw: text } as T;
+  }
+
+  if (res.status >= 500) {
+    recordProviderFailure(PAYOK_CIRCUIT_KEY);
+  } else {
+    recordProviderSuccess(PAYOK_CIRCUIT_KEY);
   }
 
   return { status: res.status, body: bodyParsed };

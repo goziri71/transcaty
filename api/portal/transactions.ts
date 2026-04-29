@@ -12,11 +12,16 @@ import {
 } from "../../services/operations/transfers.js";
 import {
   createPayoutOrder,
-  PayoutCreationError,
 } from "../../services/domestic/bangladesh/payout.js";
 import { LIMITS } from "../../src/lib/limits.js";
 import { queueTransactionalEmail } from "../../src/lib/transactional-email-queue.js";
 import { audit } from "../../src/lib/audit.js";
+import {
+  merchantPaymentFlowErrorResponse,
+  merchantPortalOperationErrorResponse,
+  sendMerchantFacingReply,
+  sendPortalOperationReply,
+} from "../../src/lib/merchant-facing-errors.js";
 
 const errorResponse = z.object({
   error: z.string(),
@@ -27,6 +32,14 @@ const payoutErrorResponse = errorResponse.extend({
   transactionId: z.string().optional(),
   reference: z.string().optional(),
   platformOrderId: z.string().nullable().optional(),
+});
+
+const merchantFacingPayoutError = payoutErrorResponse.extend({
+  code: z.string().optional(),
+});
+
+const merchantFacingOperationError = errorResponse.extend({
+  code: z.string().optional(),
 });
 
 const metadataSchema = z.record(z.any());
@@ -260,7 +273,8 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
           400: payoutErrorResponse,
           401: errorResponse,
           403: errorResponse,
-          500: errorResponse,
+          503: merchantFacingPayoutError,
+          500: merchantFacingPayoutError,
         },
       },
     },
@@ -342,26 +356,21 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
           estimatedCompletion: null,
         });
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        if (err instanceof PayoutCreationError) {
-          return reply.status(400).send({
-            error: "Bad Request",
-            message: msg,
-            transactionId: err.transactionId,
-            reference: err.transactionId,
-            platformOrderId: err.platformOrderId ?? null,
-          });
-        }
-        const lower = msg.toLowerCase();
-        if (
-          lower.includes("insufficient balance") ||
-          lower.includes("failed") ||
-          lower.includes("invalid") ||
-          lower.includes("not found")
-        ) {
-          return reply.status(400).send({ error: "Bad Request", message: msg });
-        }
-        return reply.status(500).send({ error: "Internal", message: msg });
+        const rawMsg = err instanceof Error ? err.message : String(err);
+        audit({
+          action: "portal.payout.failed",
+          merchantId: user.merchantId,
+          merchantUserId: user.merchantUserId,
+          actorEmail: user.email,
+          meta: { message: rawMsg },
+        });
+
+        const mapped = merchantPaymentFlowErrorResponse(err);
+        request.log.warn(
+          { logDetail: mapped.logDetail ?? rawMsg, merchantId: user.merchantId },
+          "portal payout failed"
+        );
+        sendMerchantFacingReply(reply, mapped);
       }
     }
   );
@@ -385,8 +394,9 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
             customerWalletId: z.string(),
             createdAt: z.string(),
           }),
-          400: errorResponse,
+          400: merchantFacingOperationError,
           401: errorResponse,
+          503: merchantFacingOperationError,
         },
       },
     },
@@ -432,8 +442,13 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
           createdAt: tx.createdAt.toISOString(),
         });
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        return reply.status(400).send({ error: "Bad Request", message: msg });
+        const rawMsg = err instanceof Error ? err.message : String(err);
+        const mapped = merchantPortalOperationErrorResponse(err);
+        request.log.warn(
+          { logDetail: mapped.logDetail ?? rawMsg, merchantId: user.merchantId },
+          "portal transfer failed"
+        );
+        sendPortalOperationReply(reply, mapped);
       }
     }
   );
@@ -459,8 +474,9 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
             refundOfTransactionId: z.string(),
             createdAt: z.string(),
           }),
-          400: errorResponse,
+          400: merchantFacingOperationError,
           401: errorResponse,
+          503: merchantFacingOperationError,
         },
       },
     },
@@ -510,8 +526,13 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
           createdAt: tx.createdAt.toISOString(),
         });
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        return reply.status(400).send({ error: "Bad Request", message: msg });
+        const rawMsg = err instanceof Error ? err.message : String(err);
+        const mapped = merchantPortalOperationErrorResponse(err);
+        request.log.warn(
+          { logDetail: mapped.logDetail ?? rawMsg, merchantId: user.merchantId },
+          "portal refund failed"
+        );
+        sendPortalOperationReply(reply, mapped);
       }
     }
   );

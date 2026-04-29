@@ -21,6 +21,9 @@ import {
 } from "../../services/domestic/bangladesh/provider/client.js";
 import { PROVIDER_ROLES, canProviderAccess } from "../../src/lib/provider-auth.js";
 import { getDefaultPayokEnvironment, type PayokEnvironment } from "../../services/domestic/bangladesh/provider/config.js";
+import { reconcileCrossRampPayinByTransactionId } from "../../services/integrations/tylt/index.js";
+import { ProviderCircuitOpenError } from "../../src/lib/provider-circuit-breaker.js";
+import { queueMerchantWebhook } from "../../src/lib/merchant-webhook.js";
 
 const errorResponse = z.object({
   error: z.string(),
@@ -1602,6 +1605,100 @@ export async function registerProviderRoutes(app: FastifyInstance) {
         suggestedLocalStatus,
         isMismatch,
       };
+    }
+  );
+
+  app.post(
+    "/provider/tylt/crossramp/reconcile-payin",
+    {
+      schema: {
+        body: z.object({ transactionId: z.string().uuid() }),
+        response: {
+          200: z.object({
+            outcome: z.enum(["finalized", "not_terminal", "skipped"]),
+            transactionId: z.string(),
+            detail: z.string().optional(),
+            reason: z.enum(["already_terminal", "wrong_rail"]).optional(),
+            sourcesTried: z.array(z.string()).optional(),
+            merchantWebhookQueued: z.boolean().optional(),
+          }),
+          400: errorResponse,
+          401: errorResponse,
+          404: errorResponse,
+          503: errorResponse,
+          500: errorResponse,
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!ensureProviderPermission(request, reply, "tx.reconcile")) return;
+      const body = request.body as { transactionId: string };
+      try {
+        const result = await reconcileCrossRampPayinByTransactionId(body.transactionId);
+        if (result.outcome === "error") {
+          if (result.detail === "transaction_not_found") {
+            return reply.status(404).send({ error: "Not found", message: "Transaction not found" });
+          }
+          return reply.status(400).send({
+            error: "Bad Request",
+            message: result.detail === "not_payin" ? "Transaction is not a pay-in" : result.detail,
+          });
+        }
+        if (result.outcome === "skipped") {
+          if (result.reason === "wrong_rail") {
+            return reply.status(400).send({
+              error: "Bad Request",
+              message: "Not a Tylt CrossRamp UPI pay-in transaction",
+            });
+          }
+          return reply.status(200).send({
+            outcome: "skipped",
+            transactionId: result.transactionId,
+            reason: result.reason,
+          });
+        }
+        if (result.outcome === "finalized") {
+          queueMerchantWebhook(result.merchantWebhook.merchantId, result.merchantWebhook.event).catch((e) =>
+            request.log.warn(e, "merchant webhook queue failed after Tylt reconcile")
+          );
+          audit({
+            action: "provider.tylt.crossramp.reconcile",
+            actor: request.provider?.providerUserId ?? "provider:api_key",
+            resource: body.transactionId,
+            meta: { outcome: "finalized", sourcesTried: result.sourcesTried },
+          });
+          return reply.status(200).send({
+            outcome: "finalized",
+            transactionId: result.transactionId,
+            sourcesTried: result.sourcesTried,
+            merchantWebhookQueued: true,
+          });
+        }
+        audit({
+          action: "provider.tylt.crossramp.reconcile",
+          actor: request.provider?.providerUserId ?? "provider:api_key",
+          resource: body.transactionId,
+          meta: {
+            outcome: "not_terminal",
+            sourcesTried: result.sourcesTried,
+            detail: result.detail,
+          },
+        });
+        return reply.status(200).send({
+          outcome: "not_terminal",
+          transactionId: result.transactionId,
+          sourcesTried: result.sourcesTried,
+          detail: result.detail,
+        });
+      } catch (err) {
+        if (err instanceof ProviderCircuitOpenError) {
+          return reply.status(503).send({
+            error: "Service Unavailable",
+            message: "Upstream temporarily unavailable",
+          });
+        }
+        throw err;
+      }
     }
   );
 }

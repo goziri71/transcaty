@@ -10,10 +10,16 @@ import { createPayinOrder } from "../../services/domestic/bangladesh/index.js";
 import { LIMITS } from "../../src/lib/limits.js";
 import { validateMerchantReturnUrl } from "../../src/lib/merchant-return-url.js";
 import { audit } from "../../src/lib/audit.js";
+import { merchantPaymentFlowErrorResponse, sendMerchantFacingReply } from "../../src/lib/merchant-facing-errors.js";
 
 const errorResponse = z.object({
   error: z.string(),
   message: z.string().optional(),
+});
+const merchantFacingError = z.object({
+  error: z.string(),
+  message: z.string().optional(),
+  code: z.string().optional(),
 });
 
 export async function registerPortalPayinsRoutes(app: FastifyInstance) {
@@ -51,7 +57,8 @@ export async function registerPortalPayinsRoutes(app: FastifyInstance) {
           400: errorResponse,
           401: errorResponse,
           403: errorResponse,
-          500: errorResponse,
+          503: merchantFacingError,
+          500: merchantFacingError,
         },
       },
     },
@@ -159,19 +166,20 @@ export async function registerPortalPayinsRoutes(app: FastifyInstance) {
         }
         return reply.send(response);
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
+        const rawMsg = err instanceof Error ? err.message : String(err);
         audit({
           action: "portal.payin.failed",
           merchantId: user.merchantId,
           merchantUserId: user.merchantUserId,
           actorEmail: user.email,
-          meta: { message: msg },
+          meta: { message: rawMsg },
         });
-        const lower = msg.toLowerCase();
-        if (lower.includes("payok") || lower.includes("invalid") || lower.includes("failed")) {
-          return reply.status(400).send({ error: "Bad Request", message: msg });
-        }
-        return reply.status(500).send({ error: "Internal", message: msg });
+        const mapped = merchantPaymentFlowErrorResponse(err);
+        request.log.warn(
+          { logDetail: mapped.logDetail ?? rawMsg, merchantId: user.merchantId },
+          "portal payin failed"
+        );
+        sendMerchantFacingReply(reply, mapped);
       }
     }
   );
