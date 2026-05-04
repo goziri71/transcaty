@@ -12,4 +12,14 @@ export const LIMITS = {
     baseAmountMin: 1e-8,
     baseAmountMax: 1e15,
   },
+  /** CPG payout: `amount` bounds before forwarding to Tylt. */
+  tyltCpgPayout: {
+    amountMin: 1e-8,
+    amountMax: 1e15,
+  },
+  /** Tylt internal transfer: `settledAmount` bounds before forwarding. */
+  tyltInternalTransfer: {
+    amountMin: 1e-8,
+    amountMax: 1e15,
+  },
 } as const;

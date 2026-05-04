@@ -218,6 +218,10 @@ Notes:
 - Prefer these APIs as runtime validation sources for requested currency/network combinations
 - Cache with TTL for performance, but allow manual refresh in admin/ops flows
 
+### 8.1 Transacty merchant API (`/v1/tylt/*`)
+
+Implemented merchant-facing proxies and create endpoints are documented in **[tylt-merchant-api.md](./tylt-merchant-api.md)** (scopes, idempotency, error conventions, Zod schema pointers).
+
 ## 9) Webhook Lifecycle Mapping (Current)
 
 UPI webhook event IDs seen:

@@ -39,30 +39,51 @@ import {
   verifyPayokCallbackWithFallbacksDebug,
 } from "./services/domestic/bangladesh/index.js";
 import {
-  applyTyltCpgPayinWebhookPayload,
-  applyTyltCrossRampWebhookPayload,
+  applyTyltWebhookByProductRoute,
+  applyTyltWebhookByStoredRailProduct,
+  readTyltWebhookSignatureHeader,
+  verifyTyltWebhookSignature,
   cpgGetPayinTransactionHistory,
   cpgGetPayinTransactionInformation,
+  cpgGetPayoutTransactionHistory,
+  cpgGetPayoutTransactionInformation,
   createTyltCpgPayinRequest,
+  createTyltCpgPayoutRequest,
   createTyltCrossRampPayinOrder,
+  executeTyltInternalTransfer,
   createTyltH2hPayinInstance,
-  getTyltConfig,
   isTyltCpgPayinMetadata,
+  isTyltCpgPayoutMetadata,
   isTyltH2hPayinMetadata,
   parseTransactionMetadata,
   tyltH2hBuyerConfirmsPayment,
   tyltH2hGetCryptoCurrencyListForPrime,
   tyltH2hGetPaymentMethodsP2pOnRamp,
-  verifyTyltSignature,
+  tyltGetAccountBalance,
+  tyltGetMerchantDetails,
+  tyltGetSupportedBaseCurrenciesList,
+  tyltGetSupportedCryptoCurrenciesList,
+  tyltGetSupportedCryptoNetworksList,
+  tyltGetSupportedFiatCurrenciesList,
 } from "./services/integrations/tylt/index.js";
 import { LIMITS } from "./src/lib/limits.js";
 import { validateMerchantReturnUrl } from "./src/lib/merchant-return-url.js";
-import { queueMerchantWebhook } from "./src/lib/merchant-webhook.js";
+import { queueMerchantWebhook, type WebhookEvent } from "./src/lib/merchant-webhook.js";
 import { encrypt, getSecret } from "./src/lib/encryption.js";
 import { pingRedis } from "./src/lib/redis.js";
 import { recordHttpRequest, renderMetrics, getMetricsContentType } from "./src/lib/metrics.js";
 import { registerProviderMfaRoutes } from "./api/provider/mfa.js";
 import { merchantPaymentFlowErrorResponse, sendMerchantFacingReply } from "./src/lib/merchant-facing-errors.js";
+import {
+  merchantApiErrorResponse as errorResponse,
+  merchantApiFacingError as merchantFacingError,
+} from "./src/lib/merchant-api-zod.js";
+import {
+  tyltMerchantProxyResponses,
+  tyltPassthroughQuerySchema,
+  tyltRowsPageQuerySchema,
+  tyltTransactionIdParamSchema,
+} from "./src/lib/tylt-merchant-api-schemas.js";
 
 export async function buildApp() {
   const app = Fastify({
@@ -76,17 +97,6 @@ export async function buildApp() {
 
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
-
-  const errorResponse = z.object({ error: z.string(), message: z.string().optional() });
-  /** Merchant-safe errors (no upstream processor leakage); optional machine-readable code. */
-  const merchantFacingError = z.object({
-    error: z.string(),
-    message: z.string().optional(),
-    code: z.string().optional(),
-    transactionId: z.string().optional(),
-    reference: z.string().optional(),
-    platformOrderId: z.string().nullable().optional(),
-  });
 
   app.addHook("onRequest", async (request) => {
     (request as FastifyRequest & { metricsStart?: bigint }).metricsStart = process.hrtime.bigint();
@@ -763,28 +773,28 @@ export async function buildApp() {
     return reply.type("text/plain").send("SUCCESS");
   });
 
-  const TYLT_CROSSRAMP_WEBHOOK_PATH = "/webhooks/tylt/crossramp/:environment";
-
-  app.post(TYLT_CROSSRAMP_WEBHOOK_PATH, async (request, reply) => {
+  async function handleTyltWebhookPost(
+    request: FastifyRequest,
+    reply: FastifyReply,
+    opts: {
+      pathConstant: string;
+      rejectLogMessage: string;
+      apply: (body: unknown) => Promise<{ merchantId: string; event: WebhookEvent } | null>;
+    }
+  ): Promise<void> {
     const environment = (request.params as { environment?: string }).environment;
     if (environment !== "test" && environment !== "live") {
       return reply.status(404).type("text/plain").send("Not found");
     }
     const rawBody = (request as FastifyRequest & { rawBody?: string }).rawBody ?? "";
-    const sig =
-      (request.headers["x-tlp-signature"] as string | undefined) ??
-      (request.headers["X-TLP-SIGNATURE"] as string | undefined);
-    const cfg = getTyltConfig(environment);
-    if (!cfg || !verifyTyltSignature(cfg.apiSecret, rawBody, sig)) {
-      app.log.warn(
-        { path: TYLT_CROSSRAMP_WEBHOOK_PATH, hasSig: !!sig, rawBodyLen: rawBody.length },
-        "tylt webhook rejected: invalid or missing signature"
-      );
+    const sig = readTyltWebhookSignatureHeader(request.headers as Record<string, string | string[] | undefined>);
+    if (!verifyTyltWebhookSignature(environment, rawBody, sig)) {
+      app.log.warn({ path: opts.pathConstant, hasSig: !!sig, rawBodyLen: rawBody.length }, opts.rejectLogMessage);
       return reply.status(401).type("text/plain").send("Invalid signature");
     }
     const body = typeof request.body === "object" && request.body !== null ? request.body : {};
     try {
-      const webhook = await applyTyltCrossRampWebhookPayload(body);
+      const webhook = await opts.apply(body);
       if (webhook) {
         queueMerchantWebhook(webhook.merchantId, webhook.event).catch((e) =>
           app.log.warn(e, "Merchant webhook queue failed")
@@ -795,74 +805,57 @@ export async function buildApp() {
       return reply.status(500).type("text/plain").send("INTERNAL");
     }
     return reply.type("text/plain").send("ok");
+  }
+
+  const TYLT_CROSSRAMP_WEBHOOK_PATH = "/webhooks/tylt/crossramp/:environment";
+
+  app.post(TYLT_CROSSRAMP_WEBHOOK_PATH, async (request, reply) => {
+    await handleTyltWebhookPost(request, reply, {
+      pathConstant: TYLT_CROSSRAMP_WEBHOOK_PATH,
+      rejectLogMessage: "tylt webhook rejected: invalid or missing signature",
+      apply: (body) => applyTyltWebhookByProductRoute("crossramp_upi", body),
+    });
   });
 
   const TYLT_H2H_WEBHOOK_PATH = "/webhooks/tylt/h2h/:environment";
 
   app.post(TYLT_H2H_WEBHOOK_PATH, async (request, reply) => {
-    const environment = (request.params as { environment?: string }).environment;
-    if (environment !== "test" && environment !== "live") {
-      return reply.status(404).type("text/plain").send("Not found");
-    }
-    const rawBody = (request as FastifyRequest & { rawBody?: string }).rawBody ?? "";
-    const sig =
-      (request.headers["x-tlp-signature"] as string | undefined) ??
-      (request.headers["X-TLP-SIGNATURE"] as string | undefined);
-    const cfg = getTyltConfig(environment);
-    if (!cfg || !verifyTyltSignature(cfg.apiSecret, rawBody, sig)) {
-      app.log.warn(
-        { path: TYLT_H2H_WEBHOOK_PATH, hasSig: !!sig, rawBodyLen: rawBody.length },
-        "tylt H2H webhook rejected: invalid or missing signature"
-      );
-      return reply.status(401).type("text/plain").send("Invalid signature");
-    }
-    const body = typeof request.body === "object" && request.body !== null ? request.body : {};
-    try {
-      const webhook = await applyTyltCrossRampWebhookPayload(body);
-      if (webhook) {
-        queueMerchantWebhook(webhook.merchantId, webhook.event).catch((e) =>
-          app.log.warn(e, "Merchant webhook queue failed")
-        );
-      }
-    } catch (err) {
-      app.log.error(err);
-      return reply.status(500).type("text/plain").send("INTERNAL");
-    }
-    return reply.type("text/plain").send("ok");
+    await handleTyltWebhookPost(request, reply, {
+      pathConstant: TYLT_H2H_WEBHOOK_PATH,
+      rejectLogMessage: "tylt H2H webhook rejected: invalid or missing signature",
+      apply: (body) => applyTyltWebhookByProductRoute("crossramp_upi", body),
+    });
   });
 
   const TYLT_CPG_PAYIN_WEBHOOK_PATH = "/webhooks/tylt/cpg-payin/:environment";
 
   app.post(TYLT_CPG_PAYIN_WEBHOOK_PATH, async (request, reply) => {
-    const environment = (request.params as { environment?: string }).environment;
-    if (environment !== "test" && environment !== "live") {
-      return reply.status(404).type("text/plain").send("Not found");
-    }
-    const rawBody = (request as FastifyRequest & { rawBody?: string }).rawBody ?? "";
-    const sig =
-      (request.headers["x-tlp-signature"] as string | undefined) ??
-      (request.headers["X-TLP-SIGNATURE"] as string | undefined);
-    const cfg = getTyltConfig(environment);
-    if (!cfg || !verifyTyltSignature(cfg.apiSecret, rawBody, sig)) {
-      app.log.warn(
-        { path: TYLT_CPG_PAYIN_WEBHOOK_PATH, hasSig: !!sig, rawBodyLen: rawBody.length },
-        "tylt CPG pay-in webhook rejected: invalid or missing signature"
-      );
-      return reply.status(401).type("text/plain").send("Invalid signature");
-    }
-    const body = typeof request.body === "object" && request.body !== null ? request.body : {};
-    try {
-      const webhook = await applyTyltCpgPayinWebhookPayload(body);
-      if (webhook) {
-        queueMerchantWebhook(webhook.merchantId, webhook.event).catch((e) =>
-          app.log.warn(e, "Merchant webhook queue failed")
-        );
-      }
-    } catch (err) {
-      app.log.error(err);
-      return reply.status(500).type("text/plain").send("INTERNAL");
-    }
-    return reply.type("text/plain").send("ok");
+    await handleTyltWebhookPost(request, reply, {
+      pathConstant: TYLT_CPG_PAYIN_WEBHOOK_PATH,
+      rejectLogMessage: "tylt CPG pay-in webhook rejected: invalid or missing signature",
+      apply: (body) => applyTyltWebhookByProductRoute("cpg_payin", body),
+    });
+  });
+
+  const TYLT_CPG_PAYOUT_WEBHOOK_PATH = "/webhooks/tylt/cpg-payout/:environment";
+
+  app.post(TYLT_CPG_PAYOUT_WEBHOOK_PATH, async (request, reply) => {
+    await handleTyltWebhookPost(request, reply, {
+      pathConstant: TYLT_CPG_PAYOUT_WEBHOOK_PATH,
+      rejectLogMessage: "tylt CPG payout webhook rejected: invalid or missing signature",
+      apply: (body) => applyTyltWebhookByProductRoute("cpg_payout", body),
+    });
+  });
+
+  /** Optional single callback URL: routes by `transactions.metadata` (`rail` + `tyltProduct`). Legacy paths remain preferred. */
+  const TYLT_UNIFIED_WEBHOOK_PATH = "/webhooks/tylt/unified/:environment";
+
+  app.post(TYLT_UNIFIED_WEBHOOK_PATH, async (request, reply) => {
+    await handleTyltWebhookPost(request, reply, {
+      pathConstant: TYLT_UNIFIED_WEBHOOK_PATH,
+      rejectLogMessage: "tylt unified webhook rejected: invalid or missing signature",
+      apply: (body) => applyTyltWebhookByStoredRailProduct(body),
+    });
   });
 
   const kycRequired = process.env.KYC_REQUIRED === "true";
@@ -875,6 +868,35 @@ export async function buildApp() {
       return false;
     }
     return true;
+  }
+
+  function merchantHasTyltDiscoveryListScope(m: { scopes: string[] }): boolean {
+    return (
+      m.scopes.includes("*") ||
+      m.scopes.includes("balance:read") ||
+      m.scopes.includes("payin:create") ||
+      m.scopes.includes("payout:create")
+    );
+  }
+
+  function merchantHasBalanceReadScope(m: { scopes: string[] }): boolean {
+    return m.scopes.includes("*") || m.scopes.includes("balance:read");
+  }
+
+  function tyltPassthroughQuery(query: unknown): Record<string, unknown> {
+    if (!query || typeof query !== "object") return {};
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(query as Record<string, unknown>)) {
+      if (v === undefined || v === "") continue;
+      out[k] = v;
+    }
+    return out;
+  }
+
+  /** Proxy routes forward upstream HTTP status; serializer schema only lists a subset — cast for typing. */
+  function replyWithTyltUpstreamJson(reply: FastifyReply, upstreamStatus: number, json: unknown) {
+    const code = upstreamStatus >= 500 ? 502 : upstreamStatus;
+    return (reply as FastifyReply).code(code).send(json);
   }
 
   app.post(
@@ -1333,7 +1355,10 @@ export async function buildApp() {
     }
   );
 
-  app.get("/v1/tylt/h2h/payment-methods", async (request, reply) => {
+  app.get(
+    "/v1/tylt/h2h/payment-methods",
+    { schema: { response: tyltMerchantProxyResponses } },
+    async (request, reply) => {
     const m = request.merchant;
     if (!m) return reply.status(401).send({ error: "Unauthorized" });
     if (!m.scopes.includes("payin:create") && !m.scopes.includes("*")) {
@@ -1341,17 +1366,20 @@ export async function buildApp() {
     }
     try {
       const res = await tyltH2hGetPaymentMethodsP2pOnRamp(m.environment);
-      const code = res.status >= 500 ? 502 : res.status;
-      return reply.code(code).send(res.json);
+      return replyWithTyltUpstreamJson(reply, res.status, res.json);
     } catch (err) {
       app.log.error(err);
       const mapped = merchantPaymentFlowErrorResponse(err);
       sendMerchantFacingReply(reply, mapped);
       return;
     }
-  });
+  }
+  );
 
-  app.get("/v1/tylt/h2h/crypto-currencies", async (request, reply) => {
+  app.get(
+    "/v1/tylt/h2h/crypto-currencies",
+    { schema: { response: tyltMerchantProxyResponses } },
+    async (request, reply) => {
     const m = request.merchant;
     if (!m) return reply.status(401).send({ error: "Unauthorized" });
     if (!m.scopes.includes("payin:create") && !m.scopes.includes("*")) {
@@ -1359,15 +1387,141 @@ export async function buildApp() {
     }
     try {
       const res = await tyltH2hGetCryptoCurrencyListForPrime(m.environment);
-      const code = res.status >= 500 ? 502 : res.status;
-      return reply.code(code).send(res.json);
+      return replyWithTyltUpstreamJson(reply, res.status, res.json);
     } catch (err) {
       app.log.error(err);
       const mapped = merchantPaymentFlowErrorResponse(err);
       sendMerchantFacingReply(reply, mapped);
       return;
     }
-  });
+  }
+  );
+
+  app.get(
+    "/v1/tylt/supported/crypto-currencies",
+    { schema: { response: tyltMerchantProxyResponses } },
+    async (request, reply) => {
+    const m = request.merchant;
+    if (!m) return reply.status(401).send({ error: "Unauthorized" });
+    if (!merchantHasTyltDiscoveryListScope(m)) {
+      return reply.status(403).send({
+        error: "Forbidden",
+        message: "Missing scope: use balance:read, payin:create, or payout:create",
+      });
+    }
+    try {
+      const res = await tyltGetSupportedCryptoCurrenciesList(m.environment);
+      return replyWithTyltUpstreamJson(reply, res.status, res.json);
+    } catch (err) {
+      app.log.error(err);
+      const mapped = merchantPaymentFlowErrorResponse(err);
+      sendMerchantFacingReply(reply, mapped);
+      return;
+    }
+  }
+  );
+
+  app.get(
+    "/v1/tylt/supported/fiat-currencies",
+    { schema: { response: tyltMerchantProxyResponses } },
+    async (request, reply) => {
+    const m = request.merchant;
+    if (!m) return reply.status(401).send({ error: "Unauthorized" });
+    if (!merchantHasTyltDiscoveryListScope(m)) {
+      return reply.status(403).send({
+        error: "Forbidden",
+        message: "Missing scope: use balance:read, payin:create, or payout:create",
+      });
+    }
+    try {
+      const res = await tyltGetSupportedFiatCurrenciesList(m.environment);
+      return replyWithTyltUpstreamJson(reply, res.status, res.json);
+    } catch (err) {
+      app.log.error(err);
+      const mapped = merchantPaymentFlowErrorResponse(err);
+      sendMerchantFacingReply(reply, mapped);
+      return;
+    }
+  }
+  );
+
+  app.get(
+    "/v1/tylt/supported/crypto-networks",
+    { schema: { response: tyltMerchantProxyResponses } },
+    async (request, reply) => {
+    const m = request.merchant;
+    if (!m) return reply.status(401).send({ error: "Unauthorized" });
+    if (!merchantHasTyltDiscoveryListScope(m)) {
+      return reply.status(403).send({
+        error: "Forbidden",
+        message: "Missing scope: use balance:read, payin:create, or payout:create",
+      });
+    }
+    try {
+      const res = await tyltGetSupportedCryptoNetworksList(m.environment);
+      return replyWithTyltUpstreamJson(reply, res.status, res.json);
+    } catch (err) {
+      app.log.error(err);
+      const mapped = merchantPaymentFlowErrorResponse(err);
+      sendMerchantFacingReply(reply, mapped);
+      return;
+    }
+  }
+  );
+
+  app.get(
+    "/v1/tylt/supported/base-currencies",
+    { schema: { response: tyltMerchantProxyResponses } },
+    async (request, reply) => {
+    const m = request.merchant;
+    if (!m) return reply.status(401).send({ error: "Unauthorized" });
+    if (!merchantHasTyltDiscoveryListScope(m)) {
+      return reply.status(403).send({
+        error: "Forbidden",
+        message: "Missing scope: use balance:read, payin:create, or payout:create",
+      });
+    }
+    try {
+      const res = await tyltGetSupportedBaseCurrenciesList(m.environment);
+      return replyWithTyltUpstreamJson(reply, res.status, res.json);
+    } catch (err) {
+      app.log.error(err);
+      const mapped = merchantPaymentFlowErrorResponse(err);
+      sendMerchantFacingReply(reply, mapped);
+      return;
+    }
+  }
+  );
+
+  app.get(
+    "/v1/tylt/account-balance",
+    {
+      schema: {
+        querystring: tyltPassthroughQuerySchema,
+        response: tyltMerchantProxyResponses,
+      },
+    },
+    async (request, reply) => {
+    const m = request.merchant;
+    if (!m) return reply.status(401).send({ error: "Unauthorized" });
+    if (!merchantHasBalanceReadScope(m)) {
+      return reply.status(403).send({
+        error: "Forbidden",
+        message: "Missing scope: balance:read",
+      });
+    }
+    try {
+      const qp = tyltPassthroughQuery(request.query);
+      const res = await tyltGetAccountBalance(m.environment, qp);
+      return replyWithTyltUpstreamJson(reply, res.status, res.json);
+    } catch (err) {
+      app.log.error(err);
+      const mapped = merchantPaymentFlowErrorResponse(err);
+      sendMerchantFacingReply(reply, mapped);
+      return;
+    }
+  }
+  );
 
   app.post(
     "/v1/tylt/cpg/payin-requests",
@@ -1497,61 +1651,408 @@ export async function buildApp() {
     }
   );
 
-  app.get("/v1/tylt/cpg/payin-information/:transactionId", async (request, reply) => {
-    const m = request.merchant;
-    if (!m) return reply.status(401).send({ error: "Unauthorized" });
-    if (!m.scopes.includes("payin:create") && !m.scopes.includes("*")) {
-      return reply.status(403).send({ error: "Forbidden", message: "Missing scope: payin:create" });
+  app.get(
+    "/v1/tylt/cpg/payin-information/:transactionId",
+    {
+      schema: {
+        params: tyltTransactionIdParamSchema,
+        response: tyltMerchantProxyResponses,
+      },
+    },
+    async (request, reply) => {
+      const m = request.merchant;
+      if (!m) return reply.status(401).send({ error: "Unauthorized" });
+      if (!m.scopes.includes("payin:create") && !m.scopes.includes("*")) {
+        return reply.status(403).send({ error: "Forbidden", message: "Missing scope: payin:create" });
+      }
+      const transactionId = request.params.transactionId;
+      const [txRow] = await db
+        .select()
+        .from(transactions)
+        .where(and(eq(transactions.id, transactionId), eq(transactions.merchantId, m.merchantId)))
+        .limit(1);
+      if (!txRow || txRow.type !== "payin") {
+        return reply.status(404).send({ error: "Not found", message: "Transaction not found" });
+      }
+      const meta = parseTransactionMetadata(txRow);
+      if (!isTyltCpgPayinMetadata(meta)) {
+        return reply.status(400).send({ error: "Bad Request", message: "Not a CPG pay-in" });
+      }
+      try {
+        const res = await cpgGetPayinTransactionInformation({ environment: m.environment, orderId: txRow.id });
+        return replyWithTyltUpstreamJson(reply, res.status, res.json);
+      } catch (err) {
+        app.log.error(err);
+        const mapped = merchantPaymentFlowErrorResponse(err);
+        sendMerchantFacingReply(reply, mapped);
+        return;
+      }
     }
-    const transactionId = (request.params as { transactionId: string }).transactionId;
-    const [txRow] = await db
-      .select()
-      .from(transactions)
-      .where(and(eq(transactions.id, transactionId), eq(transactions.merchantId, m.merchantId)))
-      .limit(1);
-    if (!txRow || txRow.type !== "payin") {
-      return reply.status(404).send({ error: "Not found", message: "Transaction not found" });
-    }
-    const meta = parseTransactionMetadata(txRow);
-    if (!isTyltCpgPayinMetadata(meta)) {
-      return reply.status(400).send({ error: "Bad Request", message: "Not a CPG pay-in" });
-    }
-    try {
-      const res = await cpgGetPayinTransactionInformation({ environment: m.environment, orderId: txRow.id });
-      const code = res.status >= 500 ? 502 : res.status;
-      return reply.code(code).send(res.json);
-    } catch (err) {
-      app.log.error(err);
-      const mapped = merchantPaymentFlowErrorResponse(err);
-      sendMerchantFacingReply(reply, mapped);
-      return;
-    }
-  });
+  );
 
-  app.get("/v1/tylt/cpg/payin-history", async (request, reply) => {
-    const m = request.merchant;
-    if (!m) return reply.status(401).send({ error: "Unauthorized" });
-    if (!m.scopes.includes("payin:create") && !m.scopes.includes("*")) {
-      return reply.status(403).send({ error: "Forbidden", message: "Missing scope: payin:create" });
+  app.get(
+    "/v1/tylt/cpg/payin-history",
+    {
+      schema: {
+        querystring: tyltRowsPageQuerySchema,
+        response: tyltMerchantProxyResponses,
+      },
+    },
+    async (request, reply) => {
+      const m = request.merchant;
+      if (!m) return reply.status(401).send({ error: "Unauthorized" });
+      if (!m.scopes.includes("payin:create") && !m.scopes.includes("*")) {
+        return reply.status(403).send({ error: "Forbidden", message: "Missing scope: payin:create" });
+      }
+      const q = request.query as { rows?: number; page?: number };
+      const rows = Math.min(100, Math.max(1, q.rows ?? 20));
+      const page = Math.max(1, q.page ?? 1);
+      try {
+        const res = await cpgGetPayinTransactionHistory({
+          environment: m.environment,
+          rows,
+          page,
+        });
+        return replyWithTyltUpstreamJson(reply, res.status, res.json);
+      } catch (err) {
+        app.log.error(err);
+        const mapped = merchantPaymentFlowErrorResponse(err);
+        sendMerchantFacingReply(reply, mapped);
+        return;
+      }
     }
-    const q = request.query as { rows?: string; page?: string };
-    const rows = Math.min(100, Math.max(1, parseInt(q.rows ?? "20", 10) || 20));
-    const page = Math.max(1, parseInt(q.page ?? "1", 10) || 1);
-    try {
-      const res = await cpgGetPayinTransactionHistory({
-        environment: m.environment,
-        rows,
-        page,
-      });
-      const code = res.status >= 500 ? 502 : res.status;
-      return reply.code(code).send(res.json);
-    } catch (err) {
-      app.log.error(err);
-      const mapped = merchantPaymentFlowErrorResponse(err);
-      sendMerchantFacingReply(reply, mapped);
-      return;
+  );
+
+  app.post(
+    "/v1/tylt/cpg/payout-requests",
+    {
+      schema: {
+        body: z.object({
+          amount: z.string(),
+          settledCurrency: z.string().min(1),
+          networkSymbol: z.string().min(1),
+          destinationDetails: z.record(z.string(), z.unknown()),
+        }),
+        response: {
+          200: z.object({
+            transactionId: z.string(),
+            status: z.literal("pending"),
+            amount: z.string(),
+            platformOrderId: z.string().nullable(),
+          }),
+          400: merchantFacingError,
+          401: errorResponse,
+          403: errorResponse,
+          503: merchantFacingError,
+          500: merchantFacingError,
+        },
+      },
+    },
+    async (request, reply) => {
+      const m = request.merchant;
+      if (!m) return reply.status(401).send({ error: "Unauthorized" });
+      if (!m.scopes.includes("payout:create") && !m.scopes.includes("*")) {
+        return reply.status(403).send({ error: "Forbidden", message: "Missing scope: payout:create" });
+      }
+      if (!(await requireKycVerified(m.merchantId, reply))) return;
+      const idemKey = request.headers["idempotency-key"] as string | undefined;
+      if (idemKey?.trim()) {
+        const [cached] = await db
+          .select({ responseSnapshot: idempotencyKeys.responseSnapshot })
+          .from(idempotencyKeys)
+          .where(
+            and(
+              eq(idempotencyKeys.key, idemKey.trim()),
+              eq(idempotencyKeys.merchantId, m.merchantId),
+              gt(idempotencyKeys.expiresAt, new Date())
+            )
+          )
+          .limit(1);
+        if (cached) return JSON.parse(cached.responseSnapshot);
+      }
+      const body = request.body as {
+        amount: string;
+        settledCurrency: string;
+        networkSymbol: string;
+        destinationDetails: Record<string, unknown>;
+      };
+      const amt = parseFloat(body.amount);
+      const bounds = LIMITS.tyltCpgPayout;
+      if (!Number.isFinite(amt) || amt < bounds.amountMin || amt > bounds.amountMax) {
+        return reply.status(400).send({
+          error: "Bad Request",
+          message: "Invalid amount",
+        });
+      }
+      if (
+        !body.destinationDetails ||
+        typeof body.destinationDetails !== "object" ||
+        Object.keys(body.destinationDetails).length === 0
+      ) {
+        return reply.status(400).send({
+          error: "Bad Request",
+          message: "destinationDetails is required",
+        });
+      }
+      try {
+        const result = await createTyltCpgPayoutRequest({
+          merchantId: m.merchantId,
+          environment: m.environment,
+          baseUrl,
+          amount: body.amount,
+          settledCurrency: body.settledCurrency,
+          networkSymbol: body.networkSymbol,
+          destinationDetails: body.destinationDetails,
+        });
+        const response = {
+          transactionId: result.transactionId,
+          status: "pending" as const,
+          amount: body.amount,
+          platformOrderId: result.platformOrderId,
+        };
+        if (idemKey?.trim()) {
+          try {
+            await db.insert(idempotencyKeys).values({
+              key: idemKey.trim(),
+              merchantId: m.merchantId,
+              responseSnapshot: JSON.stringify(response),
+              expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+            });
+          } catch (insertErr: unknown) {
+            const code =
+              insertErr && typeof insertErr === "object" && "code" in insertErr
+                ? (insertErr as { code: string }).code
+                : "";
+            if (code === "23505") {
+              const [cached] = await db
+                .select({ responseSnapshot: idempotencyKeys.responseSnapshot })
+                .from(idempotencyKeys)
+                .where(and(eq(idempotencyKeys.key, idemKey.trim()), eq(idempotencyKeys.merchantId, m.merchantId)))
+                .limit(1);
+              if (cached) return JSON.parse(cached.responseSnapshot);
+            }
+            throw insertErr;
+          }
+        }
+        return response;
+      } catch (err) {
+        app.log.error(err);
+        const mapped = merchantPaymentFlowErrorResponse(err);
+        if (mapped.logDetail) {
+          app.log.warn({ logDetail: mapped.logDetail }, "v1 tylt cpg payout merchant-facing error detail");
+        }
+        sendMerchantFacingReply(reply, mapped);
+        return;
+      }
     }
-  });
+  );
+
+  app.get(
+    "/v1/tylt/cpg/payout-information/:transactionId",
+    {
+      schema: {
+        params: tyltTransactionIdParamSchema,
+        response: tyltMerchantProxyResponses,
+      },
+    },
+    async (request, reply) => {
+      const m = request.merchant;
+      if (!m) return reply.status(401).send({ error: "Unauthorized" });
+      if (!m.scopes.includes("payout:create") && !m.scopes.includes("*")) {
+        return reply.status(403).send({ error: "Forbidden", message: "Missing scope: payout:create" });
+      }
+      const transactionId = request.params.transactionId;
+      const [txRow] = await db
+        .select()
+        .from(transactions)
+        .where(and(eq(transactions.id, transactionId), eq(transactions.merchantId, m.merchantId)))
+        .limit(1);
+      if (!txRow || txRow.type !== "payout") {
+        return reply.status(404).send({ error: "Not found", message: "Transaction not found" });
+      }
+      const meta = parseTransactionMetadata(txRow);
+      if (!isTyltCpgPayoutMetadata(meta)) {
+        return reply.status(400).send({ error: "Bad Request", message: "Not a CPG payout" });
+      }
+      try {
+        const res = await cpgGetPayoutTransactionInformation({ environment: m.environment, orderId: txRow.id });
+        return replyWithTyltUpstreamJson(reply, res.status, res.json);
+      } catch (err) {
+        app.log.error(err);
+        const mapped = merchantPaymentFlowErrorResponse(err);
+        sendMerchantFacingReply(reply, mapped);
+        return;
+      }
+    }
+  );
+
+  app.get(
+    "/v1/tylt/cpg/payout-history",
+    {
+      schema: {
+        querystring: tyltRowsPageQuerySchema,
+        response: tyltMerchantProxyResponses,
+      },
+    },
+    async (request, reply) => {
+      const m = request.merchant;
+      if (!m) return reply.status(401).send({ error: "Unauthorized" });
+      if (!m.scopes.includes("payout:create") && !m.scopes.includes("*")) {
+        return reply.status(403).send({ error: "Forbidden", message: "Missing scope: payout:create" });
+      }
+      const q = request.query as { rows?: number; page?: number };
+      const rows = Math.min(100, Math.max(1, q.rows ?? 20));
+      const page = Math.max(1, q.page ?? 1);
+      try {
+        const res = await cpgGetPayoutTransactionHistory({
+          environment: m.environment,
+          rows,
+          page,
+        });
+        return replyWithTyltUpstreamJson(reply, res.status, res.json);
+      } catch (err) {
+        app.log.error(err);
+        const mapped = merchantPaymentFlowErrorResponse(err);
+        sendMerchantFacingReply(reply, mapped);
+        return;
+      }
+    }
+  );
+
+  app.get(
+    "/v1/tylt/merchant-details",
+    { schema: { response: tyltMerchantProxyResponses } },
+    async (request, reply) => {
+      const m = request.merchant;
+      if (!m) return reply.status(401).send({ error: "Unauthorized" });
+      if (!m.scopes.includes("tylt:internal_transfer") && !m.scopes.includes("*")) {
+        return reply.status(403).send({ error: "Forbidden", message: "Missing scope: tylt:internal_transfer" });
+      }
+      try {
+        const res = await tyltGetMerchantDetails(m.environment);
+        return replyWithTyltUpstreamJson(reply, res.status, res.json);
+      } catch (err) {
+        app.log.error(err);
+        const mapped = merchantPaymentFlowErrorResponse(err);
+        sendMerchantFacingReply(reply, mapped);
+        return;
+      }
+    }
+  );
+
+  app.post(
+    "/v1/tylt/internal-transfer",
+    {
+      schema: {
+        body: z.object({
+          fromUUID: z.string().uuid(),
+          toUUID: z.string().uuid(),
+          settledAmount: z.string(),
+          settledCurrency: z.string().min(1),
+          comments: z.string().optional(),
+        }),
+        response: {
+          200: z.object({
+            transactionId: z.string(),
+            status: z.literal("success"),
+            platformOrderId: z.string().nullable(),
+          }),
+          400: merchantFacingError,
+          401: errorResponse,
+          403: errorResponse,
+          503: merchantFacingError,
+          500: merchantFacingError,
+        },
+      },
+    },
+    async (request, reply) => {
+      const m = request.merchant;
+      if (!m) return reply.status(401).send({ error: "Unauthorized" });
+      if (!m.scopes.includes("tylt:internal_transfer") && !m.scopes.includes("*")) {
+        return reply.status(403).send({ error: "Forbidden", message: "Missing scope: tylt:internal_transfer" });
+      }
+      if (!(await requireKycVerified(m.merchantId, reply))) return;
+      const idemKey = request.headers["idempotency-key"] as string | undefined;
+      if (idemKey?.trim()) {
+        const [cached] = await db
+          .select({ responseSnapshot: idempotencyKeys.responseSnapshot })
+          .from(idempotencyKeys)
+          .where(
+            and(
+              eq(idempotencyKeys.key, idemKey.trim()),
+              eq(idempotencyKeys.merchantId, m.merchantId),
+              gt(idempotencyKeys.expiresAt, new Date())
+            )
+          )
+          .limit(1);
+        if (cached) return JSON.parse(cached.responseSnapshot);
+      }
+      const body = request.body as {
+        fromUUID: string;
+        toUUID: string;
+        settledAmount: string;
+        settledCurrency: string;
+        comments?: string;
+      };
+      const amt = parseFloat(body.settledAmount);
+      const bounds = LIMITS.tyltInternalTransfer;
+      if (!Number.isFinite(amt) || amt < bounds.amountMin || amt > bounds.amountMax) {
+        return reply.status(400).send({
+          error: "Bad Request",
+          message: "Invalid settledAmount",
+        });
+      }
+      try {
+        const result = await executeTyltInternalTransfer({
+          merchantId: m.merchantId,
+          environment: m.environment,
+          fromUUID: body.fromUUID,
+          toUUID: body.toUUID,
+          settledAmount: body.settledAmount,
+          settledCurrency: body.settledCurrency,
+          comments: body.comments,
+        });
+        const response = {
+          transactionId: result.transactionId,
+          status: "success" as const,
+          platformOrderId: result.platformOrderId,
+        };
+        if (idemKey?.trim()) {
+          try {
+            await db.insert(idempotencyKeys).values({
+              key: idemKey.trim(),
+              merchantId: m.merchantId,
+              responseSnapshot: JSON.stringify(response),
+              expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+            });
+          } catch (insertErr: unknown) {
+            const code =
+              insertErr && typeof insertErr === "object" && "code" in insertErr
+                ? (insertErr as { code: string }).code
+                : "";
+            if (code === "23505") {
+              const [cached] = await db
+                .select({ responseSnapshot: idempotencyKeys.responseSnapshot })
+                .from(idempotencyKeys)
+                .where(and(eq(idempotencyKeys.key, idemKey.trim()), eq(idempotencyKeys.merchantId, m.merchantId)))
+                .limit(1);
+              if (cached) return JSON.parse(cached.responseSnapshot);
+            }
+            throw insertErr;
+          }
+        }
+        return response;
+      } catch (err) {
+        app.log.error(err);
+        const mapped = merchantPaymentFlowErrorResponse(err);
+        if (mapped.logDetail) {
+          app.log.warn({ logDetail: mapped.logDetail }, "v1 tylt internal transfer merchant-facing error detail");
+        }
+        sendMerchantFacingReply(reply, mapped);
+        return;
+      }
+    }
+  );
 
   app.post(
     "/v1/payouts",

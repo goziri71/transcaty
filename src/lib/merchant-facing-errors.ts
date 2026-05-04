@@ -99,6 +99,42 @@ export function merchantPaymentFlowErrorResponse(err: unknown): MerchantFacingRe
     };
   }
 
+  if (msg === "Transfer pair not allowed") {
+    return {
+      status: 403,
+      body: {
+        error: "Forbidden",
+        message: "This transfer is not permitted",
+        code: "transfer_pair_not_allowed",
+      },
+      logDetail: msg,
+    };
+  }
+
+  if (msg === "Internal transfer not configured") {
+    return {
+      status: 503,
+      body: {
+        error: "Service Unavailable",
+        message: PAYMENT_UNAVAILABLE,
+        code: "payment_unavailable",
+      },
+      logDetail: msg,
+    };
+  }
+
+  if (msg === "Tylt internal transfer failed") {
+    return {
+      status: 400,
+      body: {
+        error: "Bad Request",
+        message: OPERATION_FAILED,
+        code: "transfer_failed",
+      },
+      logDetail: msg,
+    };
+  }
+
   if (msg === "Tylt is not configured") {
     return {
       status: 503,
