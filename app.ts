@@ -140,7 +140,19 @@ export async function buildApp() {
     timeWindow: "1 minute",
   });
   await app.register(compress, { global: true });
-  await app.register(cors, { origin: true });
+  const corsAllowedOrigins = new Set<string>(["https://transacty-admin.vercel.app"]);
+  const corsExtra = process.env.CORS_ALLOWED_ORIGINS?.split(",")
+    .map((v) => v.trim())
+    .filter(Boolean) ?? [];
+  for (const origin of corsExtra) {
+    corsAllowedOrigins.add(origin);
+  }
+  await app.register(cors, {
+    origin: (origin, cb) => {
+      if (!origin) return cb(null, true);
+      cb(null, corsAllowedOrigins.has(origin));
+    },
+  });
 
   app.addHook("preHandler", async (request, reply) => {
     const path = request.url.split("?")[0];

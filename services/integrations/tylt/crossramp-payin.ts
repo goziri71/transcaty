@@ -7,7 +7,7 @@ import { transactions, wallets, ledgerEntries } from "../../../src/db/schema/ind
 import { audit } from "../../../src/lib/audit.js";
 import { tryApplyTransactionFee } from "../../../src/lib/billing/index.js";
 import type { WebhookEvent } from "../../../src/lib/merchant-webhook.js";
-import { tyltSignedPostJson } from "./client.js";
+import { tyltSignedGetJson, tyltSignedPostJson } from "./client.js";
 import type { TyltMerchantEnvironment } from "./config.js";
 
 const RAIL = "tylt";
@@ -24,6 +24,7 @@ export function isTyltUpiPayinMetadata(meta: Record<string, unknown>): boolean {
 
 const SUCCESS_EVENT_IDS = new Set([4, 6]);
 const FAILURE_EVENT_IDS = new Set([5, 9]);
+type CrossRampTerminalDecision = "success" | "failed" | "non_terminal" | "unknown";
 
 type CreateInstanceBody = {
   merchantOrderId: string;
@@ -222,6 +223,99 @@ export function parseCreditAmount(payload: unknown, fallbackAmount: string): str
   return fallbackAmount;
 }
 
+function mergeMeta(existing: string | null, patch: Record<string, unknown>): string {
+  const prev = existing ? (readMetadata({ metadata: existing }) as Record<string, unknown>) : {};
+  return JSON.stringify({ ...prev, ...patch });
+}
+
+function inferCrossRampEventIdFromAnyShape(payload: unknown): number | undefined {
+  const direct = parseCrossRampEventId(payload);
+  if (direct != null) return direct;
+  const root = payload as Record<string, unknown>;
+  const data = (root.data ?? root.result ?? root.payload ?? root) as Record<string, unknown>;
+  const txObj = (data.transaction ?? data.tx ?? data.order ?? {}) as Record<string, unknown>;
+  const nestedEvent =
+    ((data.trade as Record<string, unknown> | undefined)?.event as Record<string, unknown> | undefined) ??
+    (data.event as Record<string, unknown> | undefined);
+  const rawEv = nestedEvent?.id ?? data.eventId ?? data.event_id ?? root.eventId;
+  if (typeof rawEv === "number" && Number.isFinite(rawEv)) return rawEv;
+  if (typeof rawEv === "string" && /^\d+$/.test(rawEv.trim())) return parseInt(rawEv.trim(), 10);
+  const status = String(txObj.status ?? data.status ?? data.instanceStatus ?? "").trim().toLowerCase();
+  if (!status) return undefined;
+  if (/(complete|success|settled|paid|credited)/.test(status)) return 6;
+  if (/disput/.test(status)) return 5;
+  if (/expir|fail|cancel|reject/.test(status)) return 9;
+  if (/pending|processing|waiting|initiated|created/.test(status)) return 0;
+  return undefined;
+}
+
+function inferCrossRampStatusFromAnyShape(payload: unknown): string | undefined {
+  const direct = parseTerminalStatus(payload);
+  if (direct?.trim()) return direct.trim();
+  const root = payload as Record<string, unknown>;
+  const data = (root.data ?? root.result ?? root.payload ?? root) as Record<string, unknown>;
+  const txObj = (data.transaction ?? data.tx ?? data.order ?? {}) as Record<string, unknown>;
+  const s = String(txObj.status ?? data.status ?? data.instanceStatus ?? "").trim();
+  return s || undefined;
+}
+
+function classifyCrossRampDecision(eventId: number | undefined, terminalStatus?: string): CrossRampTerminalDecision {
+  if (eventId == null) return "unknown";
+  if (eventId <= 3 || eventId === 7 || eventId === 8 || eventId > 9) return "non_terminal";
+  if (SUCCESS_EVENT_IDS.has(eventId)) {
+    if (terminalStatus && !/^completed$/i.test(terminalStatus.trim())) return "failed";
+    return "success";
+  }
+  if (FAILURE_EVENT_IDS.has(eventId)) return "failed";
+  return "unknown";
+}
+
+async function fetchRemoteCrossRampDecision(params: {
+  environment: TyltMerchantEnvironment;
+  merchantOrderId: string;
+  instanceId?: string | null;
+}): Promise<{ decision: CrossRampTerminalDecision; source: string }> {
+  const call1 = await tyltSignedGetJson({
+    environment: params.environment,
+    path: "/p2pRampsMerchant/getInstanceDetails",
+    queryParams: { merchantOrderId: params.merchantOrderId },
+  });
+  if (call1.status < 500) {
+    const decision = classifyCrossRampDecision(
+      inferCrossRampEventIdFromAnyShape(call1.json),
+      inferCrossRampStatusFromAnyShape(call1.json)
+    );
+    return { decision, source: "getInstanceDetails:merchantOrderId" };
+  }
+  if (params.instanceId?.trim()) {
+    const call2 = await tyltSignedGetJson({
+      environment: params.environment,
+      path: "/p2pRampsMerchant/getInstanceDetails",
+      queryParams: { instanceId: params.instanceId.trim() },
+    });
+    if (call2.status < 500) {
+      const decision = classifyCrossRampDecision(
+        inferCrossRampEventIdFromAnyShape(call2.json),
+        inferCrossRampStatusFromAnyShape(call2.json)
+      );
+      return { decision, source: "getInstanceDetails:instanceId" };
+    }
+  }
+  const call3 = await tyltSignedGetJson({
+    environment: params.environment,
+    path: "/transactions/merchant/getPayinTransactionInformation",
+    queryParams: { orderId: params.merchantOrderId },
+  });
+  if (call3.status < 500) {
+    const decision = classifyCrossRampDecision(
+      inferCrossRampEventIdFromAnyShape(call3.json),
+      inferCrossRampStatusFromAnyShape(call3.json)
+    );
+    return { decision, source: "getPayinTransactionInformation" };
+  }
+  return { decision: "unknown", source: "upstream_5xx" };
+}
+
 export async function getOrCreateMerchantWallet(params: {
   merchantId: string;
   environment: TyltMerchantEnvironment;
@@ -272,7 +366,8 @@ export async function applyTyltCrossRampWebhookPayload(
   }
 
   /** Progress-only UPI events (docs): ignore until terminal. */
-  if (eventId <= 3 || eventId === 7 || eventId === 8 || eventId > 9) {
+  const callbackDecision = classifyCrossRampDecision(eventId);
+  if (callbackDecision === "non_terminal" || callbackDecision === "unknown") {
     return null;
   }
 
@@ -301,6 +396,45 @@ export async function applyTyltCrossRampWebhookPayload(
   }
 
   const terminalStatus = parseTerminalStatus(parsed);
+  const callbackDecisionWithStatus = classifyCrossRampDecision(eventId, terminalStatus);
+  const remote = await fetchRemoteCrossRampDecision({
+    environment: tx.environment as TyltMerchantEnvironment,
+    merchantOrderId: tx.id,
+    instanceId: tx.externalId,
+  });
+  if (remote.decision !== callbackDecisionWithStatus) {
+    await db
+      .update(transactions)
+      .set({
+        metadata: mergeMeta(tx.metadata, {
+          reviewRequired: true,
+          reviewReason: "tylt_callback_remote_mismatch",
+          callbackDecision: callbackDecisionWithStatus,
+          callbackEventId: eventId,
+          callbackStatusRaw: terminalStatus ?? null,
+          remoteDecision: remote.decision,
+          remoteSource: remote.source,
+          reviewMarkedAt: new Date().toISOString(),
+        }),
+        updatedAt: new Date(),
+      })
+      .where(eq(transactions.id, tx.id));
+    audit({
+      action: "provider.transaction.reconciled",
+      resource: tx.id,
+      merchantId: tx.merchantId,
+      meta: {
+        product: meta.tyltProduct,
+        reason: "callback_remote_mismatch",
+        callbackDecision: callbackDecisionWithStatus,
+        callbackEventId: eventId,
+        callbackStatusRaw: terminalStatus ?? null,
+        remoteDecision: remote.decision,
+        remoteSource: remote.source,
+      },
+    });
+    return null;
+  }
 
   if (SUCCESS_EVENT_IDS.has(eventId)) {
     if (terminalStatus && !/^completed$/i.test(terminalStatus.trim())) {

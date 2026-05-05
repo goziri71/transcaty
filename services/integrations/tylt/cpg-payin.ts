@@ -106,6 +106,71 @@ function shouldFailCpg(fields: ReturnType<typeof extractCpgPayInWebhookFields>):
   return st === "expired";
 }
 
+type CpgTerminalDecision = "success" | "failed" | "non_terminal" | "unknown";
+
+function classifyCpgPayinDecision(fields: ReturnType<typeof extractCpgPayInWebhookFields>): CpgTerminalDecision {
+  const statusNorm = fields.statusRaw.trim().toLowerCase();
+  if (isTerminalProgressOnly(statusNorm)) return "non_terminal";
+  if (shouldFailCpg(fields)) return "failed";
+  if (shouldCreditCpg(fields)) return "success";
+  return "unknown";
+}
+
+function mergeMeta(
+  existing: string | null,
+  patch: Record<string, unknown>
+): string {
+  const prev = parseTransactionMetadata({ metadata: existing });
+  return JSON.stringify({ ...prev, ...patch });
+}
+
+async function markPayinReviewRequired(params: {
+  transactionId: string;
+  existingMetadata: string | null;
+  reason: string;
+  callbackDecision: CpgTerminalDecision;
+  callbackStatusRaw: string;
+  remoteDecision: CpgTerminalDecision;
+  remoteSource: string;
+}) {
+  await db
+    .update(transactions)
+    .set({
+      metadata: mergeMeta(params.existingMetadata, {
+        reviewRequired: true,
+        reviewReason: params.reason,
+        callbackDecision: params.callbackDecision,
+        callbackStatusRaw: params.callbackStatusRaw,
+        remoteDecision: params.remoteDecision,
+        remoteSource: params.remoteSource,
+        reviewMarkedAt: new Date().toISOString(),
+      }),
+      updatedAt: new Date(),
+    })
+    .where(eq(transactions.id, params.transactionId));
+}
+
+async function fetchRemoteCpgPayinDecision(params: {
+  environment: TyltMerchantEnvironment;
+  orderIds: string[];
+}): Promise<{ decision: CpgTerminalDecision; source: string }> {
+  const uniqueOrderIds = [...new Set(params.orderIds.map((v) => v.trim()).filter(Boolean))];
+  if (uniqueOrderIds.length === 0) {
+    return { decision: "unknown", source: "no_order_id" };
+  }
+
+  for (const orderId of uniqueOrderIds) {
+    const { status, json } = await cpgGetPayinTransactionInformation({ environment: params.environment, orderId });
+    if (status >= 500) continue;
+    if (status >= 400) return { decision: "unknown", source: `getPayinTransactionInformation:${orderId}:http_${status}` };
+    const remoteFields = extractCpgPayInWebhookFields(json);
+    const decision = classifyCpgPayinDecision(remoteFields);
+    return { decision, source: `getPayinTransactionInformation:${orderId}` };
+  }
+
+  return { decision: "unknown", source: "getPayinTransactionInformation:upstream_5xx" };
+}
+
 export async function createTyltCpgPayinRequest(params: {
   merchantId: string;
   environment: TyltMerchantEnvironment;
@@ -261,13 +326,46 @@ export async function applyTyltCpgPayinWebhookPayload(
     return null;
   }
 
-  const statusNorm = fields.statusRaw.trim().toLowerCase();
-
-  if (isTerminalProgressOnly(statusNorm)) {
+  const callbackDecision = classifyCpgPayinDecision(fields);
+  if (callbackDecision === "non_terminal") {
     return null;
   }
 
-  if (shouldFailCpg(fields)) {
+  if (callbackDecision === "unknown") {
+    return null;
+  }
+
+  const remote = await fetchRemoteCpgPayinDecision({
+    environment: tx.environment as TyltMerchantEnvironment,
+    orderIds: [tx.externalId ?? "", tx.id],
+  });
+  if (remote.decision !== callbackDecision) {
+    await markPayinReviewRequired({
+      transactionId: tx.id,
+      existingMetadata: tx.metadata,
+      reason: "tylt_callback_remote_mismatch",
+      callbackDecision,
+      callbackStatusRaw: fields.statusRaw,
+      remoteDecision: remote.decision,
+      remoteSource: remote.source,
+    });
+    audit({
+      action: "provider.transaction.reconciled",
+      resource: tx.id,
+      merchantId: tx.merchantId,
+      meta: {
+        product: TYLT_PRODUCT_CPG_PAYIN,
+        reason: "callback_remote_mismatch",
+        callbackDecision,
+        callbackStatusRaw: fields.statusRaw,
+        remoteDecision: remote.decision,
+        remoteSource: remote.source,
+      },
+    });
+    return null;
+  }
+
+  if (callbackDecision === "failed") {
     const [failed] = await db
       .update(transactions)
       .set({ status: "failed", updatedAt: new Date() })
@@ -293,10 +391,6 @@ export async function applyTyltCpgPayinWebhookPayload(
         platformOrderId: tx.externalId ?? null,
       },
     };
-  }
-
-  if (!shouldCreditCpg(fields)) {
-    return null;
   }
 
   const paidAmount = pickCreditAmount(fields, String(tx.amount));
