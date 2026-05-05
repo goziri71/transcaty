@@ -140,7 +140,11 @@ export async function buildApp() {
     timeWindow: "1 minute",
   });
   await app.register(compress, { global: true });
-  const corsAllowedOrigins = new Set<string>(["https://transacty-admin.vercel.app"]);
+  const corsAllowedOrigins = new Set<string>([
+    "https://transacty-admin.vercel.app",
+    "http://localhost:3000",
+    "http://localhost:5173",
+  ]);
   const corsExtra = process.env.CORS_ALLOWED_ORIGINS?.split(",")
     .map((v) => v.trim())
     .filter(Boolean) ?? [];

@@ -4,6 +4,7 @@ import { and, count, desc, eq, ilike, inArray } from "drizzle-orm";
 import { db } from "../../src/db/index.js";
 import {
   ledgerEntries,
+  merchantAuditLog,
   merchantPricing,
   providerActionRequests,
   merchantBusinessProfiles,
@@ -182,6 +183,584 @@ export async function registerProviderRoutes(app: FastifyInstance) {
         }
       }
       return base;
+    }
+  );
+
+  app.get(
+    "/provider/dashboard",
+    {
+      schema: {
+        response: {
+          200: z.object({
+            kpis: z.object({
+              merchants: z.object({
+                total: z.number(),
+                active: z.number(),
+                pending: z.number(),
+                suspended: z.number(),
+              }),
+              kycPending: z.number(),
+              approvalsPending: z.number(),
+              transactions: z.object({
+                pending: z.number(),
+                failed: z.number(),
+                reviewRequired: z.number(),
+              }),
+            }),
+            recentIssues: z.array(
+              z.object({
+                transactionId: z.string(),
+                merchantId: z.string(),
+                merchantName: z.string(),
+                type: z.string(),
+                status: z.string(),
+                createdAt: z.string(),
+              })
+            ),
+            myActions: z.object({
+              merchant: z.array(z.string()),
+              customer: z.array(z.string()),
+            }),
+          }),
+          401: errorResponse,
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!request.provider) return reply.status(401).send({ error: "Unauthorized" });
+      if (!ensureProviderPermission(request, reply, "merchant.read")) return;
+      const actor = request.provider;
+
+      const [merchantsTotal, merchantsActive, merchantsPending, merchantsSuspended, kycPending] = await Promise.all([
+        db.select({ count: count() }).from(merchants),
+        db.select({ count: count() }).from(merchants).where(eq(merchants.status, "active")),
+        db.select({ count: count() }).from(merchants).where(eq(merchants.status, "pending")),
+        db.select({ count: count() }).from(merchants).where(eq(merchants.status, "suspended")),
+        db.select({ count: count() }).from(merchants).where(eq(merchants.kycStatus, "pending")),
+      ]);
+      const [approvalsPending] = await db
+        .select({ count: count() })
+        .from(providerActionRequests)
+        .where(eq(providerActionRequests.status, "pending"));
+
+      const [txPending, txFailed, txReviewRequired] = await Promise.all([
+        db.select({ count: count() }).from(transactions).where(eq(transactions.status, "pending")),
+        db.select({ count: count() }).from(transactions).where(eq(transactions.status, "failed")),
+        db
+          .select({ count: count() })
+          .from(transactions)
+          .where(and(eq(transactions.status, "pending"), ilike(transactions.metadata, '%"reviewRequired":true%'))),
+      ]);
+
+      const issueRows = await db
+        .select({
+          id: transactions.id,
+          merchantId: transactions.merchantId,
+          merchantName: merchants.name,
+          status: transactions.status,
+          createdAt: transactions.createdAt,
+          metadata: transactions.metadata,
+        })
+        .from(transactions)
+        .innerJoin(merchants, eq(transactions.merchantId, merchants.id))
+        .where(
+          and(
+            eq(transactions.status, "pending"),
+            ilike(transactions.metadata, '%"reviewRequired":true%')
+          )
+        )
+        .orderBy(desc(transactions.createdAt))
+        .limit(10);
+
+      const role = actor.role;
+      const myActions = {
+        merchant: [
+          canProviderAccess(role, "merchant.status.write") ? "status_change" : null,
+          canProviderAccess(role, "merchant.kyc.write") ? "kyc_review" : null,
+          canProviderAccess(role, "merchant.pricing.write") ? "pricing_update" : null,
+          canProviderAccess(role, "wallet.adjust") ? "wallet_adjustment" : null,
+          canProviderAccess(role, "tx.reconcile") ? "tx_reconcile" : null,
+          canProviderAccess(role, "tx.status.write") ? "tx_status_change" : null,
+        ].filter((v): v is string => Boolean(v)),
+        customer: [
+          canProviderAccess(role, "customer.status.write") ? "status_change" : null,
+          canProviderAccess(role, "customer.read") ? "view_wallet_and_timeline" : null,
+        ].filter((v): v is string => Boolean(v)),
+      };
+
+      return {
+        kpis: {
+          merchants: {
+            total: Number(merchantsTotal?.[0]?.count ?? 0),
+            active: Number(merchantsActive?.[0]?.count ?? 0),
+            pending: Number(merchantsPending?.[0]?.count ?? 0),
+            suspended: Number(merchantsSuspended?.[0]?.count ?? 0),
+          },
+          kycPending: Number(kycPending?.[0]?.count ?? 0),
+          approvalsPending: Number(approvalsPending?.count ?? 0),
+          transactions: {
+            pending: Number(txPending?.[0]?.count ?? 0),
+            failed: Number(txFailed?.[0]?.count ?? 0),
+            reviewRequired: Number(txReviewRequired?.[0]?.count ?? 0),
+          },
+        },
+        recentIssues: issueRows.map((r) => ({
+          transactionId: r.id,
+          merchantId: r.merchantId,
+          merchantName: r.merchantName,
+          type: "review_required",
+          status: r.status,
+          createdAt: r.createdAt.toISOString(),
+        })),
+        myActions,
+      };
+    }
+  );
+
+  app.get(
+    "/provider/merchants/:merchantId/overview",
+    {
+      schema: {
+        params: z.object({ merchantId: z.string().uuid() }),
+        querystring: z.object({
+          txLimit: z.coerce.number().min(1).max(100).default(20),
+          customerLimit: z.coerce.number().min(1).max(100).default(20),
+        }),
+        response: {
+          200: z.object({
+            merchant: z.object({
+              id: z.string(),
+              name: z.string(),
+              status: z.string(),
+              kycStatus: z.string(),
+              createdAt: z.string(),
+            }),
+            wallets: z.array(
+              z.object({
+                id: z.string(),
+                environment: z.string(),
+                currency: z.string(),
+                balance: z.string(),
+                status: z.string(),
+              })
+            ),
+            kyc: z.object({
+              profile: z
+                .object({
+                  id: z.string(),
+                  legalName: z.string(),
+                  businessType: z.string(),
+                  status: z.string(),
+                  rejectionReason: z.string().nullable(),
+                })
+                .nullable(),
+              personsCount: z.number(),
+              documentsCount: z.number(),
+            }),
+            customers: z.object({
+              total: z.number(),
+              active: z.number(),
+              frozen: z.number(),
+              pending: z.number(),
+              closed: z.number(),
+              recent: z.array(
+                z.object({
+                  walletId: z.string(),
+                  label: z.string().nullable(),
+                  balance: z.string(),
+                  status: z.string(),
+                  createdAt: z.string(),
+                })
+              ),
+            }),
+            transactions: z.object({
+              total: z.number(),
+              pending: z.number(),
+              success: z.number(),
+              failed: z.number(),
+              reviewRequired: z.number(),
+              recent: z.array(
+                z.object({
+                  id: z.string(),
+                  type: z.string(),
+                  status: z.string(),
+                  amount: z.string(),
+                  paidAmount: z.string().nullable(),
+                  currency: z.string(),
+                  createdAt: z.string(),
+                })
+              ),
+            }),
+            approvals: z.object({
+              pendingCount: z.number(),
+              recent: z.array(
+                z.object({
+                  id: z.string(),
+                  actionType: z.string(),
+                  status: z.string(),
+                  riskLevel: z.string(),
+                  createdAt: z.string(),
+                })
+              ),
+            }),
+            auditTrail: z.array(
+              z.object({
+                id: z.string(),
+                action: z.string(),
+                resource: z.string().nullable(),
+                createdAt: z.string(),
+              })
+            ),
+          }),
+          401: errorResponse,
+          404: errorResponse,
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!ensureProviderPermission(request, reply, "merchant.read")) return;
+      const { merchantId } = request.params as { merchantId: string };
+      const { txLimit, customerLimit } = request.query as { txLimit: number; customerLimit: number };
+
+      const [merchant] = await db.select().from(merchants).where(eq(merchants.id, merchantId)).limit(1);
+      if (!merchant) {
+        return reply.status(404).send({ error: "Not found", message: "Merchant not found" });
+      }
+
+      const [profile, personsCount, documentsCount, customerTotal, customerActive, customerFrozen, customerPending, customerClosed] =
+        await Promise.all([
+          db.select().from(merchantBusinessProfiles).where(eq(merchantBusinessProfiles.merchantId, merchantId)).limit(1),
+          db.select({ count: count() }).from(merchantPersons).where(eq(merchantPersons.merchantId, merchantId)),
+          db.select({ count: count() }).from(merchantKycDocuments).where(eq(merchantKycDocuments.merchantId, merchantId)),
+          db.select({ count: count() }).from(wallets).where(and(eq(wallets.merchantId, merchantId), eq(wallets.type, "customer"))),
+          db
+            .select({ count: count() })
+            .from(wallets)
+            .where(and(eq(wallets.merchantId, merchantId), eq(wallets.type, "customer"), eq(wallets.status, "active"))),
+          db
+            .select({ count: count() })
+            .from(wallets)
+            .where(and(eq(wallets.merchantId, merchantId), eq(wallets.type, "customer"), eq(wallets.status, "frozen"))),
+          db
+            .select({ count: count() })
+            .from(wallets)
+            .where(and(eq(wallets.merchantId, merchantId), eq(wallets.type, "customer"), eq(wallets.status, "pending"))),
+          db
+            .select({ count: count() })
+            .from(wallets)
+            .where(and(eq(wallets.merchantId, merchantId), eq(wallets.type, "customer"), eq(wallets.status, "closed"))),
+        ]);
+
+      const [walletRows, customerRows, txTotal, txPending, txSuccess, txFailed, txReviewRequired, txRows, approvalsPending, approvalRows, auditRows] =
+        await Promise.all([
+          db
+            .select({
+              id: wallets.id,
+              environment: wallets.environment,
+              currency: wallets.currency,
+              balance: wallets.balance,
+              status: wallets.status,
+            })
+            .from(wallets)
+            .where(and(eq(wallets.merchantId, merchantId), eq(wallets.type, "merchant")))
+            .orderBy(desc(wallets.createdAt)),
+          db
+            .select({
+              walletId: wallets.id,
+              label: wallets.label,
+              balance: wallets.balance,
+              status: wallets.status,
+              createdAt: wallets.createdAt,
+            })
+            .from(wallets)
+            .where(and(eq(wallets.merchantId, merchantId), eq(wallets.type, "customer")))
+            .orderBy(desc(wallets.createdAt))
+            .limit(customerLimit),
+          db.select({ count: count() }).from(transactions).where(eq(transactions.merchantId, merchantId)),
+          db
+            .select({ count: count() })
+            .from(transactions)
+            .where(and(eq(transactions.merchantId, merchantId), eq(transactions.status, "pending"))),
+          db
+            .select({ count: count() })
+            .from(transactions)
+            .where(and(eq(transactions.merchantId, merchantId), eq(transactions.status, "success"))),
+          db
+            .select({ count: count() })
+            .from(transactions)
+            .where(and(eq(transactions.merchantId, merchantId), eq(transactions.status, "failed"))),
+          db
+            .select({ count: count() })
+            .from(transactions)
+            .where(
+              and(
+                eq(transactions.merchantId, merchantId),
+                eq(transactions.status, "pending"),
+                ilike(transactions.metadata, '%"reviewRequired":true%')
+              )
+            ),
+          db
+            .select({
+              id: transactions.id,
+              type: transactions.type,
+              status: transactions.status,
+              amount: transactions.amount,
+              paidAmount: transactions.paidAmount,
+              currency: transactions.currency,
+              createdAt: transactions.createdAt,
+            })
+            .from(transactions)
+            .where(eq(transactions.merchantId, merchantId))
+            .orderBy(desc(transactions.createdAt))
+            .limit(txLimit),
+          db
+            .select({ count: count() })
+            .from(providerActionRequests)
+            .where(and(eq(providerActionRequests.status, "pending"), eq(providerActionRequests.resourceId, merchantId))),
+          db
+            .select({
+              id: providerActionRequests.id,
+              actionType: providerActionRequests.actionType,
+              status: providerActionRequests.status,
+              riskLevel: providerActionRequests.riskLevel,
+              createdAt: providerActionRequests.createdAt,
+            })
+            .from(providerActionRequests)
+            .where(eq(providerActionRequests.resourceId, merchantId))
+            .orderBy(desc(providerActionRequests.createdAt))
+            .limit(10),
+          db
+            .select({
+              id: merchantAuditLog.id,
+              action: merchantAuditLog.action,
+              resource: merchantAuditLog.resource,
+              createdAt: merchantAuditLog.createdAt,
+            })
+            .from(merchantAuditLog)
+            .where(eq(merchantAuditLog.merchantId, merchantId))
+            .orderBy(desc(merchantAuditLog.createdAt))
+            .limit(20),
+        ]);
+
+      const profileRow = profile[0] ?? null;
+      return {
+        merchant: {
+          id: merchant.id,
+          name: merchant.name,
+          status: merchant.status,
+          kycStatus: merchant.kycStatus ?? "pending",
+          createdAt: merchant.createdAt.toISOString(),
+        },
+        wallets: walletRows.map((w) => ({
+          id: w.id,
+          environment: w.environment,
+          currency: w.currency,
+          balance: String(w.balance),
+          status: w.status,
+        })),
+        kyc: {
+          profile: profileRow
+            ? {
+                id: profileRow.id,
+                legalName: profileRow.legalName,
+                businessType: profileRow.businessType,
+                status: profileRow.status,
+                rejectionReason: profileRow.rejectionReason,
+              }
+            : null,
+          personsCount: Number(personsCount?.[0]?.count ?? 0),
+          documentsCount: Number(documentsCount?.[0]?.count ?? 0),
+        },
+        customers: {
+          total: Number(customerTotal?.[0]?.count ?? 0),
+          active: Number(customerActive?.[0]?.count ?? 0),
+          frozen: Number(customerFrozen?.[0]?.count ?? 0),
+          pending: Number(customerPending?.[0]?.count ?? 0),
+          closed: Number(customerClosed?.[0]?.count ?? 0),
+          recent: customerRows.map((c) => ({
+            walletId: c.walletId,
+            label: c.label,
+            balance: String(c.balance),
+            status: c.status,
+            createdAt: c.createdAt.toISOString(),
+          })),
+        },
+        transactions: {
+          total: Number(txTotal?.[0]?.count ?? 0),
+          pending: Number(txPending?.[0]?.count ?? 0),
+          success: Number(txSuccess?.[0]?.count ?? 0),
+          failed: Number(txFailed?.[0]?.count ?? 0),
+          reviewRequired: Number(txReviewRequired?.[0]?.count ?? 0),
+          recent: txRows.map((t) => ({
+            id: t.id,
+            type: t.type,
+            status: t.status,
+            amount: String(t.amount),
+            paidAmount: t.paidAmount ? String(t.paidAmount) : null,
+            currency: t.currency,
+            createdAt: t.createdAt.toISOString(),
+          })),
+        },
+        approvals: {
+          pendingCount: Number(approvalsPending?.[0]?.count ?? 0),
+          recent: approvalRows.map((a) => ({
+            id: a.id,
+            actionType: a.actionType,
+            status: a.status,
+            riskLevel: a.riskLevel,
+            createdAt: a.createdAt.toISOString(),
+          })),
+        },
+        auditTrail: auditRows.map((a) => ({
+          id: a.id,
+          action: a.action,
+          resource: a.resource ?? null,
+          createdAt: a.createdAt.toISOString(),
+        })),
+      };
+    }
+  );
+
+  app.get(
+    "/provider/merchants/:merchantId/customers/:walletId/overview",
+    {
+      schema: {
+        params: z.object({ merchantId: z.string().uuid(), walletId: z.string().uuid() }),
+        response: {
+          200: z.object({
+            customer: z.object({
+              walletId: z.string(),
+              merchantId: z.string(),
+              merchantName: z.string(),
+              label: z.string().nullable(),
+              environment: z.string(),
+              currency: z.string(),
+              balance: z.string(),
+              status: z.string(),
+              createdAt: z.string(),
+            }),
+            ledger: z.array(
+              z.object({
+                id: z.string(),
+                direction: z.string(),
+                type: z.string(),
+                amount: z.string(),
+                referenceId: z.string().nullable(),
+                createdAt: z.string(),
+              })
+            ),
+            transactions: z.array(
+              z.object({
+                id: z.string(),
+                type: z.string(),
+                status: z.string(),
+                amount: z.string(),
+                paidAmount: z.string().nullable(),
+                currency: z.string(),
+                createdAt: z.string(),
+              })
+            ),
+            actions: z.array(z.string()),
+          }),
+          401: errorResponse,
+          404: errorResponse,
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!ensureProviderPermission(request, reply, "customer.read")) return;
+      const { merchantId, walletId } = request.params as { merchantId: string; walletId: string };
+
+      const [row] = await db
+        .select({
+          walletId: wallets.id,
+          merchantId: wallets.merchantId,
+          merchantName: merchants.name,
+          label: wallets.label,
+          environment: wallets.environment,
+          currency: wallets.currency,
+          balance: wallets.balance,
+          status: wallets.status,
+          createdAt: wallets.createdAt,
+        })
+        .from(wallets)
+        .innerJoin(merchants, eq(wallets.merchantId, merchants.id))
+        .where(and(eq(wallets.id, walletId), eq(wallets.merchantId, merchantId), eq(wallets.type, "customer")))
+        .limit(1);
+
+      if (!row) {
+        return reply.status(404).send({ error: "Not found", message: "Customer wallet not found for merchant" });
+      }
+
+      const [ledgerRows, txRows] = await Promise.all([
+        db
+          .select({
+            id: ledgerEntries.id,
+            direction: ledgerEntries.direction,
+            type: ledgerEntries.type,
+            amount: ledgerEntries.amount,
+            referenceId: ledgerEntries.referenceId,
+            createdAt: ledgerEntries.createdAt,
+          })
+          .from(ledgerEntries)
+          .where(eq(ledgerEntries.walletId, walletId))
+          .orderBy(desc(ledgerEntries.createdAt))
+          .limit(50),
+        db
+          .select({
+            id: transactions.id,
+            type: transactions.type,
+            status: transactions.status,
+            amount: transactions.amount,
+            paidAmount: transactions.paidAmount,
+            currency: transactions.currency,
+            createdAt: transactions.createdAt,
+          })
+          .from(transactions)
+          .where(eq(transactions.walletId, walletId))
+          .orderBy(desc(transactions.createdAt))
+          .limit(50),
+      ]);
+
+      const actor = request.provider!;
+      const actions = [
+        canProviderAccess(actor.role, "wallet.adjust") ? "wallet_adjustment" : null,
+        canProviderAccess(actor.role, "customer.status.write") ? "change_status" : null,
+        canProviderAccess(actor.role, "tx.read") ? "review_transactions" : null,
+        canProviderAccess(actor.role, "tx.reconcile") ? "request_reconcile" : null,
+      ].filter((v): v is string => Boolean(v));
+
+      return {
+        customer: {
+          walletId: row.walletId,
+          merchantId: row.merchantId,
+          merchantName: row.merchantName,
+          label: row.label,
+          environment: row.environment,
+          currency: row.currency,
+          balance: String(row.balance),
+          status: row.status,
+          createdAt: row.createdAt.toISOString(),
+        },
+        ledger: ledgerRows.map((l) => ({
+          id: l.id,
+          direction: l.direction,
+          type: l.type,
+          amount: String(l.amount),
+          referenceId: l.referenceId ?? null,
+          createdAt: l.createdAt.toISOString(),
+        })),
+        transactions: txRows.map((t) => ({
+          id: t.id,
+          type: t.type,
+          status: t.status,
+          amount: String(t.amount),
+          paidAmount: t.paidAmount ? String(t.paidAmount) : null,
+          currency: t.currency,
+          createdAt: t.createdAt.toISOString(),
+        })),
+        actions,
+      };
     }
   );
 
@@ -776,6 +1355,182 @@ export async function registerProviderRoutes(app: FastifyInstance) {
   );
 
   app.post(
+    "/provider/customers/:walletId/wallet-adjustments",
+    {
+      schema: {
+        params: z.object({ walletId: z.string().uuid() }),
+        body: z.object({
+          direction: z.enum(ADJUSTMENT_DIRECTION),
+          amount: z.string().regex(/^\d+(\.\d{1,2})?$/),
+          reason: z.string().min(3).max(500),
+          referenceId: z.string().min(3).max(200),
+        }),
+        response: {
+          200: z.object({
+            walletId: z.string(),
+            merchantId: z.string(),
+            direction: z.string(),
+            amount: z.string(),
+            previousBalance: z.string(),
+            currentBalance: z.string(),
+          }),
+          202: z.object({
+            requestId: z.string(),
+            status: z.literal("pending"),
+            requiresApproval: z.literal(true),
+          }),
+          400: errorResponse,
+          401: errorResponse,
+          404: errorResponse,
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!ensureProviderPermission(request, reply, "wallet.adjust")) return;
+      const { walletId } = request.params as { walletId: string };
+      const body = request.body as {
+        direction: (typeof ADJUSTMENT_DIRECTION)[number];
+        amount: string;
+        reason: string;
+        referenceId: string;
+      };
+
+      const amount = Number(body.amount);
+      if (!Number.isFinite(amount) || amount <= 0) {
+        return reply.status(400).send({ error: "Bad Request", message: "Amount must be greater than 0" });
+      }
+
+      const [customerWallet] = await db
+        .select()
+        .from(wallets)
+        .where(and(eq(wallets.id, walletId), eq(wallets.type, "customer")))
+        .limit(1);
+      if (!customerWallet) {
+        return reply.status(404).send({ error: "Not found", message: "Customer wallet not found" });
+      }
+
+      const actor = request.provider!;
+      const riskLevel = getApprovalRiskLevel({
+        actionType: "wallet_adjustment",
+        amount,
+        direction: body.direction,
+      });
+      const needsApproval = riskLevel === "high" && actor.role !== "super_admin";
+      if (needsApproval) {
+        const [requestRow] = await db
+          .insert(providerActionRequests)
+          .values({
+            actionType: "wallet_adjustment",
+            status: "pending",
+            requestedBy: actor.providerUserId ?? null,
+            resourceType: "customer_wallet",
+            resourceId: walletId,
+            payload: JSON.stringify({
+              walletId,
+              merchantId: customerWallet.merchantId,
+              direction: body.direction,
+              amount: toMoneyString(amount),
+              reason: body.reason,
+              referenceId: body.referenceId,
+            }),
+            reason: body.reason,
+            ticketId: body.referenceId,
+            riskLevel,
+          })
+          .returning({ id: providerActionRequests.id });
+
+        audit({
+          action: "provider.wallet.adjusted",
+          actor: actor.providerUserId ?? "provider:api_key",
+          resource: walletId,
+          meta: {
+            queuedOnly: true,
+            walletType: "customer",
+            merchantId: customerWallet.merchantId,
+            direction: body.direction,
+            amount: toMoneyString(amount),
+            reason: body.reason,
+            referenceId: body.referenceId,
+            approvalRequestId: requestRow.id,
+            riskLevel,
+          },
+        });
+
+        return reply.status(202).send({
+          requestId: requestRow.id,
+          status: "pending",
+          requiresApproval: true,
+        });
+      }
+
+      const result = await db.transaction(async (tx) => {
+        const [wallet] = await tx
+          .select()
+          .from(wallets)
+          .where(and(eq(wallets.id, walletId), eq(wallets.type, "customer")))
+          .limit(1);
+        if (!wallet) return { error: "WALLET_NOT_FOUND" as const };
+
+        const previousBalance = Number(wallet.balance);
+        const nextBalance = body.direction === "credit" ? previousBalance + amount : previousBalance - amount;
+        if (nextBalance < 0) return { error: "INSUFFICIENT_BALANCE" as const };
+
+        await tx.insert(ledgerEntries).values({
+          walletId: wallet.id,
+          environment: wallet.environment,
+          amount: toMoneyString(amount),
+          direction: body.direction,
+          type: "provider_adjustment",
+          referenceId: body.referenceId,
+        });
+
+        await tx
+          .update(wallets)
+          .set({ balance: toMoneyString(nextBalance), updatedAt: new Date() })
+          .where(eq(wallets.id, wallet.id));
+
+        return {
+          wallet,
+          previousBalance,
+          nextBalance,
+        };
+      });
+
+      if ("error" in result) {
+        if (result.error === "WALLET_NOT_FOUND") {
+          return reply.status(404).send({ error: "Not found", message: "Customer wallet not found" });
+        }
+        return reply.status(400).send({ error: "Bad Request", message: "Insufficient balance for debit" });
+      }
+
+      audit({
+        action: "provider.wallet.adjusted",
+        actor: "provider:super_admin",
+        resource: result.wallet.id,
+        meta: {
+          walletType: "customer",
+          merchantId: result.wallet.merchantId,
+          direction: body.direction,
+          amount: toMoneyString(amount),
+          previousBalance: toMoneyString(result.previousBalance),
+          currentBalance: toMoneyString(result.nextBalance),
+          reason: body.reason,
+          referenceId: body.referenceId,
+        },
+      });
+
+      return {
+        walletId: result.wallet.id,
+        merchantId: result.wallet.merchantId,
+        direction: body.direction,
+        amount: toMoneyString(amount),
+        previousBalance: toMoneyString(result.previousBalance),
+        currentBalance: toMoneyString(result.nextBalance),
+      };
+    }
+  );
+
+  app.post(
     "/provider/merchants/:merchantId/wallet-adjustments",
     {
       schema: {
@@ -1316,17 +2071,24 @@ export async function registerProviderRoutes(app: FastifyInstance) {
         const payload = parsePayload(req.payload);
         if (req.actionType === "wallet_adjustment") {
           const merchantId = String(payload.merchantId ?? "");
+          const walletId = String(payload.walletId ?? "");
           const environment = String(payload.environment ?? "live") as "test" | "live";
           const direction = String(payload.direction ?? "") as "credit" | "debit";
           const amount = Number(payload.amount ?? 0);
           const referenceId = String(payload.referenceId ?? "");
           if (!merchantId || !direction || !amount || !referenceId) return { error: "INVALID_PAYLOAD" as const };
 
-          const [wallet] = await tx
-            .select()
-            .from(wallets)
-            .where(and(eq(wallets.merchantId, merchantId), eq(wallets.environment, environment), eq(wallets.type, "merchant")))
-            .limit(1);
+          const [wallet] = walletId
+            ? await tx
+                .select()
+                .from(wallets)
+                .where(and(eq(wallets.id, walletId), eq(wallets.type, "customer")))
+                .limit(1)
+            : await tx
+                .select()
+                .from(wallets)
+                .where(and(eq(wallets.merchantId, merchantId), eq(wallets.environment, environment), eq(wallets.type, "merchant")))
+                .limit(1);
           if (!wallet) return { error: "WALLET_NOT_FOUND" as const };
 
           const previousBalance = Number(wallet.balance);
