@@ -251,6 +251,7 @@ export async function createTyltCpgPayoutRequest(params: {
         status: "pending",
         amount: params.amount,
         currency: params.settledCurrency,
+        provider: "tylt-cpg-payout",
         metadata: JSON.stringify(metadata),
       })
       .returning();

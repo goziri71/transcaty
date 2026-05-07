@@ -11,13 +11,18 @@ import {
   type ZodTypeProvider,
 } from "fastify-type-provider-zod";
 import { z } from "zod";
-import { sql, eq, and, count, desc, gt } from "drizzle-orm";
+import { sql, eq, and, count, desc } from "drizzle-orm";
 import { db } from "./src/db/index.js";
 import { getRedis } from "./src/lib/redis.js";
 import {
+  markWebhookFailed,
+  markWebhookProcessed,
+  tryClaimWebhookEvent,
+} from "./src/lib/webhook-events.js";
+import { withIdempotency } from "./src/lib/idempotency.js";
+import {
   wallets,
   transactions,
-  idempotencyKeys,
   merchants,
   merchantBusinessProfiles,
   merchantPersons,
@@ -789,12 +794,35 @@ export async function buildApp() {
       );
     }
     const body = typeof request.body === "object" ? request.body : {};
+    const externalIdGuess =
+      typeof (body as Record<string, unknown>).platformOrderId === "string"
+        ? ((body as Record<string, unknown>).platformOrderId as string)
+        : null;
+    const claim = await tryClaimWebhookEvent({
+      rail: "payok-bd-payin",
+      environment: "unknown",
+      rawBody,
+      signature: sign ?? null,
+      signatureValid: true,
+      externalId: externalIdGuess,
+    });
+    if (claim.kind === "duplicate") {
+      app.log.info(
+        { rail: "payok-bd-payin", eventId: claim.eventId, status: claim.previousStatus },
+        "payin webhook duplicate (replay absorbed by webhook_events)"
+      );
+      return reply.type("text/plain").send("SUCCESS");
+    }
     try {
       const webhook = await handlePayinCallback(body as Parameters<typeof handlePayinCallback>[0]);
+      await markWebhookProcessed(claim.eventId, {
+        transactionId: webhook?.event?.transactionId ?? null,
+      });
       if (webhook) {
         queueMerchantWebhook(webhook.merchantId, webhook.event).catch((e) => app.log.warn(e, "Merchant webhook queue failed"));
       }
     } catch (err) {
+      await markWebhookFailed(claim.eventId, err).catch(() => {});
       app.log.error(err);
       return reply.status(500).send("INTERNAL");
     }
@@ -842,12 +870,35 @@ export async function buildApp() {
       );
     }
     const body = typeof request.body === "object" ? request.body : {};
+    const externalIdGuess =
+      typeof (body as Record<string, unknown>).platformOrderId === "string"
+        ? ((body as Record<string, unknown>).platformOrderId as string)
+        : null;
+    const claim = await tryClaimWebhookEvent({
+      rail: "payok-bd-payout",
+      environment: "unknown",
+      rawBody,
+      signature: sign ?? null,
+      signatureValid: true,
+      externalId: externalIdGuess,
+    });
+    if (claim.kind === "duplicate") {
+      app.log.info(
+        { rail: "payok-bd-payout", eventId: claim.eventId, status: claim.previousStatus },
+        "payout webhook duplicate (replay absorbed by webhook_events)"
+      );
+      return reply.type("text/plain").send("SUCCESS");
+    }
     try {
       const webhook = await handlePayoutCallback(body as Parameters<typeof handlePayoutCallback>[0]);
+      await markWebhookProcessed(claim.eventId, {
+        transactionId: webhook?.event?.transactionId ?? null,
+      });
       if (webhook) {
         queueMerchantWebhook(webhook.merchantId, webhook.event).catch((e) => app.log.warn(e, "Merchant webhook queue failed"));
       }
     } catch (err) {
+      await markWebhookFailed(claim.eventId, err).catch(() => {});
       app.log.error(err);
       return reply.status(500).send("INTERNAL");
     }
@@ -859,6 +910,9 @@ export async function buildApp() {
     reply: FastifyReply,
     opts: {
       pathConstant: string;
+      /** Rail label for webhook_events. Differentiates crossramp / h2h /
+       * cpg-payin / cpg-payout / unified so dedupe works per-product. */
+      rail: string;
       rejectLogMessage: string;
       apply: (body: unknown) => Promise<{ merchantId: string; event: WebhookEvent } | null>;
     }
@@ -874,14 +928,41 @@ export async function buildApp() {
       return reply.status(401).type("text/plain").send("Invalid signature");
     }
     const body = typeof request.body === "object" && request.body !== null ? request.body : {};
+    const externalIdGuess = (() => {
+      const root = body as Record<string, unknown>;
+      for (const key of ["platformOrderId", "instanceId", "orderId", "transactionId"]) {
+        const v = root[key];
+        if (typeof v === "string" && v.length > 0) return v;
+      }
+      return null;
+    })();
+    const claim = await tryClaimWebhookEvent({
+      rail: opts.rail,
+      environment,
+      rawBody,
+      signature: typeof sig === "string" ? sig : null,
+      signatureValid: true,
+      externalId: externalIdGuess,
+    });
+    if (claim.kind === "duplicate") {
+      app.log.info(
+        { rail: opts.rail, environment, eventId: claim.eventId, status: claim.previousStatus },
+        "tylt webhook duplicate (replay absorbed by webhook_events)"
+      );
+      return reply.type("text/plain").send("ok");
+    }
     try {
       const webhook = await opts.apply(body);
+      await markWebhookProcessed(claim.eventId, {
+        transactionId: webhook?.event?.transactionId ?? null,
+      });
       if (webhook) {
         queueMerchantWebhook(webhook.merchantId, webhook.event).catch((e) =>
           app.log.warn(e, "Merchant webhook queue failed")
         );
       }
     } catch (err) {
+      await markWebhookFailed(claim.eventId, err).catch(() => {});
       app.log.error(err);
       return reply.status(500).type("text/plain").send("INTERNAL");
     }
@@ -893,6 +974,7 @@ export async function buildApp() {
   app.post(TYLT_CROSSRAMP_WEBHOOK_PATH, async (request, reply) => {
     await handleTyltWebhookPost(request, reply, {
       pathConstant: TYLT_CROSSRAMP_WEBHOOK_PATH,
+      rail: "tylt-crossramp",
       rejectLogMessage: "tylt webhook rejected: invalid or missing signature",
       apply: (body) => applyTyltWebhookByProductRoute("crossramp_upi", body),
     });
@@ -903,6 +985,7 @@ export async function buildApp() {
   app.post(TYLT_H2H_WEBHOOK_PATH, async (request, reply) => {
     await handleTyltWebhookPost(request, reply, {
       pathConstant: TYLT_H2H_WEBHOOK_PATH,
+      rail: "tylt-h2h-upi",
       rejectLogMessage: "tylt H2H webhook rejected: invalid or missing signature",
       apply: (body) => applyTyltWebhookByProductRoute("crossramp_upi", body),
     });
@@ -913,6 +996,7 @@ export async function buildApp() {
   app.post(TYLT_CPG_PAYIN_WEBHOOK_PATH, async (request, reply) => {
     await handleTyltWebhookPost(request, reply, {
       pathConstant: TYLT_CPG_PAYIN_WEBHOOK_PATH,
+      rail: "tylt-cpg-payin",
       rejectLogMessage: "tylt CPG pay-in webhook rejected: invalid or missing signature",
       apply: (body) => applyTyltWebhookByProductRoute("cpg_payin", body),
     });
@@ -923,6 +1007,7 @@ export async function buildApp() {
   app.post(TYLT_CPG_PAYOUT_WEBHOOK_PATH, async (request, reply) => {
     await handleTyltWebhookPost(request, reply, {
       pathConstant: TYLT_CPG_PAYOUT_WEBHOOK_PATH,
+      rail: "tylt-cpg-payout",
       rejectLogMessage: "tylt CPG payout webhook rejected: invalid or missing signature",
       apply: (body) => applyTyltWebhookByProductRoute("cpg_payout", body),
     });
@@ -934,6 +1019,7 @@ export async function buildApp() {
   app.post(TYLT_UNIFIED_WEBHOOK_PATH, async (request, reply) => {
     await handleTyltWebhookPost(request, reply, {
       pathConstant: TYLT_UNIFIED_WEBHOOK_PATH,
+      rail: "tylt-unified",
       rejectLogMessage: "tylt unified webhook rejected: invalid or missing signature",
       apply: (body) => applyTyltWebhookByStoredRailProduct(body),
     });
@@ -1025,21 +1111,6 @@ export async function buildApp() {
         return reply.status(403).send({ error: "Forbidden", message: "Missing scope: payin:create" });
       }
       if (!(await requireKycVerified(m.merchantId, reply))) return;
-      const idemKey = request.headers["idempotency-key"] as string | undefined;
-      if (idemKey?.trim()) {
-        const [cached] = await db
-          .select({ responseSnapshot: idempotencyKeys.responseSnapshot })
-          .from(idempotencyKeys)
-          .where(
-            and(
-              eq(idempotencyKeys.key, idemKey.trim()),
-              eq(idempotencyKeys.merchantId, m.merchantId),
-              gt(idempotencyKeys.expiresAt, new Date())
-            )
-          )
-          .limit(1);
-        if (cached) return JSON.parse(cached.responseSnapshot);
-      }
       const body = request.body as {
         amount: string;
         paymentMethodCode: string;
@@ -1056,44 +1127,29 @@ export async function buildApp() {
         return reply.status(400).send({ error: "Bad Request", message: returnCheck.message });
       }
       try {
-        const result = await createPayinOrder({
-          merchantId: m.merchantId,
-          environment: m.environment,
-          amount: body.amount,
-          paymentMethodCode: body.paymentMethodCode,
-          baseUrl,
-          merchantReturnUrl: returnCheck.normalized,
-          customer: body.customer,
-          goodsInfo: body.goodsInfo,
-        });
-        const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
-        const response = {
-          ...result,
-          status: "pending",
-          amount: body.amount,
-          expiresAt,
-        };
-        if (idemKey?.trim()) {
-          try {
-            await db.insert(idempotencyKeys).values({
-              key: idemKey.trim(),
+        const response = await withIdempotency(
+          { request, reply, merchantId: m.merchantId, body },
+          async () => {
+            const result = await createPayinOrder({
               merchantId: m.merchantId,
-              responseSnapshot: JSON.stringify(response),
-              expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+              environment: m.environment,
+              amount: body.amount,
+              paymentMethodCode: body.paymentMethodCode,
+              baseUrl,
+              merchantReturnUrl: returnCheck.normalized,
+              customer: body.customer,
+              goodsInfo: body.goodsInfo,
             });
-          } catch (insertErr: unknown) {
-            const code = insertErr && typeof insertErr === "object" && "code" in insertErr ? (insertErr as { code: string }).code : "";
-            if (code === "23505") {
-              const [cached] = await db
-                .select({ responseSnapshot: idempotencyKeys.responseSnapshot })
-                .from(idempotencyKeys)
-                .where(and(eq(idempotencyKeys.key, idemKey.trim()), eq(idempotencyKeys.merchantId, m.merchantId)))
-                .limit(1);
-              if (cached) return JSON.parse(cached.responseSnapshot);
-            }
-            throw insertErr;
+            const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+            return {
+              ...result,
+              status: "pending",
+              amount: body.amount,
+              expiresAt,
+            };
           }
-        }
+        );
+        if (response === undefined) return; // 409 conflict already sent
         return response;
       } catch (err) {
         app.log.error(err);
@@ -1145,21 +1201,6 @@ export async function buildApp() {
         return reply.status(403).send({ error: "Forbidden", message: "Missing scope: payin:create" });
       }
       if (!(await requireKycVerified(m.merchantId, reply))) return;
-      const idemKey = request.headers["idempotency-key"] as string | undefined;
-      if (idemKey?.trim()) {
-        const [cached] = await db
-          .select({ responseSnapshot: idempotencyKeys.responseSnapshot })
-          .from(idempotencyKeys)
-          .where(
-            and(
-              eq(idempotencyKeys.key, idemKey.trim()),
-              eq(idempotencyKeys.merchantId, m.merchantId),
-              gt(idempotencyKeys.expiresAt, new Date())
-            )
-          )
-          .limit(1);
-        if (cached) return JSON.parse(cached.responseSnapshot);
-      }
       const body = request.body as {
         amount: string;
         currencySymbol: "USDT" | "INR";
@@ -1179,50 +1220,32 @@ export async function buildApp() {
         });
       }
       try {
-        const result = await createTyltCrossRampPayinOrder({
-          merchantId: m.merchantId,
-          environment: m.environment,
-          baseUrl,
-          amount: body.amount,
-          currencySymbol: body.currencySymbol,
-          returnUrl: returnCheck.normalized,
-          userEmail: body.userEmail,
-          kycBypass: tyltKycBypass,
-        });
-        const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
-        const response = {
-          transactionId: result.transactionId,
-          status: "pending" as const,
-          amount: result.amount,
-          currency: result.currency,
-          instanceId: result.instanceId,
-          rampUrl: result.rampUrl,
-          expiresAt,
-        };
-        if (idemKey?.trim()) {
-          try {
-            await db.insert(idempotencyKeys).values({
-              key: idemKey.trim(),
+        const response = await withIdempotency(
+          { request, reply, merchantId: m.merchantId, body },
+          async () => {
+            const result = await createTyltCrossRampPayinOrder({
               merchantId: m.merchantId,
-              responseSnapshot: JSON.stringify(response),
-              expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+              environment: m.environment,
+              baseUrl,
+              amount: body.amount,
+              currencySymbol: body.currencySymbol,
+              returnUrl: returnCheck.normalized,
+              userEmail: body.userEmail,
+              kycBypass: tyltKycBypass,
             });
-          } catch (insertErr: unknown) {
-            const code =
-              insertErr && typeof insertErr === "object" && "code" in insertErr
-                ? (insertErr as { code: string }).code
-                : "";
-            if (code === "23505") {
-              const [cached] = await db
-                .select({ responseSnapshot: idempotencyKeys.responseSnapshot })
-                .from(idempotencyKeys)
-                .where(and(eq(idempotencyKeys.key, idemKey.trim()), eq(idempotencyKeys.merchantId, m.merchantId)))
-                .limit(1);
-              if (cached) return JSON.parse(cached.responseSnapshot);
-            }
-            throw insertErr;
+            const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+            return {
+              transactionId: result.transactionId,
+              status: "pending" as const,
+              amount: result.amount,
+              currency: result.currency,
+              instanceId: result.instanceId,
+              rampUrl: result.rampUrl,
+              expiresAt,
+            };
           }
-        }
+        );
+        if (response === undefined) return; // 409 conflict already sent
         return response;
       } catch (err) {
         app.log.error(err);
@@ -1271,21 +1294,6 @@ export async function buildApp() {
         return reply.status(403).send({ error: "Forbidden", message: "Missing scope: payin:create" });
       }
       if (!(await requireKycVerified(m.merchantId, reply))) return;
-      const idemKey = request.headers["idempotency-key"] as string | undefined;
-      if (idemKey?.trim()) {
-        const [cached] = await db
-          .select({ responseSnapshot: idempotencyKeys.responseSnapshot })
-          .from(idempotencyKeys)
-          .where(
-            and(
-              eq(idempotencyKeys.key, idemKey.trim()),
-              eq(idempotencyKeys.merchantId, m.merchantId),
-              gt(idempotencyKeys.expiresAt, new Date())
-            )
-          )
-          .limit(1);
-        if (cached) return JSON.parse(cached.responseSnapshot);
-      }
       const body = request.body as {
         amount: string;
         currencySymbol: "USDT" | "INR";
@@ -1309,50 +1317,32 @@ export async function buildApp() {
         });
       }
       try {
-        const result = await createTyltH2hPayinInstance({
-          merchantId: m.merchantId,
-          environment: m.environment,
-          baseUrl,
-          amount: body.amount,
-          currencySymbol: body.currencySymbol,
-          returnUrl: normalizedReturn,
-          userEmail: body.userEmail,
-          kycBypass: tyltKycBypass,
-        });
-        const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
-        const response = {
-          transactionId: result.transactionId,
-          status: "pending" as const,
-          amount: result.amount,
-          currency: result.currency,
-          instanceId: result.instanceId,
-          paymentDetails: result.paymentDetails,
-          expiresAt,
-        };
-        if (idemKey?.trim()) {
-          try {
-            await db.insert(idempotencyKeys).values({
-              key: idemKey.trim(),
+        const response = await withIdempotency(
+          { request, reply, merchantId: m.merchantId, body },
+          async () => {
+            const result = await createTyltH2hPayinInstance({
               merchantId: m.merchantId,
-              responseSnapshot: JSON.stringify(response),
-              expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+              environment: m.environment,
+              baseUrl,
+              amount: body.amount,
+              currencySymbol: body.currencySymbol,
+              returnUrl: normalizedReturn,
+              userEmail: body.userEmail,
+              kycBypass: tyltKycBypass,
             });
-          } catch (insertErr: unknown) {
-            const code =
-              insertErr && typeof insertErr === "object" && "code" in insertErr
-                ? (insertErr as { code: string }).code
-                : "";
-            if (code === "23505") {
-              const [cached] = await db
-                .select({ responseSnapshot: idempotencyKeys.responseSnapshot })
-                .from(idempotencyKeys)
-                .where(and(eq(idempotencyKeys.key, idemKey.trim()), eq(idempotencyKeys.merchantId, m.merchantId)))
-                .limit(1);
-              if (cached) return JSON.parse(cached.responseSnapshot);
-            }
-            throw insertErr;
+            const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+            return {
+              transactionId: result.transactionId,
+              status: "pending" as const,
+              amount: result.amount,
+              currency: result.currency,
+              instanceId: result.instanceId,
+              paymentDetails: result.paymentDetails,
+              expiresAt,
+            };
           }
-        }
+        );
+        if (response === undefined) return; // 409 conflict already sent
         return response;
       } catch (err) {
         app.log.error(err);
@@ -1639,21 +1629,6 @@ export async function buildApp() {
         return reply.status(403).send({ error: "Forbidden", message: "Missing scope: payin:create" });
       }
       if (!(await requireKycVerified(m.merchantId, reply))) return;
-      const idemKey = request.headers["idempotency-key"] as string | undefined;
-      if (idemKey?.trim()) {
-        const [cached] = await db
-          .select({ responseSnapshot: idempotencyKeys.responseSnapshot })
-          .from(idempotencyKeys)
-          .where(
-            and(
-              eq(idempotencyKeys.key, idemKey.trim()),
-              eq(idempotencyKeys.merchantId, m.merchantId),
-              gt(idempotencyKeys.expiresAt, new Date())
-            )
-          )
-          .limit(1);
-        if (cached) return JSON.parse(cached.responseSnapshot);
-      }
       const body = request.body as {
         baseAmount: string;
         baseCurrency: string;
@@ -1677,48 +1652,30 @@ export async function buildApp() {
         });
       }
       try {
-        const result = await createTyltCpgPayinRequest({
-          merchantId: m.merchantId,
-          environment: m.environment,
-          baseUrl,
-          baseAmount: body.baseAmount,
-          baseCurrency: body.baseCurrency,
-          settledCurrency: body.settledCurrency,
-          networkSymbol: body.networkSymbol,
-          payeeDetails: body.payeeDetails,
-          settleUnderpayment: body.settleUnderpayment,
-        });
-        const response = {
-          transactionId: result.transactionId,
-          status: "pending" as const,
-          amount: result.amount,
-          currency: result.currency,
-          platformOrderId: result.platformOrderId,
-        };
-        if (idemKey?.trim()) {
-          try {
-            await db.insert(idempotencyKeys).values({
-              key: idemKey.trim(),
+        const response = await withIdempotency(
+          { request, reply, merchantId: m.merchantId, body },
+          async () => {
+            const result = await createTyltCpgPayinRequest({
               merchantId: m.merchantId,
-              responseSnapshot: JSON.stringify(response),
-              expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+              environment: m.environment,
+              baseUrl,
+              baseAmount: body.baseAmount,
+              baseCurrency: body.baseCurrency,
+              settledCurrency: body.settledCurrency,
+              networkSymbol: body.networkSymbol,
+              payeeDetails: body.payeeDetails,
+              settleUnderpayment: body.settleUnderpayment,
             });
-          } catch (insertErr: unknown) {
-            const code =
-              insertErr && typeof insertErr === "object" && "code" in insertErr
-                ? (insertErr as { code: string }).code
-                : "";
-            if (code === "23505") {
-              const [cached] = await db
-                .select({ responseSnapshot: idempotencyKeys.responseSnapshot })
-                .from(idempotencyKeys)
-                .where(and(eq(idempotencyKeys.key, idemKey.trim()), eq(idempotencyKeys.merchantId, m.merchantId)))
-                .limit(1);
-              if (cached) return JSON.parse(cached.responseSnapshot);
-            }
-            throw insertErr;
+            return {
+              transactionId: result.transactionId,
+              status: "pending" as const,
+              amount: result.amount,
+              currency: result.currency,
+              platformOrderId: result.platformOrderId,
+            };
           }
-        }
+        );
+        if (response === undefined) return; // 409 conflict already sent
         return response;
       } catch (err) {
         app.log.error(err);
@@ -1836,21 +1793,6 @@ export async function buildApp() {
         return reply.status(403).send({ error: "Forbidden", message: "Missing scope: payout:create" });
       }
       if (!(await requireKycVerified(m.merchantId, reply))) return;
-      const idemKey = request.headers["idempotency-key"] as string | undefined;
-      if (idemKey?.trim()) {
-        const [cached] = await db
-          .select({ responseSnapshot: idempotencyKeys.responseSnapshot })
-          .from(idempotencyKeys)
-          .where(
-            and(
-              eq(idempotencyKeys.key, idemKey.trim()),
-              eq(idempotencyKeys.merchantId, m.merchantId),
-              gt(idempotencyKeys.expiresAt, new Date())
-            )
-          )
-          .limit(1);
-        if (cached) return JSON.parse(cached.responseSnapshot);
-      }
       const body = request.body as {
         amount: string;
         settledCurrency: string;
@@ -1876,45 +1818,27 @@ export async function buildApp() {
         });
       }
       try {
-        const result = await createTyltCpgPayoutRequest({
-          merchantId: m.merchantId,
-          environment: m.environment,
-          baseUrl,
-          amount: body.amount,
-          settledCurrency: body.settledCurrency,
-          networkSymbol: body.networkSymbol,
-          destinationDetails: body.destinationDetails,
-        });
-        const response = {
-          transactionId: result.transactionId,
-          status: "pending" as const,
-          amount: body.amount,
-          platformOrderId: result.platformOrderId,
-        };
-        if (idemKey?.trim()) {
-          try {
-            await db.insert(idempotencyKeys).values({
-              key: idemKey.trim(),
+        const response = await withIdempotency(
+          { request, reply, merchantId: m.merchantId, body },
+          async () => {
+            const result = await createTyltCpgPayoutRequest({
               merchantId: m.merchantId,
-              responseSnapshot: JSON.stringify(response),
-              expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+              environment: m.environment,
+              baseUrl,
+              amount: body.amount,
+              settledCurrency: body.settledCurrency,
+              networkSymbol: body.networkSymbol,
+              destinationDetails: body.destinationDetails,
             });
-          } catch (insertErr: unknown) {
-            const code =
-              insertErr && typeof insertErr === "object" && "code" in insertErr
-                ? (insertErr as { code: string }).code
-                : "";
-            if (code === "23505") {
-              const [cached] = await db
-                .select({ responseSnapshot: idempotencyKeys.responseSnapshot })
-                .from(idempotencyKeys)
-                .where(and(eq(idempotencyKeys.key, idemKey.trim()), eq(idempotencyKeys.merchantId, m.merchantId)))
-                .limit(1);
-              if (cached) return JSON.parse(cached.responseSnapshot);
-            }
-            throw insertErr;
+            return {
+              transactionId: result.transactionId,
+              status: "pending" as const,
+              amount: body.amount,
+              platformOrderId: result.platformOrderId,
+            };
           }
-        }
+        );
+        if (response === undefined) return; // 409 conflict already sent
         return response;
       } catch (err) {
         app.log.error(err);
@@ -2053,21 +1977,6 @@ export async function buildApp() {
         return reply.status(403).send({ error: "Forbidden", message: "Missing scope: tylt:internal_transfer" });
       }
       if (!(await requireKycVerified(m.merchantId, reply))) return;
-      const idemKey = request.headers["idempotency-key"] as string | undefined;
-      if (idemKey?.trim()) {
-        const [cached] = await db
-          .select({ responseSnapshot: idempotencyKeys.responseSnapshot })
-          .from(idempotencyKeys)
-          .where(
-            and(
-              eq(idempotencyKeys.key, idemKey.trim()),
-              eq(idempotencyKeys.merchantId, m.merchantId),
-              gt(idempotencyKeys.expiresAt, new Date())
-            )
-          )
-          .limit(1);
-        if (cached) return JSON.parse(cached.responseSnapshot);
-      }
       const body = request.body as {
         fromUUID: string;
         toUUID: string;
@@ -2084,44 +1993,26 @@ export async function buildApp() {
         });
       }
       try {
-        const result = await executeTyltInternalTransfer({
-          merchantId: m.merchantId,
-          environment: m.environment,
-          fromUUID: body.fromUUID,
-          toUUID: body.toUUID,
-          settledAmount: body.settledAmount,
-          settledCurrency: body.settledCurrency,
-          comments: body.comments,
-        });
-        const response = {
-          transactionId: result.transactionId,
-          status: "success" as const,
-          platformOrderId: result.platformOrderId,
-        };
-        if (idemKey?.trim()) {
-          try {
-            await db.insert(idempotencyKeys).values({
-              key: idemKey.trim(),
+        const response = await withIdempotency(
+          { request, reply, merchantId: m.merchantId, body },
+          async () => {
+            const result = await executeTyltInternalTransfer({
               merchantId: m.merchantId,
-              responseSnapshot: JSON.stringify(response),
-              expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+              environment: m.environment,
+              fromUUID: body.fromUUID,
+              toUUID: body.toUUID,
+              settledAmount: body.settledAmount,
+              settledCurrency: body.settledCurrency,
+              comments: body.comments,
             });
-          } catch (insertErr: unknown) {
-            const code =
-              insertErr && typeof insertErr === "object" && "code" in insertErr
-                ? (insertErr as { code: string }).code
-                : "";
-            if (code === "23505") {
-              const [cached] = await db
-                .select({ responseSnapshot: idempotencyKeys.responseSnapshot })
-                .from(idempotencyKeys)
-                .where(and(eq(idempotencyKeys.key, idemKey.trim()), eq(idempotencyKeys.merchantId, m.merchantId)))
-                .limit(1);
-              if (cached) return JSON.parse(cached.responseSnapshot);
-            }
-            throw insertErr;
+            return {
+              transactionId: result.transactionId,
+              status: "success" as const,
+              platformOrderId: result.platformOrderId,
+            };
           }
-        }
+        );
+        if (response === undefined) return; // 409 conflict already sent
         return response;
       } catch (err) {
         app.log.error(err);
@@ -2179,66 +2070,36 @@ export async function buildApp() {
         return reply.status(403).send({ error: "Forbidden", message: "Missing scope: payout:create" });
       }
       if (!(await requireKycVerified(m.merchantId, reply))) return;
-      const idemKey = request.headers["idempotency-key"] as string | undefined;
-      if (idemKey?.trim()) {
-        const [cached] = await db
-          .select({ responseSnapshot: idempotencyKeys.responseSnapshot })
-          .from(idempotencyKeys)
-          .where(
-            and(
-              eq(idempotencyKeys.key, idemKey.trim()),
-              eq(idempotencyKeys.merchantId, m.merchantId),
-              gt(idempotencyKeys.expiresAt, new Date())
-            )
-          )
-          .limit(1);
-        if (cached) return JSON.parse(cached.responseSnapshot);
-      }
       const body = request.body as { amount: string; benificiaryAccountInfo: { number: string; orgId: string; orgCode: string; orgName: string; holderName: string }; cardHolderInfo: { firstName: string; lastName: string; email: string; phone: string } };
       const amount = parseFloat(body.amount);
       if (!Number.isFinite(amount) || amount < LIMITS.payout.min || amount > LIMITS.payout.max) {
         return reply.status(400).send({ error: `Amount must be between ${LIMITS.payout.min} and ${LIMITS.payout.max} BDT` });
       }
       try {
-        const result = await createPayoutOrder({
-          merchantId: m.merchantId,
-          environment: m.environment,
-          amount: body.amount,
-          baseUrl,
-          benificiaryAccountInfo: body.benificiaryAccountInfo,
-          cardHolderInfo: body.cardHolderInfo,
-        });
-        const num = body.benificiaryAccountInfo.number;
-        const masked = num.length > 4 ? `****${num.slice(-4)}` : "****";
-        const estimatedCompletion = new Date(Date.now() + 5 * 60 * 1000).toISOString();
-        const response = {
-          ...result,
-          status: result.status ?? "pending",
-          amount: body.amount,
-          recipient: { masked },
-          estimatedCompletion,
-        };
-        if (idemKey?.trim()) {
-          try {
-            await db.insert(idempotencyKeys).values({
-              key: idemKey.trim(),
+        const response = await withIdempotency(
+          { request, reply, merchantId: m.merchantId, body },
+          async () => {
+            const result = await createPayoutOrder({
               merchantId: m.merchantId,
-              responseSnapshot: JSON.stringify(response),
-              expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+              environment: m.environment,
+              amount: body.amount,
+              baseUrl,
+              benificiaryAccountInfo: body.benificiaryAccountInfo,
+              cardHolderInfo: body.cardHolderInfo,
             });
-          } catch (insertErr: unknown) {
-            const code = insertErr && typeof insertErr === "object" && "code" in insertErr ? (insertErr as { code: string }).code : "";
-            if (code === "23505") {
-              const [cached] = await db
-                .select({ responseSnapshot: idempotencyKeys.responseSnapshot })
-                .from(idempotencyKeys)
-                .where(and(eq(idempotencyKeys.key, idemKey.trim()), eq(idempotencyKeys.merchantId, m.merchantId)))
-                .limit(1);
-              if (cached) return JSON.parse(cached.responseSnapshot);
-            }
-            throw insertErr;
+            const num = body.benificiaryAccountInfo.number;
+            const masked = num.length > 4 ? `****${num.slice(-4)}` : "****";
+            const estimatedCompletion = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+            return {
+              ...result,
+              status: result.status ?? "pending",
+              amount: body.amount,
+              recipient: { masked },
+              estimatedCompletion,
+            };
           }
-        }
+        );
+        if (response === undefined) return; // 409 conflict already sent
         return response;
       } catch (err) {
         app.log.error(err);

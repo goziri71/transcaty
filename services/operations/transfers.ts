@@ -129,6 +129,7 @@ export async function transferToCustomer(params: {
         status: "success",
         amount: params.amount,
         currency: "BDT",
+        provider: "internal-transfer",
         metadata: params.reason
           ? JSON.stringify({ reason: params.reason })
           : null,
@@ -256,6 +257,7 @@ export async function refundToCustomer(params: {
         status: "success",
         amount: params.amount,
         currency: "BDT",
+        provider: "internal-refund",
         metadata: JSON.stringify(metadata),
       })
       .returning();

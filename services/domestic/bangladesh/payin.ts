@@ -32,6 +32,7 @@ export async function createPayinOrder(params: {
       status: "pending",
       amount: params.amount,
       currency: "BDT",
+      provider: "payok-bd-payin",
       metadata: JSON.stringify({
         paymentMethodCode: params.paymentMethodCode,
         environment: params.environment,

@@ -161,6 +161,7 @@ export async function createPayoutOrder(params: {
         status: "pending",
         amount: params.amount,
         currency: "BDT",
+        provider: "payok-bd-payout",
         metadata: JSON.stringify({
           benificiaryAccountInfo: params.benificiaryAccountInfo,
           environment: params.environment,

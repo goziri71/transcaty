@@ -56,6 +56,7 @@ export async function createTyltH2hPayinInstance(params: {
       status: "pending",
       amount: params.amount,
       currency: settlementCurrency,
+      provider: "tylt-h2h-upi",
       metadata: JSON.stringify(metadata),
     })
     .returning();

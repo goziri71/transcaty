@@ -159,9 +159,11 @@ export const ledgerEntries = pgTable(
   "ledger_entries",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    // Restrict (not cascade) so deleting a wallet cannot silently wipe
+    // its audit trail. See drizzle/0017_ledger_immutability.sql.
     walletId: uuid("wallet_id")
       .notNull()
-      .references(() => wallets.id, { onDelete: "cascade" }),
+      .references(() => wallets.id, { onDelete: "restrict" }),
     environment: payokEnvironmentEnum("environment").notNull().default("test"),
     amount: decimal("amount", { precision: 18, scale: 2 }).notNull(),
     direction: ledgerDirectionEnum("direction").notNull(),
@@ -231,7 +233,16 @@ export const transactions = pgTable(
     amount: decimal("amount", { precision: 18, scale: 2 }).notNull(),
     paidAmount: decimal("paid_amount", { precision: 18, scale: 2 }), // actual received (payin)
     currency: text("currency").notNull().default("BDT"),
-    externalId: text("external_id"), // Payok platformOrderId
+    externalId: text("external_id"), // Provider order id (Payok platformOrderId, Tylt platformOrderId, instanceId, …)
+    /**
+     * Provider/rail label for the transaction. Together with environment +
+     * external_id, forms the partial unique constraint that prevents
+     * duplicate transaction rows from being created for the same
+     * provider order id. Examples: "payok-bd", "tylt-cpg-payin",
+     * "tylt-cpg-payout", "tylt-crossramp", "tylt-h2h-upi",
+     * "tylt-internal", "internal-transfer".
+     */
+    provider: text("provider"),
     metadata: text("metadata"), // JSON: { refundOfTransactionId?, reason?, customerWalletId?, ... }
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -241,6 +252,7 @@ export const transactions = pgTable(
     index("transactions_merchant_env_idx").on(t.merchantId, t.environment),
     index("transactions_wallet_id_idx").on(t.walletId),
     index("transactions_external_id_idx").on(t.externalId),
+    index("transactions_provider_external_id_idx").on(t.provider, t.externalId),
   ]
 );
 
@@ -251,13 +263,61 @@ export const idempotencyKeys = pgTable(
     merchantId: uuid("merchant_id")
       .notNull()
       .references(() => merchants.id, { onDelete: "cascade" }),
-    responseSnapshot: text("response_snapshot").notNull(),
+    /** SHA-256 hex digest of the canonical request body. Empty string for
+     * legacy rows written before P3. New writes always populate this so
+     * `runIdempotent` can detect body mismatch and 409 the caller. */
+    bodyHash: text("body_hash").notNull().default(""),
+    /** "in_progress" | "completed". Set to "in_progress" on claim and
+     * promoted to "completed" once the response snapshot is persisted. */
+    status: text("status").notNull().default("completed"),
+    responseSnapshot: text("response_snapshot").notNull().default(""),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     primaryKey({ columns: [t.key, t.merchantId] }),
     index("idempotency_keys_expires_at_idx").on(t.expiresAt),
+  ]
+);
+
+/**
+ * Audit log of every webhook payload accepted from a payment processor.
+ * Replays are absorbed by the unique index on `dedupe_hash`, so the
+ * apply function only runs the first time a given (rail, environment,
+ * raw_body) tuple is seen. Failed attempts are recorded for forensics.
+ */
+export const webhookEvents = pgTable(
+  "webhook_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    /** Provider rail label, e.g. "payok-bd-payin", "tylt-cpg-payin". */
+    rail: text("rail").notNull(),
+    environment: text("environment").notNull(), // "live" | "test" | "unknown"
+    /** SHA-256 hex of `${rail}|${environment}|${rawBody}`. Unique. */
+    dedupeHash: text("dedupe_hash").notNull(),
+    rawBody: text("raw_body").notNull(),
+    signature: text("signature"),
+    signatureValid: boolean("signature_valid").notNull(),
+    /** Best-effort external id extracted from the body (provider order
+     * id) — useful for correlating with `transactions.external_id`. */
+    externalId: text("external_id"),
+    transactionId: uuid("transaction_id"),
+    /** "received" | "processed" | "failed" | "duplicate" */
+    status: text("status").notNull().default("received"),
+    error: text("error"),
+    attempts: text("attempts").notNull().default("0"),
+    receivedAt: timestamp("received_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    processedAt: timestamp("processed_at", { withTimezone: true }),
+  },
+  (t) => [
+    unique("webhook_events_dedupe_hash_unique").on(t.dedupeHash),
+    index("webhook_events_rail_env_idx").on(t.rail, t.environment),
+    index("webhook_events_status_idx").on(t.status),
+    index("webhook_events_received_at_idx").on(t.receivedAt),
+    index("webhook_events_external_id_idx").on(t.externalId),
   ]
 );
 

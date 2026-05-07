@@ -71,6 +71,7 @@ export async function createTyltCrossRampPayinOrder(params: {
       status: "pending",
       amount: params.amount,
       currency: settlementCurrency,
+      provider: "tylt-crossramp",
       metadata: JSON.stringify(metadata),
     })
     .returning();

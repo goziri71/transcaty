@@ -137,6 +137,7 @@ export async function executeTyltInternalTransfer(params: {
       status: "pending",
       amount: params.settledAmount,
       currency: params.settledCurrency.trim(),
+      provider: "tylt-internal",
       metadata: JSON.stringify(metadata),
     })
     .returning();

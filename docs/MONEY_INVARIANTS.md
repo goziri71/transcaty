@@ -91,6 +91,18 @@ transaction commits.
   provider callbacks credit the wallet exactly once.
 - `tests/operations/transfer-concurrency.test.ts` — integration test: 10
   parallel transfers against a 200.00 wallet succeed exactly six times.
+- `tests/integration/webhook-events.test.ts` — duplicate webhook
+  payloads are absorbed by the `webhook_events.dedupe_hash` unique
+  index (P3 belt-and-braces dedupe).
+- `tests/integration/transactions-provider-uniqueness.test.ts` — the
+  partial unique index on `(provider, environment, external_id)`
+  rejects duplicate provider order ids while still allowing the same
+  id under a different rail or environment (P3 D2).
+- `tests/integration/ledger-immutability.test.ts` — UPDATE/DELETE on
+  `ledger_entries` is rejected by the database trigger (P3 D3).
+- `tests/integration/idempotency-integration.test.ts` — same-key
+  same-body requests collapse to one upstream call; same-key
+  different-body returns a 409 conflict (P3 D4).
 
 Integration tests skip themselves when no `DATABASE_URL` (or
 `DATABASE_URL_ENC` + `ENCRYPTION_MASTER_KEY`) is present in the environment.
@@ -101,5 +113,14 @@ Scripts:
 
 - `npm run test` — all tests (unit + integration + Tylt unit tests).
 - `npm run test:unit` — unit tests only (no DB needed).
-- `npm run test:integration` — money integration tests (DB required).
+- `npm run test:integration` — money + correctness integration tests
+  (DB required; covers domestic, operations, and `tests/integration/`).
 - `npm run test:tylt` — pre-existing Tylt parser/signature tests.
+
+## Related invariants
+
+- `docs/HIGH_TRAFFIC_POSTURE.md` — pool, breaker, outbound HTTP, key
+  cache (P2).
+- `docs/WEBHOOK_DEDUPE_AND_IDEMPOTENCY.md` — webhook_events,
+  transactions provider uniqueness, ledger immutability, and request
+  idempotency body-hash semantics (P3).
