@@ -30,6 +30,9 @@ export async function tyltSignedGetJson<T = unknown>(params: {
   path: string;
   /** Serialized to query string and to the canonical JSON string that is signed. */
   queryParams?: Record<string, unknown>;
+  /** Optional Idempotency-Key header. Tylt dedupes on body identifiers,
+   * but propagating one helps any provider-side replay guard. */
+  idempotencyKey?: string;
 }): Promise<{ status: number; json: T }> {
   const cfg = assertTyltConfigured(params.environment);
   const qp = params.queryParams ?? {};
@@ -37,13 +40,17 @@ export async function tyltSignedGetJson<T = unknown>(params: {
   const signature = createTyltSignature(cfg.apiSecret, payloadToSign);
   const url = buildUrlWithQuery(cfg.baseUrl, params.path, qp);
 
-  const res = await tyltFetch(url, {
-    method: "GET",
-    headers: {
-      "X-TLP-APIKEY": cfg.apiKey,
-      "X-TLP-SIGNATURE": signature,
+  const res = await tyltFetch(
+    url,
+    {
+      method: "GET",
+      headers: {
+        "X-TLP-APIKEY": cfg.apiKey,
+        "X-TLP-SIGNATURE": signature,
+      },
     },
-  });
+    { label: `tylt GET ${params.path}`, idempotencyKey: params.idempotencyKey }
+  );
 
   const text = await res.text();
   let json: T;
@@ -59,21 +66,28 @@ export async function tyltSignedPostJson<T = unknown>(params: {
   environment: TyltMerchantEnvironment;
   path: string;
   body: Record<string, unknown>;
+  /** Optional Idempotency-Key header. Strongly recommended for any
+   * mutating endpoint that could be retried (create payin/payout). */
+  idempotencyKey?: string;
 }): Promise<{ status: number; json: T }> {
   const cfg = assertTyltConfigured(params.environment);
   const raw = JSON.stringify(params.body);
   const signature = createTyltSignature(cfg.apiSecret, raw);
   const url = `${cfg.baseUrl}${params.path.startsWith("/") ? "" : "/"}${params.path}`;
 
-  const res = await tyltFetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-TLP-APIKEY": cfg.apiKey,
-      "X-TLP-SIGNATURE": signature,
+  const res = await tyltFetch(
+    url,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-TLP-APIKEY": cfg.apiKey,
+        "X-TLP-SIGNATURE": signature,
+      },
+      body: raw,
     },
-    body: raw,
-  });
+    { label: `tylt POST ${params.path}`, idempotencyKey: params.idempotencyKey }
+  );
 
   const text = await res.text();
   let json: T;

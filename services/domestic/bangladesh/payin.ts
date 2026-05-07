@@ -7,6 +7,7 @@ import { transactions, wallets, ledgerEntries } from "../../../src/db/schema/ind
 import { payokPayinCreateOrder } from "./provider/client.js";
 import { audit } from "../../../src/lib/audit.js";
 import { tryApplyTransactionFee } from "../../../src/lib/billing/index.js";
+import { addAmount } from "../../../src/lib/money.js";
 import type { PayokEnvironment } from "./provider/config.js";
 
 export async function createPayinOrder(params: {
@@ -118,22 +119,33 @@ export async function handlePayinCallback(body: {
     return null;
   }
 
-  const paidAmount = body.paidAmount ?? body.amount ?? tx.amount;
+  const paidAmount = String(body.paidAmount ?? body.amount ?? tx.amount);
   const isSuccess = body.code === "SUCCESS" && body.status === "SUCCESS";
   const platformOrderId = body.platformOrderId ?? tx.externalId ?? null;
 
-  await db
-    .update(transactions)
-    .set({
-      status: isSuccess ? "success" : "failed",
-      paidAmount: String(paidAmount),
-      externalId: body.platformOrderId ?? tx.externalId,
-      updatedAt: new Date(),
-    })
-    .where(eq(transactions.id, tx.id));
+  const result = await db.transaction(async (txDb) => {
+    // Conditional pending->terminal transition: only one concurrent caller can flip
+    // the row, so duplicate Payok callbacks become no-ops past this gate.
+    const [updatedTx] = await txDb
+      .update(transactions)
+      .set({
+        status: isSuccess ? "success" : "failed",
+        paidAmount,
+        externalId: body.platformOrderId ?? tx.externalId,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(transactions.id, tx.id), eq(transactions.status, "pending")))
+      .returning({ id: transactions.id });
 
-  if (isSuccess) {
-    const [wallet] = await db
+    if (!updatedTx) {
+      return null;
+    }
+
+    if (!isSuccess) {
+      return { applied: false as const };
+    }
+
+    const [wallet] = await txDb
       .select()
       .from(wallets)
       .where(
@@ -144,35 +156,49 @@ export async function handlePayinCallback(body: {
           eq(wallets.status, "active")
         )
       )
+      .for("update")
       .limit(1);
 
-    if (wallet) {
-      await db.insert(ledgerEntries).values({
-        walletId: wallet.id,
-        environment: tx.environment,
-        amount: String(paidAmount),
-        direction: "credit",
-        type: "payin",
-        referenceId: tx.id,
-      });
+    if (!wallet) {
+      return { applied: true as const, walletCredited: false };
+    }
 
-      await db
-        .update(wallets)
-        .set({
-          balance: String(Number(wallet.balance) + Number(paidAmount)),
-          updatedAt: new Date(),
-        })
-        .where(eq(wallets.id, wallet.id));
+    await txDb.insert(ledgerEntries).values({
+      walletId: wallet.id,
+      environment: tx.environment,
+      amount: paidAmount,
+      direction: "credit",
+      type: "payin",
+      referenceId: tx.id,
+    });
 
-      await tryApplyTransactionFee({
+    await txDb
+      .update(wallets)
+      .set({
+        balance: addAmount(wallet.balance, paidAmount),
+        updatedAt: new Date(),
+      })
+      .where(eq(wallets.id, wallet.id));
+
+    await tryApplyTransactionFee(
+      {
         merchantId: tx.merchantId,
         transactionId: tx.id,
         environment: tx.environment,
-        amount: String(paidAmount),
+        amount: paidAmount,
         feeType: "payin",
-      });
-    }
+      },
+      txDb
+    );
 
+    return { applied: true as const, walletCredited: true };
+  });
+
+  if (!result) {
+    return null;
+  }
+
+  if (isSuccess) {
     audit({
       action: "payment.completed",
       resource: tx.id,
@@ -191,7 +217,7 @@ export async function handlePayinCallback(body: {
   return {
     merchantId: tx.merchantId,
     event: isSuccess
-      ? { type: "payin.completed" as const, transactionId: tx.id, status: "success", amount: String(tx.amount), paidAmount: String(paidAmount), platformOrderId }
+      ? { type: "payin.completed" as const, transactionId: tx.id, status: "success", amount: String(tx.amount), paidAmount, platformOrderId }
       : { type: "payin.failed" as const, transactionId: tx.id, status: "failed", amount: String(tx.amount), platformOrderId },
   };
 }

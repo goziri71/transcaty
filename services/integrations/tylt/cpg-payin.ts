@@ -6,6 +6,7 @@ import { db } from "../../../src/db/index.js";
 import { transactions, wallets, ledgerEntries } from "../../../src/db/schema/index.js";
 import { audit } from "../../../src/lib/audit.js";
 import { tryApplyTransactionFee } from "../../../src/lib/billing/index.js";
+import { addAmount } from "../../../src/lib/money.js";
 import type { WebhookEvent } from "../../../src/lib/merchant-webhook.js";
 import { getOrCreateMerchantWallet, parseTransactionMetadata } from "./crossramp-payin.js";
 import { tyltSignedGetJson, tyltSignedPostJson } from "./client.js";
@@ -227,6 +228,7 @@ export async function createTyltCpgPayinRequest(params: {
     environment: params.environment,
     path: "/transactions/merchant/createPayinRequest",
     body,
+    idempotencyKey: tx.id,
   });
 
   const platformOrderId = extractCpgCreatePlatformOrderId(json);
@@ -395,48 +397,70 @@ export async function applyTyltCpgPayinWebhookPayload(
 
   const paidAmount = pickCreditAmount(fields, String(tx.amount));
 
-  const [updated] = await db
-    .update(transactions)
-    .set({
-      status: "success",
-      paidAmount,
-      updatedAt: new Date(),
-    })
-    .where(and(eq(transactions.id, tx.id), eq(transactions.status, "pending")))
-    .returning();
-
-  if (!updated) return null;
-
+  // Resolve the wallet outside the transaction so that on first payin we don't
+  // hold a row lock during a potential INSERT in getOrCreateMerchantWallet.
   const wallet = await getOrCreateMerchantWallet({
     merchantId: tx.merchantId,
     environment: tx.environment,
     currency: tx.currency,
   });
 
-  await db.insert(ledgerEntries).values({
-    walletId: wallet.id,
-    environment: tx.environment,
-    amount: String(paidAmount),
-    direction: "credit",
-    type: "payin",
-    referenceId: tx.id,
+  const result = await db.transaction(async (txDb) => {
+    const [updated] = await txDb
+      .update(transactions)
+      .set({
+        status: "success",
+        paidAmount,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(transactions.id, tx.id), eq(transactions.status, "pending")))
+      .returning();
+
+    if (!updated) return null;
+
+    const [lockedWallet] = await txDb
+      .select()
+      .from(wallets)
+      .where(eq(wallets.id, wallet.id))
+      .for("update")
+      .limit(1);
+
+    if (!lockedWallet) {
+      return { walletCredited: false as const };
+    }
+
+    await txDb.insert(ledgerEntries).values({
+      walletId: lockedWallet.id,
+      environment: tx.environment,
+      amount: String(paidAmount),
+      direction: "credit",
+      type: "payin",
+      referenceId: tx.id,
+    });
+
+    await txDb
+      .update(wallets)
+      .set({
+        balance: addAmount(lockedWallet.balance, String(paidAmount)),
+        updatedAt: new Date(),
+      })
+      .where(eq(wallets.id, lockedWallet.id));
+
+    await tryApplyTransactionFee(
+      {
+        merchantId: tx.merchantId,
+        transactionId: tx.id,
+        environment: tx.environment,
+        amount: String(paidAmount),
+        feeType: "payin",
+      },
+      txDb
+    );
+
+    return { walletCredited: true as const };
   });
 
-  await db
-    .update(wallets)
-    .set({
-      balance: String(Number(wallet.balance) + Number(paidAmount)),
-      updatedAt: new Date(),
-    })
-    .where(eq(wallets.id, wallet.id));
-
-  await tryApplyTransactionFee({
-    merchantId: tx.merchantId,
-    transactionId: tx.id,
-    environment: tx.environment,
-    amount: String(paidAmount),
-    feeType: "payin",
-  });
+  if (!result) return null;
 
   audit({
     action: "payment.completed",

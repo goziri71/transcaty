@@ -10,6 +10,7 @@ import { db } from "../../src/db/index.js";
 import { merchants, merchantApiKeys } from "../../src/db/schema/index.js";
 import { encrypt } from "../../src/lib/encryption.js";
 import { audit } from "../../src/lib/audit.js";
+import { invalidateMerchantApiKeyCache } from "../../src/lib/merchant-key-cache.js";
 
 const errorResponse = z.object({
   error: z.string(),
@@ -217,7 +218,10 @@ export async function registerPortalApiKeysRoutes(app: FastifyInstance) {
       const { keyId } = request.params as { keyId: string };
 
       const [key] = await db
-        .select()
+        .select({
+          id: merchantApiKeys.id,
+          keyHash: merchantApiKeys.keyHash,
+        })
         .from(merchantApiKeys)
         .where(
           and(
@@ -235,6 +239,10 @@ export async function registerPortalApiKeysRoutes(app: FastifyInstance) {
         .update(merchantApiKeys)
         .set({ status: "revoked" })
         .where(eq(merchantApiKeys.id, keyId));
+
+      // Drop any cached entry so a freshly-revoked key cannot continue
+      // authenticating from per-process cache for up to the positive TTL.
+      invalidateMerchantApiKeyCache(key.keyHash);
 
       audit({
         action: "portal.api_key.revoked",

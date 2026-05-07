@@ -1,12 +1,23 @@
 /**
  * Merchant auth: HMAC-SHA256 request signing.
  * Headers: X-Transacty-Key, X-Transacty-Signature, X-Transacty-Timestamp
+ *
+ * Hot-path note: we cache the decrypted HMAC secret + merchant context in
+ * a small per-process TTL cache so repeat callers do not re-pay the
+ * `merchant_api_keys` lookup + AES-256-GCM decrypt on every request. The
+ * cache must be invalidated whenever a key row is revoked or rotated.
  */
 import type { FastifyRequest, FastifyReply } from "fastify";
-import { createHmac, createHash } from "node:crypto";
+import { createHmac, createHash, timingSafeEqual } from "node:crypto";
 import { eq, and } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { merchantApiKeys } from "../db/schema/index.js";
+import {
+  getMerchantKeyCache,
+  setMerchantKeyCacheHit,
+  setMerchantKeyCacheMiss,
+  type MerchantKeyCacheValue,
+} from "./merchant-key-cache.js";
 
 const REPLAY_WINDOW_SEC = 5 * 60; // ±5 minutes
 
@@ -23,13 +34,68 @@ declare module "fastify" {
   }
 }
 
-function hashKey(key: string): string {
+export function hashMerchantApiKey(key: string): string {
   return createHash("sha256").update(key, "utf8").digest("hex");
 }
 
 function verifyHmac(payload: string, secret: string, signature: string): boolean {
   const expected = createHmac("sha256", secret).update(payload, "utf8").digest("hex");
-  return expected === signature;
+  if (typeof signature !== "string" || expected.length !== signature.length) {
+    return false;
+  }
+  const a = Buffer.from(expected, "utf8");
+  const b = Buffer.from(signature, "utf8");
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
+}
+
+async function loadMerchantKey(keyHash: string): Promise<MerchantKeyCacheValue | null> {
+  const cached = getMerchantKeyCache(keyHash);
+  if (cached?.kind === "hit") return cached.value;
+  if (cached?.kind === "miss") return null;
+
+  const [row] = await db
+    .select({
+      id: merchantApiKeys.id,
+      merchantId: merchantApiKeys.merchantId,
+      secretEnc: merchantApiKeys.secretEnc,
+      scopes: merchantApiKeys.scopes,
+      environment: merchantApiKeys.environment,
+    })
+    .from(merchantApiKeys)
+    .where(
+      and(
+        eq(merchantApiKeys.keyHash, keyHash),
+        eq(merchantApiKeys.status, "active")
+      )
+    )
+    .limit(1);
+
+  if (!row) {
+    setMerchantKeyCacheMiss(keyHash);
+    return null;
+  }
+
+  const masterKey = process.env.ENCRYPTION_MASTER_KEY;
+  if (!masterKey) {
+    // Don't cache configuration errors — they should surface to ops on
+    // every attempt and not be hidden behind a TTL.
+    throw new Error("ENCRYPTION_MASTER_KEY required");
+  }
+  const { decrypt } = await import("./encryption.js");
+  const secret = decrypt(row.secretEnc.trim(), masterKey.trim());
+
+  const value: MerchantKeyCacheValue = {
+    keyId: row.id,
+    merchantId: row.merchantId,
+    scopes: row.scopes
+      ? row.scopes.split(",").map((s) => s.trim()).filter(Boolean)
+      : [],
+    environment: row.environment as "live" | "test",
+    secret,
+  };
+  setMerchantKeyCacheHit(keyHash, value);
+  return value;
 }
 
 /**
@@ -69,37 +135,10 @@ export async function merchantAuth(
   const rawBody = (request as FastifyRequest & { rawBody?: string }).rawBody ?? "";
   const payload = `${timestamp}.${rawBody}`;
 
-  const keyHash = hashKey(key);
-  const [row] = await db
-    .select({
-      id: merchantApiKeys.id,
-      merchantId: merchantApiKeys.merchantId,
-      secretEnc: merchantApiKeys.secretEnc,
-      scopes: merchantApiKeys.scopes,
-      environment: merchantApiKeys.environment,
-    })
-    .from(merchantApiKeys)
-    .where(
-      and(
-        eq(merchantApiKeys.keyHash, keyHash),
-        eq(merchantApiKeys.status, "active")
-      )
-    )
-    .limit(1);
-
-  if (!row) {
-    return reply.status(401).send({
-      error: "Unauthorized",
-      message: "Invalid API key",
-    });
-  }
-
-  const masterKey = process.env.ENCRYPTION_MASTER_KEY;
-  let secret: string;
+  const keyHash = hashMerchantApiKey(key);
+  let entry: MerchantKeyCacheValue | null;
   try {
-    if (!masterKey) throw new Error("ENCRYPTION_MASTER_KEY required");
-    const { decrypt } = await import("./encryption.js");
-    secret = decrypt(row.secretEnc.trim(), masterKey.trim());
+    entry = await loadMerchantKey(keyHash);
   } catch {
     return reply.status(500).send({
       error: "Internal",
@@ -107,19 +146,25 @@ export async function merchantAuth(
     });
   }
 
-  if (!verifyHmac(payload, secret, signature)) {
+  if (!entry) {
+    return reply.status(401).send({
+      error: "Unauthorized",
+      message: "Invalid API key",
+    });
+  }
+
+  if (!verifyHmac(payload, entry.secret, signature)) {
     return reply.status(401).send({
       error: "Unauthorized",
       message: "Invalid signature",
     });
   }
 
-  const scopes = row.scopes ? row.scopes.split(",").map((s) => s.trim()).filter(Boolean) : [];
   request.merchant = {
-    merchantId: row.merchantId,
-    keyId: row.id,
-    scopes,
-    environment: row.environment as "live" | "test",
+    merchantId: entry.merchantId,
+    keyId: entry.keyId,
+    scopes: entry.scopes.slice(),
+    environment: entry.environment,
   };
 }
 

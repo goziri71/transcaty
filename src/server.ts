@@ -10,6 +10,8 @@ import {
 } from "./lib/transactional-email-queue.js";
 import { disconnectRedis } from "./lib/redis.js";
 import { runMonthlyBilling } from "./lib/billing/monthly-billing.js";
+import { closeDb } from "./db/index.js";
+import { closeOutboundHttp } from "./lib/outbound-http.js";
 
 const PORT = Number(process.env.PORT) || 3000;
 const HOST = process.env.HOST || "0.0.0.0";
@@ -79,16 +81,25 @@ async function main() {
     process.exit(1);
   }
 
-  const shutdown = async () => {
-    app.log.info("Shutting down...");
+  let shuttingDown = false;
+  const shutdown = async (signal: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    app.log.info({ signal }, "Shutting down...");
+    // Stop accepting new HTTP traffic and let in-flight requests drain.
     await app.close();
+    // Stop background workers next so any final DB writes can happen against
+    // a still-open pool.
     await queue.stop();
+    // Tear down outbound HTTP keep-alive sockets and Redis before the pool.
+    await closeOutboundHttp();
     await disconnectRedis();
+    await closeDb();
     process.exit(0);
   };
 
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", () => void shutdown("SIGINT"));
+  process.on("SIGTERM", () => void shutdown("SIGTERM"));
 }
 
 main().catch((err) => {

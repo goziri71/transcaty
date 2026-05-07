@@ -8,7 +8,7 @@ export {
   computeTransactionFee,
   type TransactionFeeType,
 } from "./fee-calculator.js";
-export { applyTransactionFee, type ApplyFeeInput } from "./fee-applier.js";
+export { applyTransactionFee, type ApplyFeeInput, type DbTx } from "./fee-applier.js";
 export {
   tryApplyTransactionFee,
   type TryApplyTransactionFeeInput,

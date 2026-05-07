@@ -13,6 +13,7 @@ import {
 import { z } from "zod";
 import { sql, eq, and, count, desc, gt } from "drizzle-orm";
 import { db } from "./src/db/index.js";
+import { getRedis } from "./src/lib/redis.js";
 import {
   wallets,
   transactions,
@@ -86,14 +87,51 @@ import {
 } from "./src/lib/tylt-merchant-api-schemas.js";
 
 export async function buildApp() {
+  const isProduction = process.env.NODE_ENV === "production";
+  const debugBodyEnvSet = process.env.PAYOK_WEBHOOK_DEBUG_BODY === "1";
+  const allowDebugBody = debugBodyEnvSet && !isProduction;
   const app = Fastify({
-    logger: true,
+    logger: {
+      level: process.env.LOG_LEVEL ?? "info",
+      redact: {
+        paths: [
+          'req.headers.authorization',
+          'req.headers["x-api-key"]',
+          'req.headers["x-portal-token"]',
+          'req.headers["x-provider-token"]',
+          'req.headers["x-transacty-key"]',
+          'req.headers["x-transacty-signature"]',
+          'req.headers.sign',
+          'req.headers.Sign',
+          'req.headers.cookie',
+          'res.headers["set-cookie"]',
+          '*.password',
+          '*.token',
+          '*.secret',
+          '*.rawBody',
+          '*.signature',
+          '*.authorization',
+          '*.accessToken',
+          '*.refreshToken',
+          '*.apiKey',
+          '*.privateKey',
+          '*.webhookSecret',
+        ],
+        censor: "[REDACTED]",
+      },
+    },
     genReqId: (req) => {
       const x = req.headers["x-request-id"];
       if (typeof x === "string" && x.trim()) return x.trim();
       return randomUUID();
     },
   }).withTypeProvider<ZodTypeProvider>();
+
+  if (debugBodyEnvSet && isProduction) {
+    app.log.warn(
+      "PAYOK_WEBHOOK_DEBUG_BODY is set but NODE_ENV=production; raw-body diagnostics suppressed for security."
+    );
+  }
 
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
@@ -135,10 +173,36 @@ export async function buildApp() {
   });
 
   await app.register(helmet, { global: true });
+  // Rate limit: prefer Redis when configured so all instances share the
+  // same counter window. Falls back to in-memory if Redis is unavailable.
+  const rateLimitRedis = (() => {
+    try {
+      return getRedis();
+    } catch {
+      return null;
+    }
+  })();
+  const rateLimitMaxRaw = Number(process.env.RATE_LIMIT_MAX);
+  const rateLimitMax =
+    Number.isFinite(rateLimitMaxRaw) && rateLimitMaxRaw > 0
+      ? Math.floor(rateLimitMaxRaw)
+      : 100;
+  const rateLimitWindow = process.env.RATE_LIMIT_WINDOW?.trim() || "1 minute";
   await app.register(rateLimit, {
-    max: 100,
-    timeWindow: "1 minute",
+    max: rateLimitMax,
+    timeWindow: rateLimitWindow,
+    nameSpace: "tx-rl:",
+    continueExceeding: true,
+    ...(rateLimitRedis ? { redis: rateLimitRedis as never } : {}),
   });
+  app.log.info(
+    {
+      store: rateLimitRedis ? "redis" : "memory",
+      max: rateLimitMax,
+      window: rateLimitWindow,
+    },
+    "rate-limit configured"
+  );
   await app.register(compress, { global: true });
   const corsAllowedOrigins = new Set<string>([
     "https://transacty-admin.vercel.app",
@@ -174,6 +238,7 @@ export async function buildApp() {
     }
     if (
       path === "/provider/auth/login" ||
+      path === "/provider/auth/logout" ||
       path === "/provider/auth/forgot-password" ||
       path === "/provider/auth/reset-password" ||
       path === "/provider/auth/mfa/verify"
@@ -681,7 +746,7 @@ export async function buildApp() {
     "/api-pay/remit/V3.5/order/notify",
   ];
 
-  const debugWebhookBody = process.env.PAYOK_WEBHOOK_DEBUG_BODY === "1" || process.env.PAYOK_WEBHOOK_DEBUG_BODY === "true";
+  const debugWebhookBody = allowDebugBody;
 
   app.post(PAYIN_WEBHOOK_PATH, async (request, reply) => {
     const rawBody = (request as FastifyRequest & { rawBody?: string }).rawBody ?? "";

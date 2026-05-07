@@ -1,10 +1,16 @@
 /**
  * Merchant operations: create customer wallet, transfer, refund.
  * Double-entry ledger: debit merchant, credit customer.
+ *
+ * Concurrency model: every monetary mutation runs inside `db.transaction` and
+ * locks both participating wallets with `SELECT ... FOR UPDATE`. To avoid
+ * deadlocks under cross-direction concurrent operations, we acquire locks in
+ * a deterministic order based on `wallet.id`.
  */
-import { eq, and } from "drizzle-orm";
+import { eq, and, asc, inArray } from "drizzle-orm";
 import { db } from "../../src/db/index.js";
 import { wallets, ledgerEntries, transactions } from "../../src/db/schema/index.js";
+import { addAmount, assertPositive, cmpAmount, subAmount } from "../../src/lib/money.js";
 
 export async function createCustomerWallet(params: {
   merchantId: string;
@@ -55,104 +61,119 @@ export async function transferToCustomer(params: {
   reason?: string;
 }) {
   const environment = params.environment ?? "test";
-  const amount = parseFloat(params.amount);
-  if (amount <= 0 || isNaN(amount)) {
-    throw new Error("Invalid amount");
-  }
+  assertPositive(params.amount);
 
-  const [merchantWallet] = await db
-    .select()
-    .from(wallets)
-    .where(
-      and(
-        eq(wallets.merchantId, params.merchantId),
-        eq(wallets.environment, environment),
-        eq(wallets.type, "merchant"),
-        eq(wallets.status, "active")
+  return db.transaction(async (txDb) => {
+    // Resolve both wallet ids first (without lock) so we can acquire FOR UPDATE
+    // in deterministic id order to prevent deadlocks under concurrent operations.
+    const [merchantWalletRef] = await txDb
+      .select({ id: wallets.id })
+      .from(wallets)
+      .where(
+        and(
+          eq(wallets.merchantId, params.merchantId),
+          eq(wallets.environment, environment),
+          eq(wallets.type, "merchant"),
+          eq(wallets.status, "active")
+        )
       )
-    )
-    .limit(1);
+      .limit(1);
 
-  const [customerWallet] = await db
-    .select()
-    .from(wallets)
-    .where(
-      and(
-        eq(wallets.id, params.customerWalletId),
-        eq(wallets.merchantId, params.merchantId),
-        eq(wallets.environment, environment),
-        eq(wallets.type, "customer")
+    const [customerWalletRef] = await txDb
+      .select({ id: wallets.id })
+      .from(wallets)
+      .where(
+        and(
+          eq(wallets.id, params.customerWalletId),
+          eq(wallets.merchantId, params.merchantId),
+          eq(wallets.environment, environment),
+          eq(wallets.type, "customer")
+        )
       )
-    )
-    .limit(1);
+      .limit(1);
 
-  if (!merchantWallet || !customerWallet) {
-    throw new Error("Wallet not found");
-  }
+    if (!merchantWalletRef || !customerWalletRef) {
+      throw new Error("Wallet not found");
+    }
 
-  if (customerWallet.status !== "active") {
-    throw new Error("Customer wallet is blocked or pending");
-  }
+    const ids = [merchantWalletRef.id, customerWalletRef.id].sort();
+    const locked = await txDb
+      .select()
+      .from(wallets)
+      .where(inArray(wallets.id, ids))
+      .for("update")
+      .orderBy(asc(wallets.id));
 
-  const merchantBalance = Number(merchantWallet.balance);
-  if (merchantBalance < amount) {
-    throw new Error("Insufficient balance");
-  }
+    const merchantWallet = locked.find((w) => w.id === merchantWalletRef.id);
+    const customerWallet = locked.find((w) => w.id === customerWalletRef.id);
 
-  const [tx] = await db
-    .insert(transactions)
-    .values({
-      merchantId: params.merchantId,
-      walletId: customerWallet.id,
-      environment,
-      type: "transfer",
-      status: "success",
-      amount: params.amount,
-      currency: "BDT",
-      metadata: params.reason
-        ? JSON.stringify({ reason: params.reason })
-        : null,
-    })
-    .returning();
+    if (!merchantWallet || !customerWallet) {
+      throw new Error("Wallet not found");
+    }
 
-  if (!tx) throw new Error("Failed to create transaction");
+    if (customerWallet.status !== "active") {
+      throw new Error("Customer wallet is blocked or pending");
+    }
 
-  await db.insert(ledgerEntries).values([
-    {
-      walletId: merchantWallet.id,
-      environment,
-      amount: params.amount,
-      direction: "debit",
-      type: "transfer",
-      referenceId: tx.id,
-    },
-    {
-      walletId: customerWallet.id,
-      environment,
-      amount: params.amount,
-      direction: "credit",
-      type: "transfer",
-      referenceId: tx.id,
-    },
-  ]);
+    if (cmpAmount(merchantWallet.balance, params.amount) < 0) {
+      throw new Error("Insufficient balance");
+    }
 
-  await db
-    .update(wallets)
-    .set({
-      balance: String(merchantBalance - amount),
-      updatedAt: new Date(),
-    })
-    .where(eq(wallets.id, merchantWallet.id));
+    const [tx] = await txDb
+      .insert(transactions)
+      .values({
+        merchantId: params.merchantId,
+        walletId: customerWallet.id,
+        environment,
+        type: "transfer",
+        status: "success",
+        amount: params.amount,
+        currency: "BDT",
+        metadata: params.reason
+          ? JSON.stringify({ reason: params.reason })
+          : null,
+      })
+      .returning();
 
-  await db
-    .update(wallets)
-    .set({
-      balance: String(Number(customerWallet.balance) + amount),
-      updatedAt: new Date(),
-    })
-    .where(eq(wallets.id, customerWallet.id));
+    if (!tx) throw new Error("Failed to create transaction");
 
-  return tx;
+    await txDb.insert(ledgerEntries).values([
+      {
+        walletId: merchantWallet.id,
+        environment,
+        amount: params.amount,
+        direction: "debit",
+        type: "transfer",
+        referenceId: tx.id,
+      },
+      {
+        walletId: customerWallet.id,
+        environment,
+        amount: params.amount,
+        direction: "credit",
+        type: "transfer",
+        referenceId: tx.id,
+      },
+    ]);
+
+    await txDb
+      .update(wallets)
+      .set({
+        balance: subAmount(merchantWallet.balance, params.amount),
+        updatedAt: new Date(),
+      })
+      .where(eq(wallets.id, merchantWallet.id));
+
+    await txDb
+      .update(wallets)
+      .set({
+        balance: addAmount(customerWallet.balance, params.amount),
+        updatedAt: new Date(),
+      })
+      .where(eq(wallets.id, customerWallet.id));
+
+    return tx;
+  });
 }
 
 export async function refundToCustomer(params: {
@@ -164,105 +185,118 @@ export async function refundToCustomer(params: {
   reason?: string;
 }) {
   const environment = params.environment ?? "test";
-  const amount = parseFloat(params.amount);
-  if (amount <= 0 || isNaN(amount)) {
-    throw new Error("Invalid amount");
-  }
+  assertPositive(params.amount);
 
-  const [merchantWallet] = await db
-    .select()
-    .from(wallets)
-    .where(
-      and(
-        eq(wallets.merchantId, params.merchantId),
-        eq(wallets.environment, environment),
-        eq(wallets.type, "merchant"),
-        eq(wallets.status, "active")
+  return db.transaction(async (txDb) => {
+    const [merchantWalletRef] = await txDb
+      .select({ id: wallets.id })
+      .from(wallets)
+      .where(
+        and(
+          eq(wallets.merchantId, params.merchantId),
+          eq(wallets.environment, environment),
+          eq(wallets.type, "merchant"),
+          eq(wallets.status, "active")
+        )
       )
-    )
-    .limit(1);
+      .limit(1);
 
-  const [customerWallet] = await db
-    .select()
-    .from(wallets)
-    .where(
-      and(
-        eq(wallets.id, params.customerWalletId),
-        eq(wallets.merchantId, params.merchantId),
-        eq(wallets.environment, environment),
-        eq(wallets.type, "customer")
+    const [customerWalletRef] = await txDb
+      .select({ id: wallets.id })
+      .from(wallets)
+      .where(
+        and(
+          eq(wallets.id, params.customerWalletId),
+          eq(wallets.merchantId, params.merchantId),
+          eq(wallets.environment, environment),
+          eq(wallets.type, "customer")
+        )
       )
-    )
-    .limit(1);
+      .limit(1);
 
-  if (!merchantWallet || !customerWallet) {
-    throw new Error("Wallet not found");
-  }
+    if (!merchantWalletRef || !customerWalletRef) {
+      throw new Error("Wallet not found");
+    }
 
-  if (customerWallet.status !== "active") {
-    throw new Error("Customer wallet is blocked or pending");
-  }
+    const ids = [merchantWalletRef.id, customerWalletRef.id].sort();
+    const locked = await txDb
+      .select()
+      .from(wallets)
+      .where(inArray(wallets.id, ids))
+      .for("update")
+      .orderBy(asc(wallets.id));
 
-  const merchantBalance = Number(merchantWallet.balance);
-  if (merchantBalance < amount) {
-    throw new Error("Insufficient balance");
-  }
+    const merchantWallet = locked.find((w) => w.id === merchantWalletRef.id);
+    const customerWallet = locked.find((w) => w.id === customerWalletRef.id);
 
-  const metadata: Record<string, string> = {
-    refundOfTransactionId: params.refundOfTransactionId,
-  };
-  if (params.reason) metadata.reason = params.reason;
+    if (!merchantWallet || !customerWallet) {
+      throw new Error("Wallet not found");
+    }
 
-  const [tx] = await db
-    .insert(transactions)
-    .values({
-      merchantId: params.merchantId,
-      walletId: customerWallet.id,
-      environment,
-      type: "refund",
-      status: "success",
-      amount: params.amount,
-      currency: "BDT",
-      metadata: JSON.stringify(metadata),
-    })
-    .returning();
+    if (customerWallet.status !== "active") {
+      throw new Error("Customer wallet is blocked or pending");
+    }
 
-  if (!tx) throw new Error("Failed to create refund transaction");
+    if (cmpAmount(merchantWallet.balance, params.amount) < 0) {
+      throw new Error("Insufficient balance");
+    }
 
-  await db.insert(ledgerEntries).values([
-    {
-      walletId: merchantWallet.id,
-      environment,
-      amount: params.amount,
-      direction: "debit",
-      type: "refund",
-      referenceId: tx.id,
-    },
-    {
-      walletId: customerWallet.id,
-      environment,
-      amount: params.amount,
-      direction: "credit",
-      type: "refund",
-      referenceId: tx.id,
-    },
-  ]);
+    const metadata: Record<string, string> = {
+      refundOfTransactionId: params.refundOfTransactionId,
+    };
+    if (params.reason) metadata.reason = params.reason;
 
-  await db
-    .update(wallets)
-    .set({
-      balance: String(merchantBalance - amount),
-      updatedAt: new Date(),
-    })
-    .where(eq(wallets.id, merchantWallet.id));
+    const [tx] = await txDb
+      .insert(transactions)
+      .values({
+        merchantId: params.merchantId,
+        walletId: customerWallet.id,
+        environment,
+        type: "refund",
+        status: "success",
+        amount: params.amount,
+        currency: "BDT",
+        metadata: JSON.stringify(metadata),
+      })
+      .returning();
 
-  await db
-    .update(wallets)
-    .set({
-      balance: String(Number(customerWallet.balance) + amount),
-      updatedAt: new Date(),
-    })
-    .where(eq(wallets.id, customerWallet.id));
+    if (!tx) throw new Error("Failed to create refund transaction");
 
-  return tx;
+    await txDb.insert(ledgerEntries).values([
+      {
+        walletId: merchantWallet.id,
+        environment,
+        amount: params.amount,
+        direction: "debit",
+        type: "refund",
+        referenceId: tx.id,
+      },
+      {
+        walletId: customerWallet.id,
+        environment,
+        amount: params.amount,
+        direction: "credit",
+        type: "refund",
+        referenceId: tx.id,
+      },
+    ]);
+
+    await txDb
+      .update(wallets)
+      .set({
+        balance: subAmount(merchantWallet.balance, params.amount),
+        updatedAt: new Date(),
+      })
+      .where(eq(wallets.id, merchantWallet.id));
+
+    await txDb
+      .update(wallets)
+      .set({
+        balance: addAmount(customerWallet.balance, params.amount),
+        updatedAt: new Date(),
+      })
+      .where(eq(wallets.id, customerWallet.id));
+
+    return tx;
+  });
 }

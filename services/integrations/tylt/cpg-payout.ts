@@ -6,6 +6,7 @@ import { db } from "../../../src/db/index.js";
 import { transactions, wallets, ledgerEntries } from "../../../src/db/schema/index.js";
 import { audit } from "../../../src/lib/audit.js";
 import { tryApplyTransactionFee } from "../../../src/lib/billing/index.js";
+import { addAmount, assertPositive, cmpAmount, subAmount } from "../../../src/lib/money.js";
 import type { WebhookEvent } from "../../../src/lib/merchant-webhook.js";
 import { PayoutCreationError } from "../../domestic/bangladesh/payout.js";
 import { parseTransactionMetadata, getOrCreateMerchantWallet } from "./crossramp-payin.js";
@@ -196,17 +197,7 @@ export async function createTyltCpgPayoutRequest(params: {
 }): Promise<{ transactionId: string; status: string; platformOrderId: string | null }> {
   const callBackUrl = `${params.baseUrl.replace(/\/$/, "")}/webhooks/tylt/cpg-payout/${params.environment}`;
 
-  const wallet = await getMerchantWalletStrict({
-    merchantId: params.merchantId,
-    environment: params.environment,
-    currency: params.settledCurrency,
-  });
-  if (!wallet) {
-    throw new Error("Merchant wallet not found");
-  }
-  if (Number(wallet.balance) < Number(params.amount)) {
-    throw new Error("Insufficient balance");
-  }
+  assertPositive(params.amount);
 
   const metadata = {
     rail: RAIL,
@@ -215,20 +206,78 @@ export async function createTyltCpgPayoutRequest(params: {
     networkSymbol: params.networkSymbol,
   };
 
-  const [tx] = await db
-    .insert(transactions)
-    .values({
-      merchantId: params.merchantId,
-      environment: params.environment,
-      type: "payout",
-      status: "pending",
-      amount: params.amount,
-      currency: params.settledCurrency,
-      metadata: JSON.stringify(metadata),
-    })
-    .returning();
+  // tx1: lock the merchant wallet, validate balance, insert pending tx, debit
+  // upfront. The Tylt HTTP call must happen outside this transaction so we
+  // never hold a row lock across the network.
+  const created = await db.transaction(async (txDb) => {
+    const [walletRef] = await txDb
+      .select({ id: wallets.id })
+      .from(wallets)
+      .where(
+        and(
+          eq(wallets.merchantId, params.merchantId),
+          eq(wallets.environment, params.environment),
+          eq(wallets.type, "merchant"),
+          eq(wallets.currency, params.settledCurrency),
+          eq(wallets.status, "active")
+        )
+      )
+      .limit(1);
 
-  if (!tx) throw new Error("Failed to create transaction");
+    if (!walletRef) {
+      throw new Error("Merchant wallet not found");
+    }
+
+    const [wallet] = await txDb
+      .select()
+      .from(wallets)
+      .where(eq(wallets.id, walletRef.id))
+      .for("update")
+      .limit(1);
+
+    if (!wallet) {
+      throw new Error("Merchant wallet not found");
+    }
+    if (cmpAmount(wallet.balance, params.amount) < 0) {
+      throw new Error("Insufficient balance");
+    }
+
+    const [tx] = await txDb
+      .insert(transactions)
+      .values({
+        merchantId: params.merchantId,
+        environment: params.environment,
+        type: "payout",
+        status: "pending",
+        amount: params.amount,
+        currency: params.settledCurrency,
+        metadata: JSON.stringify(metadata),
+      })
+      .returning();
+
+    if (!tx) throw new Error("Failed to create transaction");
+
+    await txDb.insert(ledgerEntries).values({
+      walletId: wallet.id,
+      environment: params.environment,
+      amount: params.amount,
+      direction: "debit",
+      type: "payout",
+      referenceId: tx.id,
+    });
+
+    await txDb
+      .update(wallets)
+      .set({
+        balance: subAmount(wallet.balance, params.amount),
+        updatedAt: new Date(),
+      })
+      .where(eq(wallets.id, wallet.id));
+
+    return { tx };
+  });
+
+  const tx = created.tx;
 
   const body: Record<string, unknown> = {
     merchantOrderId: tx.id,
@@ -239,28 +288,39 @@ export async function createTyltCpgPayoutRequest(params: {
     destinationDetails: params.destinationDetails,
   };
 
-  const { status, json } = await tyltSignedPostJson<Record<string, unknown>>({
-    environment: params.environment,
-    path: "/transactions/merchant/createPayoutRequest",
-    body,
-  });
+  let status: number;
+  let json: Record<string, unknown> | undefined;
+  try {
+    ({ status, json } = await tyltSignedPostJson<Record<string, unknown>>({
+      environment: params.environment,
+      path: "/transactions/merchant/createPayoutRequest",
+      body,
+      idempotencyKey: tx.id,
+    }));
+  } catch (err) {
+    await refundPayoutDebit({
+      id: tx.id,
+      merchantId: params.merchantId,
+      environment: params.environment,
+      amount: params.amount,
+      currency: params.settledCurrency,
+      reason: err instanceof Error ? err.message : String(err),
+    });
+    throw err;
+  }
 
   const platformOrderId = extractCpgPayoutPlatformOrderId(json);
 
   if (status >= 400 || !platformOrderId) {
-    const prev = tx.metadata ? (JSON.parse(tx.metadata) as Record<string, unknown>) : {};
-    await db
-      .update(transactions)
-      .set({
-        status: "failed",
-        metadata: JSON.stringify({
-          ...prev,
-          failedStage: "create_payout_request",
-          failureReason: JSON.stringify(json),
-        }),
-        updatedAt: new Date(),
-      })
-      .where(eq(transactions.id, tx.id));
+    await refundPayoutDebit({
+      id: tx.id,
+      merchantId: params.merchantId,
+      environment: params.environment,
+      amount: params.amount,
+      currency: params.settledCurrency,
+      reason: JSON.stringify(json),
+      externalId: platformOrderId ?? null,
+    });
     throw new PayoutCreationError(
       "Tylt CPG create payout failed",
       tx.id,
@@ -272,23 +332,6 @@ export async function createTyltCpgPayoutRequest(params: {
     .update(transactions)
     .set({ externalId: platformOrderId, updatedAt: new Date() })
     .where(eq(transactions.id, tx.id));
-
-  await db.insert(ledgerEntries).values({
-    walletId: wallet.id,
-    environment: params.environment,
-    amount: params.amount,
-    direction: "debit",
-    type: "payout",
-    referenceId: tx.id,
-  });
-
-  await db
-    .update(wallets)
-    .set({
-      balance: String(Number(wallet.balance) - Number(params.amount)),
-      updatedAt: new Date(),
-    })
-    .where(eq(wallets.id, wallet.id));
 
   audit({
     action: "payout.created",
@@ -327,41 +370,91 @@ export async function cpgGetPayoutTransactionHistory(params: {
   });
 }
 
-async function refundPayoutDebit(tx: {
+async function refundPayoutDebit(input: {
   id: string;
   merchantId: string;
   environment: TyltMerchantEnvironment;
   amount: string;
   currency: string;
+  /** Optional failure reason recorded in transaction metadata. */
+  reason?: string;
+  /** Optional Tylt-side order id captured even on failure. */
+  externalId?: string | null;
 }): Promise<void> {
   const wallet =
     (await getMerchantWalletStrict({
-      merchantId: tx.merchantId,
-      environment: tx.environment as TyltMerchantEnvironment,
-      currency: tx.currency,
+      merchantId: input.merchantId,
+      environment: input.environment,
+      currency: input.currency,
     })) ??
     (await getOrCreateMerchantWallet({
-      merchantId: tx.merchantId,
-      environment: tx.environment as TyltMerchantEnvironment,
-      currency: tx.currency,
+      merchantId: input.merchantId,
+      environment: input.environment,
+      currency: input.currency,
     }));
 
-  await db.insert(ledgerEntries).values({
-    walletId: wallet.id,
-    environment: tx.environment,
-    amount: String(tx.amount),
-    direction: "credit",
-    type: "payout_refund",
-    referenceId: tx.id,
-  });
+  await db.transaction(async (txDb) => {
+    const [pending] = await txDb
+      .select({ metadata: transactions.metadata })
+      .from(transactions)
+      .where(and(eq(transactions.id, input.id), eq(transactions.status, "pending")))
+      .limit(1);
 
-  await db
-    .update(wallets)
-    .set({
-      balance: String(Number(wallet.balance) + Number(tx.amount)),
-      updatedAt: new Date(),
-    })
-    .where(eq(wallets.id, wallet.id));
+    if (!pending) {
+      return;
+    }
+
+    const prev = pending.metadata
+      ? (JSON.parse(pending.metadata) as Record<string, unknown>)
+      : {};
+
+    const [updated] = await txDb
+      .update(transactions)
+      .set({
+        status: "failed",
+        externalId: input.externalId ?? undefined,
+        metadata: JSON.stringify({
+          ...prev,
+          failedStage: "create_payout_request",
+          failureReason: input.reason ?? "create_payout_request_failed",
+        }),
+        updatedAt: new Date(),
+      })
+      .where(and(eq(transactions.id, input.id), eq(transactions.status, "pending")))
+      .returning({ id: transactions.id });
+
+    if (!updated) {
+      return;
+    }
+
+    const [lockedWallet] = await txDb
+      .select()
+      .from(wallets)
+      .where(eq(wallets.id, wallet.id))
+      .for("update")
+      .limit(1);
+
+    if (!lockedWallet) {
+      return;
+    }
+
+    await txDb.insert(ledgerEntries).values({
+      walletId: lockedWallet.id,
+      environment: input.environment,
+      amount: input.amount,
+      direction: "credit",
+      type: "payout_refund",
+      referenceId: input.id,
+    });
+
+    await txDb
+      .update(wallets)
+      .set({
+        balance: addAmount(lockedWallet.balance, input.amount),
+        updatedAt: new Date(),
+      })
+      .where(eq(wallets.id, lockedWallet.id));
+  });
 }
 
 /**
@@ -433,13 +526,16 @@ export async function applyTyltCpgPayoutWebhookPayload(
   }
 
   if (callbackDecision === "failed") {
-    const [failed] = await db
-      .update(transactions)
-      .set({ status: "failed", updatedAt: new Date() })
+    // Conditional pending->failed transition + refund all in one transaction
+    // inside refundPayoutDebit. If the row is no longer pending, the call is
+    // a safe no-op and we return null below.
+    const [stillPending] = await db
+      .select({ id: transactions.id })
+      .from(transactions)
       .where(and(eq(transactions.id, tx.id), eq(transactions.status, "pending")))
-      .returning({ id: transactions.id });
+      .limit(1);
 
-    if (!failed) return null;
+    if (!stillPending) return null;
 
     await refundPayoutDebit({
       id: tx.id,
@@ -447,6 +543,8 @@ export async function applyTyltCpgPayoutWebhookPayload(
       environment: tx.environment as TyltMerchantEnvironment,
       amount: String(tx.amount),
       currency: tx.currency,
+      reason: "cpg_payout_terminal_failure",
+      externalId: tx.externalId,
     });
 
     audit({
@@ -468,21 +566,30 @@ export async function applyTyltCpgPayoutWebhookPayload(
     };
   }
 
-  const [updated] = await db
-    .update(transactions)
-    .set({ status: "success", updatedAt: new Date() })
-    .where(and(eq(transactions.id, tx.id), eq(transactions.status, "pending")))
-    .returning();
+  const transitioned = await db.transaction(async (txDb) => {
+    const [updated] = await txDb
+      .update(transactions)
+      .set({ status: "success", updatedAt: new Date() })
+      .where(and(eq(transactions.id, tx.id), eq(transactions.status, "pending")))
+      .returning({ id: transactions.id });
 
-  if (!updated) return null;
+    if (!updated) return false;
 
-  await tryApplyTransactionFee({
-    merchantId: tx.merchantId,
-    transactionId: tx.id,
-    environment: tx.environment,
-    amount: String(tx.amount),
-    feeType: "payout",
+    await tryApplyTransactionFee(
+      {
+        merchantId: tx.merchantId,
+        transactionId: tx.id,
+        environment: tx.environment,
+        amount: String(tx.amount),
+        feeType: "payout",
+      },
+      txDb
+    );
+
+    return true;
   });
+
+  if (!transitioned) return null;
 
   audit({
     action: "payout.completed",

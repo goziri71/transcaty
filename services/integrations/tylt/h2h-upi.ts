@@ -81,6 +81,7 @@ export async function createTyltH2hPayinInstance(params: {
     environment: params.environment,
     path: "/h2h/in/upi/createPayinInstance",
     body,
+    idempotencyKey: tx.id,
   });
 
   const { instanceId, paymentDetails } = extractH2hCreateResponse(json);

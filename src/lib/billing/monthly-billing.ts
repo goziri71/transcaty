@@ -8,6 +8,7 @@ import {
 } from "../../db/schema/index.js";
 import { PLATFORM_WALLET_ID } from "./platform-wallet.js";
 import { audit } from "../audit.js";
+import { addAmount, cmpAmount, subAmount, toCents } from "../money.js";
 
 /**
  * Run monthly billing for merchants with monthly_only or both mode.
@@ -26,9 +27,10 @@ export async function runMonthlyBilling(): Promise<{
     .from(merchantPricing)
     .where(inArray(merchantPricing.billingMode, ["monthly_only", "both"]));
 
-  const monthlyMerchants = pricingRows.filter(
-    (p) => p.monthlyAmount && Number(p.monthlyAmount) > 0
-  );
+  const monthlyMerchants = pricingRows.filter((p) => {
+    const v = p.monthlyAmount;
+    return typeof v === "string" && v.length > 0 && toCents(v) > 0n;
+  });
 
   let billed = 0;
   let skipped = 0;
@@ -36,8 +38,8 @@ export async function runMonthlyBilling(): Promise<{
 
   for (const pricing of monthlyMerchants) {
     const merchantId = pricing.merchantId;
-    const amount = Number(pricing.monthlyAmount ?? 0);
-    if (amount <= 0) continue;
+    const amount = String(pricing.monthlyAmount ?? "0");
+    if (toCents(amount) <= 0n) continue;
 
     const [existing] = await db
       .select()
@@ -55,93 +57,112 @@ export async function runMonthlyBilling(): Promise<{
       continue;
     }
 
-    const [merchantWallet] = await db
-      .select()
-      .from(wallets)
-      .where(
-        and(
-          eq(wallets.merchantId, merchantId),
-          eq(wallets.environment, "live"),
-          eq(wallets.type, "merchant"),
-          eq(wallets.status, "active")
-        )
-      )
-      .limit(1);
-
-    if (!merchantWallet) {
-      errors.push(`Merchant ${merchantId}: wallet not found`);
-      continue;
-    }
-
-    const balance = Number(merchantWallet.balance);
-    if (balance < amount) {
-      errors.push(`Merchant ${merchantId}: insufficient balance (${balance} < ${amount})`);
-      continue;
-    }
-
     try {
-      await db.transaction(async (tx) => {
+      const result = await db.transaction(async (tx) => {
+        const [merchantWallet] = await tx
+          .select()
+          .from(wallets)
+          .where(
+            and(
+              eq(wallets.merchantId, merchantId),
+              eq(wallets.environment, "live"),
+              eq(wallets.type, "merchant"),
+              eq(wallets.status, "active")
+            )
+          )
+          .for("update")
+          .limit(1);
+
+        if (!merchantWallet) {
+          return { kind: "wallet_missing" as const };
+        }
+
+        if (cmpAmount(merchantWallet.balance, amount) < 0) {
+          return {
+            kind: "insufficient_balance" as const,
+            balance: merchantWallet.balance,
+          };
+        }
+
+        const [platformWallet] = await tx
+          .select()
+          .from(wallets)
+          .where(eq(wallets.id, PLATFORM_WALLET_ID))
+          .for("update")
+          .limit(1);
+
+        if (!platformWallet) {
+          return { kind: "platform_wallet_missing" as const };
+        }
+
         const refId = `monthly:${merchantId}:${billingMonth}`;
 
         const [creditEntry] = await tx
           .insert(ledgerEntries)
           .values({
-            walletId: PLATFORM_WALLET_ID,
+            walletId: platformWallet.id,
             environment: "live",
-            amount: String(amount),
+            amount,
             direction: "credit",
             type: "monthly_fee",
             referenceId: refId,
           })
           .returning();
 
-        await tx
-          .insert(ledgerEntries)
-          .values({
-            walletId: merchantWallet.id,
-            environment: "live",
-            amount: String(amount),
-            direction: "debit",
-            type: "monthly_fee",
-            referenceId: refId,
-          });
+        await tx.insert(ledgerEntries).values({
+          walletId: merchantWallet.id,
+          environment: "live",
+          amount,
+          direction: "debit",
+          type: "monthly_fee",
+          referenceId: refId,
+        });
 
         await tx
           .update(wallets)
           .set({
-            balance: String(balance - amount),
+            balance: subAmount(merchantWallet.balance, amount),
             updatedAt: new Date(),
           })
           .where(eq(wallets.id, merchantWallet.id));
 
-        const [plat] = await tx
-          .select({ balance: wallets.balance })
-          .from(wallets)
-          .where(eq(wallets.id, PLATFORM_WALLET_ID))
-          .limit(1);
-        const platBalance = plat ? Number(plat.balance) : 0;
         await tx
           .update(wallets)
           .set({
-            balance: String(platBalance + amount),
+            balance: addAmount(platformWallet.balance, amount),
             updatedAt: new Date(),
           })
-          .where(eq(wallets.id, PLATFORM_WALLET_ID));
+          .where(eq(wallets.id, platformWallet.id));
 
         await tx.insert(monthlyBillingRecords).values({
           merchantId,
           billingMonth,
-          amount: String(amount),
+          amount,
           ledgerEntryId: creditEntry?.id ?? null,
         });
+
+        return { kind: "billed" as const };
       });
+
+      if (result.kind === "wallet_missing") {
+        errors.push(`Merchant ${merchantId}: wallet not found`);
+        continue;
+      }
+      if (result.kind === "platform_wallet_missing") {
+        errors.push(`Merchant ${merchantId}: platform wallet not found`);
+        continue;
+      }
+      if (result.kind === "insufficient_balance") {
+        errors.push(`Merchant ${merchantId}: insufficient balance (${result.balance} < ${amount})`);
+        continue;
+      }
 
       billed++;
       audit({
         action: "billing.fee_applied",
         resource: merchantId,
         merchantId,
-        meta: { type: "monthly", billingMonth, amount: String(amount) },
+        meta: { type: "monthly", billingMonth, amount },
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

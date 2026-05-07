@@ -6,6 +6,7 @@ import { db } from "../../../src/db/index.js";
 import { transactions, wallets, ledgerEntries } from "../../../src/db/schema/index.js";
 import { audit } from "../../../src/lib/audit.js";
 import { tryApplyTransactionFee } from "../../../src/lib/billing/index.js";
+import { addAmount } from "../../../src/lib/money.js";
 import type { WebhookEvent } from "../../../src/lib/merchant-webhook.js";
 import { tyltSignedGetJson, tyltSignedPostJson } from "./client.js";
 import type { TyltMerchantEnvironment } from "./config.js";
@@ -93,6 +94,7 @@ export async function createTyltCrossRampPayinOrder(params: {
     environment: params.environment,
     path: "/p2pRampsMerchant/createInstance",
     body: body as unknown as Record<string, unknown>,
+    idempotencyKey: tx.id,
   });
 
   const { instanceId, rampUrl } = extractCreateInstanceResponse(json);
@@ -464,29 +466,46 @@ export async function applyTyltCrossRampWebhookPayload(
 
     const paidAmount = parseCreditAmount(parsed, String(tx.amount));
 
-    const [updated] = await db
-      .update(transactions)
-      .set({
-        status: "success",
-        paidAmount,
-        updatedAt: new Date(),
-      })
-      .where(and(eq(transactions.id, tx.id), eq(transactions.status, "pending")))
-      .returning();
-
-    if (!updated) {
-      return null;
-    }
-
+    // Resolve the wallet outside the transaction (idempotent) so we never hold
+    // a row lock while the wallet may need to be created on first payin.
     const wallet = await getOrCreateMerchantWallet({
       merchantId: tx.merchantId,
       environment: tx.environment,
       currency: tx.currency,
     });
 
-    if (wallet) {
-      await db.insert(ledgerEntries).values({
-        walletId: wallet.id,
+    const result = await db.transaction(async (txDb) => {
+      const [updated] = await txDb
+        .update(transactions)
+        .set({
+          status: "success",
+          paidAmount,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(transactions.id, tx.id), eq(transactions.status, "pending")))
+        .returning();
+
+      if (!updated) {
+        return null;
+      }
+
+      if (!wallet) {
+        return { walletCredited: false as const };
+      }
+
+      const [lockedWallet] = await txDb
+        .select()
+        .from(wallets)
+        .where(eq(wallets.id, wallet.id))
+        .for("update")
+        .limit(1);
+
+      if (!lockedWallet) {
+        return { walletCredited: false as const };
+      }
+
+      await txDb.insert(ledgerEntries).values({
+        walletId: lockedWallet.id,
         environment: tx.environment,
         amount: String(paidAmount),
         direction: "credit",
@@ -494,21 +513,30 @@ export async function applyTyltCrossRampWebhookPayload(
         referenceId: tx.id,
       });
 
-      await db
+      await txDb
         .update(wallets)
         .set({
-          balance: String(Number(wallet.balance) + Number(paidAmount)),
+          balance: addAmount(lockedWallet.balance, String(paidAmount)),
           updatedAt: new Date(),
         })
-        .where(eq(wallets.id, wallet.id));
+        .where(eq(wallets.id, lockedWallet.id));
 
-      await tryApplyTransactionFee({
-        merchantId: tx.merchantId,
-        transactionId: tx.id,
-        environment: tx.environment,
-        amount: String(paidAmount),
-        feeType: "payin",
-      });
+      await tryApplyTransactionFee(
+        {
+          merchantId: tx.merchantId,
+          transactionId: tx.id,
+          environment: tx.environment,
+          amount: String(paidAmount),
+          feeType: "payin",
+        },
+        txDb
+      );
+
+      return { walletCredited: true as const };
+    });
+
+    if (!result) {
+      return null;
     }
 
     audit({

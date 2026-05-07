@@ -596,6 +596,20 @@ export async function registerProviderAuthRoutes(app: FastifyInstance) {
   );
 
   app.post(
+    "/provider/auth/logout",
+    {
+      schema: {
+        response: {
+          200: z.object({ ok: z.boolean() }),
+        },
+      },
+    },
+    async (_request, reply) => {
+      return reply.send({ ok: true });
+    }
+  );
+
+  app.post(
     "/provider/auth/forgot-password",
     {
       schema: {

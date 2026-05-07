@@ -1,17 +1,37 @@
 /**
- * In-process circuit breaker for outbound payment processor HTTP calls.
- * When open, callers should fail fast with ProviderCircuitOpenError (mapped to a generic merchant response).
+ * Provider circuit breaker for outbound payment processor HTTP calls.
  *
- * Keys are independent (e.g. `payok` vs `tylt`) so one rail opening does not block another.
+ * Design:
+ * - Source of truth for "open until <ts>" lives in Redis when configured,
+ *   so a circuit opened on one app instance is honored by all peers.
+ * - An in-process cache mirrors Redis so the hot path can short-circuit
+ *   without awaiting a network round-trip on every request, and so the
+ *   legacy synchronous API keeps working when Redis is unreachable.
+ * - The async API ({@link assertProviderCircuitClosed},
+ *   {@link recordProviderCircuitSuccess}, {@link recordProviderCircuitFailure})
+ *   is the canonical one going forward; it consults Redis as needed and
+ *   degrades gracefully when Redis is offline.
+ * - The legacy synchronous names ({@link assertCircuitClosed},
+ *   {@link recordProviderSuccess}, {@link recordProviderFailure}) are
+ *   preserved for callers that cannot easily await; they read the local
+ *   cache only.
+ *
+ * Keys are independent (e.g. `payok` vs `tylt`) so one rail opening does
+ * not block another.
  *
  * Env:
- * - PROVIDER_CIRCUIT_ENABLED — default "true"; set "false" to disable (not recommended for prod).
+ * - PROVIDER_CIRCUIT_ENABLED — default "true"; set "false" to disable.
  * - PROVIDER_CIRCUIT_FAILURE_THRESHOLD — consecutive failures before opening (default 5).
  * - PROVIDER_CIRCUIT_COOLDOWN_MS — how long the circuit stays open (default 60000).
+ * - PROVIDER_CIRCUIT_REDIS — default "true"; set "false" to skip Redis even if configured.
  * Optional overrides per rail (fallback to globals above):
  * - PROVIDER_CIRCUIT_PAYOK_FAILURE_THRESHOLD, PROVIDER_CIRCUIT_PAYOK_COOLDOWN_MS
  * - PROVIDER_CIRCUIT_TYLT_FAILURE_THRESHOLD, PROVIDER_CIRCUIT_TYLT_COOLDOWN_MS
  */
+
+import type { Redis } from "ioredis";
+import { getRedis } from "./redis.js";
+import type { ProviderCircuit } from "./outbound-http.js";
 
 export const PAYOK_CIRCUIT_KEY = "payok";
 /** Tylt CPG + CrossRamp share one breaker (same vendor HTTP edge). */
@@ -29,6 +49,12 @@ export class ProviderCircuitOpenError extends Error {
 
 function circuitEnabled(): boolean {
   const v = process.env.PROVIDER_CIRCUIT_ENABLED?.trim().toLowerCase();
+  if (v === "false" || v === "0") return false;
+  return true;
+}
+
+function redisBackingEnabled(): boolean {
+  const v = process.env.PROVIDER_CIRCUIT_REDIS?.trim().toLowerCase();
   if (v === "false" || v === "0") return false;
   return true;
 }
@@ -57,6 +83,7 @@ function cooldownMsFor(providerKey: string): number {
 
 type State = {
   consecutiveFailures: number;
+  /** Epoch ms when the circuit reopens. 0 means closed. */
   openUntil: number;
 };
 
@@ -71,26 +98,125 @@ function getState(key: string): State {
   return s;
 }
 
+function redisKeys(providerKey: string): { open: string; fails: string } {
+  return {
+    open: `cb:${providerKey}:openUntil`,
+    fails: `cb:${providerKey}:fails`,
+  };
+}
+
+function getRedisIfBacking(): Redis | null {
+  if (!redisBackingEnabled()) return null;
+  return getRedis();
+}
+
+// -- Async (canonical) API ---------------------------------------------------
+
+export async function assertProviderCircuitClosed(providerKey: string): Promise<void> {
+  if (!circuitEnabled()) return;
+  const local = getState(providerKey);
+  const now = Date.now();
+  if (now < local.openUntil) {
+    throw new ProviderCircuitOpenError(providerKey);
+  }
+  const r = getRedisIfBacking();
+  if (!r) return;
+  try {
+    const raw = await r.get(redisKeys(providerKey).open);
+    if (!raw) return;
+    const ts = Number(raw);
+    if (Number.isFinite(ts) && now < ts) {
+      // Mirror the remote open window locally so subsequent sync checks
+      // (and the next ~ttl ms of async checks) short-circuit without I/O.
+      local.openUntil = ts;
+      throw new ProviderCircuitOpenError(providerKey);
+    }
+  } catch (err) {
+    if (err instanceof ProviderCircuitOpenError) throw err;
+    /* Redis hiccup – fall back to local state. */
+  }
+}
+
+export async function recordProviderCircuitSuccess(providerKey: string): Promise<void> {
+  if (!circuitEnabled()) return;
+  const local = getState(providerKey);
+  local.consecutiveFailures = 0;
+  const r = getRedisIfBacking();
+  if (!r) return;
+  try {
+    await r.del(redisKeys(providerKey).fails);
+  } catch {
+    /* ignore */
+  }
+}
+
+export async function recordProviderCircuitFailure(providerKey: string): Promise<void> {
+  if (!circuitEnabled()) return;
+  const threshold = failureThresholdFor(providerKey);
+  const cooldown = cooldownMsFor(providerKey);
+  const local = getState(providerKey);
+  local.consecutiveFailures += 1;
+
+  const r = getRedisIfBacking();
+  let total = local.consecutiveFailures;
+  if (r) {
+    try {
+      const incremented = await r.incr(redisKeys(providerKey).fails);
+      // Keep the failure counter from leaking forever if the circuit
+      // never opens (e.g. threshold not reached for a long time).
+      try {
+        await r.pexpire(redisKeys(providerKey).fails, Math.max(cooldown * 2, 30_000));
+      } catch {
+        /* ignore */
+      }
+      if (Number.isFinite(incremented) && incremented > 0) total = Number(incremented);
+    } catch {
+      /* fall through using local count */
+    }
+  }
+
+  if (total >= threshold) {
+    const openUntil = Date.now() + cooldown;
+    local.openUntil = openUntil;
+    local.consecutiveFailures = 0;
+    if (r) {
+      try {
+        await r.set(redisKeys(providerKey).open, String(openUntil), "PX", cooldown);
+        await r.del(redisKeys(providerKey).fails);
+      } catch {
+        /* circuit will still trip locally */
+      }
+    }
+  }
+}
+
+/** Returns a {@link ProviderCircuit} suitable for outbound-http.ts. */
+export function getProviderCircuit(providerKey: string): ProviderCircuit {
+  return {
+    assertClosed: () => assertProviderCircuitClosed(providerKey),
+    recordSuccess: () => recordProviderCircuitSuccess(providerKey),
+    recordFailure: () => recordProviderCircuitFailure(providerKey),
+  };
+}
+
+// -- Legacy synchronous API (process-local fallback) -------------------------
+
+/** @deprecated Prefer {@link assertProviderCircuitClosed}. Process-local only. */
 export function assertCircuitClosed(providerKey: string): void {
   if (!circuitEnabled()) return;
   const s = getState(providerKey);
-  const now = Date.now();
-  if (now < s.openUntil) {
+  if (Date.now() < s.openUntil) {
     throw new ProviderCircuitOpenError(providerKey);
   }
 }
 
-/** Call after a successful outbound request (transport succeeded and status < 500). */
+/** @deprecated Prefer {@link recordProviderCircuitSuccess}. Process-local only. */
 export function recordProviderSuccess(providerKey: string): void {
   if (!circuitEnabled()) return;
-  const s = getState(providerKey);
-  s.consecutiveFailures = 0;
+  getState(providerKey).consecutiveFailures = 0;
 }
 
-/**
- * Call after transport failure or HTTP >= 500 from the processor.
- * Does not open on application-level 4xx from processor.
- */
+/** @deprecated Prefer {@link recordProviderCircuitFailure}. Process-local only. */
 export function recordProviderFailure(providerKey: string): void {
   if (!circuitEnabled()) return;
   const s = getState(providerKey);
@@ -119,4 +245,9 @@ export function resetPayokCircuitForTests(): void {
 
 export function resetTyltCircuitForTests(): void {
   states.delete(TYLT_CIRCUIT_KEY);
+}
+
+/** Test-only helper to wipe all in-memory state. */
+export function resetAllCircuitsForTests(): void {
+  states.clear();
 }

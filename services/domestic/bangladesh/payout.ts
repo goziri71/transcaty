@@ -1,5 +1,13 @@
 /**
  * Bangladesh payout flow: account inquiry, create payout, handle Payok callback.
+ *
+ * Concurrency model:
+ * - On creation we lock the merchant wallet, debit upfront, and only THEN call Payok.
+ *   If Payok rejects, we refund in a follow-up transaction.
+ * - The webhook callback transitions the row from pending->success or pending->failed
+ *   atomically and conditionally, so duplicate callbacks become no-ops.
+ * - On webhook failure we refund (credit payout_refund) — this balances the upfront
+ *   debit posted at creation time.
  */
 import { eq, and } from "drizzle-orm";
 import { db } from "../../../src/db/index.js";
@@ -7,6 +15,7 @@ import { transactions, wallets, ledgerEntries } from "../../../src/db/schema/ind
 import { payokPayoutAccountInquiry, payokPayoutCreate } from "./provider/client.js";
 import { audit } from "../../../src/lib/audit.js";
 import { tryApplyTransactionFee } from "../../../src/lib/billing/index.js";
+import { addAmount, assertPositive, cmpAmount, subAmount } from "../../../src/lib/money.js";
 import type { PayokEnvironment } from "./provider/config.js";
 
 export class PayoutCreationError extends Error {
@@ -19,6 +28,85 @@ export class PayoutCreationError extends Error {
     this.transactionId = transactionId;
     this.platformOrderId = platformOrderId ?? null;
   }
+}
+
+async function refundPendingPayout(params: {
+  txId: string;
+  merchantId: string;
+  environment: PayokEnvironment;
+  amount: string;
+  failedStage: "account_inquiry" | "create_payout";
+  failureReason: string;
+  externalId?: string | null;
+}): Promise<void> {
+  await db.transaction(async (txDb) => {
+    const [pending] = await txDb
+      .select({ metadata: transactions.metadata })
+      .from(transactions)
+      .where(and(eq(transactions.id, params.txId), eq(transactions.status, "pending")))
+      .limit(1);
+
+    if (!pending) {
+      return;
+    }
+
+    const prevMetadata = pending.metadata
+      ? (JSON.parse(pending.metadata) as Record<string, unknown>)
+      : {};
+
+    const [updated] = await txDb
+      .update(transactions)
+      .set({
+        status: "failed",
+        externalId: params.externalId ?? undefined,
+        metadata: JSON.stringify({
+          ...prevMetadata,
+          failedStage: params.failedStage,
+          failureReason: params.failureReason,
+        }),
+        updatedAt: new Date(),
+      })
+      .where(and(eq(transactions.id, params.txId), eq(transactions.status, "pending")))
+      .returning({ id: transactions.id });
+
+    if (!updated) {
+      return;
+    }
+
+    const [wallet] = await txDb
+      .select()
+      .from(wallets)
+      .where(
+        and(
+          eq(wallets.merchantId, params.merchantId),
+          eq(wallets.environment, params.environment),
+          eq(wallets.type, "merchant")
+        )
+      )
+      .for("update")
+      .limit(1);
+
+    if (!wallet) {
+      return;
+    }
+
+    await txDb.insert(ledgerEntries).values({
+      walletId: wallet.id,
+      environment: params.environment,
+      amount: params.amount,
+      direction: "credit",
+      type: "payout_refund",
+      referenceId: params.txId,
+    });
+
+    await txDb
+      .update(wallets)
+      .set({
+        balance: addAmount(wallet.balance, params.amount),
+        updatedAt: new Date(),
+      })
+      .where(eq(wallets.id, wallet.id));
+  });
 }
 
 export async function createPayoutOrder(params: {
@@ -37,95 +125,145 @@ export async function createPayoutOrder(params: {
   /** Dashboard-initiated payout (audit). */
   portalActor?: { merchantUserId: string; email: string };
 }) {
-  const [wallet] = await db
-    .select()
-    .from(wallets)
-    .where(
-      and(
-        eq(wallets.merchantId, params.merchantId),
-        eq(wallets.environment, params.environment),
-        eq(wallets.type, "merchant"),
-        eq(wallets.status, "active")
+  assertPositive(params.amount);
+
+  // tx1: lock the merchant wallet, validate balance, debit upfront.
+  // The Payok HTTP call must happen OUTSIDE this transaction so we never
+  // hold a row lock across the network.
+  const created = await db.transaction(async (txDb) => {
+    const [wallet] = await txDb
+      .select()
+      .from(wallets)
+      .where(
+        and(
+          eq(wallets.merchantId, params.merchantId),
+          eq(wallets.environment, params.environment),
+          eq(wallets.type, "merchant"),
+          eq(wallets.status, "active")
+        )
       )
-    )
-    .limit(1);
+      .for("update")
+      .limit(1);
 
-  if (!wallet) throw new Error("Merchant wallet not found");
-  if (Number(wallet.balance) < Number(params.amount)) {
-    throw new Error("Insufficient balance");
-  }
+    if (!wallet) {
+      throw new Error("Merchant wallet not found");
+    }
+    if (cmpAmount(wallet.balance, params.amount) < 0) {
+      throw new Error("Insufficient balance");
+    }
 
-  const [tx] = await db
-    .insert(transactions)
-    .values({
-      merchantId: params.merchantId,
-      environment: params.environment,
-      type: "payout",
-      status: "pending",
-      amount: params.amount,
-      currency: "BDT",
-      metadata: JSON.stringify({ benificiaryAccountInfo: params.benificiaryAccountInfo, environment: params.environment }),
-    })
-    .returning();
-
-  if (!tx) throw new Error("Failed to create transaction");
-
-  const { status: inquiryStatus, body: inquiryBody } = await payokPayoutAccountInquiry({
-    environment: params.environment,
-    merchantOrderId: tx.id,
-    amount: params.amount,
-    benificiaryAccountInfo: params.benificiaryAccountInfo,
-  });
-
-  const inquiry = inquiryBody as { code?: string; inquiryToken?: string; message?: string };
-  if (inquiryStatus !== 200 || inquiry.code === "FAIL" || !inquiry.inquiryToken) {
-    const prevMetadata = tx.metadata ? (JSON.parse(tx.metadata) as Record<string, unknown>) : {};
-    await db
-      .update(transactions)
-      .set({
-        status: "failed",
+    const [tx] = await txDb
+      .insert(transactions)
+      .values({
+        merchantId: params.merchantId,
+        environment: params.environment,
+        type: "payout",
+        status: "pending",
+        amount: params.amount,
+        currency: "BDT",
         metadata: JSON.stringify({
-          ...prevMetadata,
-          failedStage: "account_inquiry",
-          failureReason: inquiry.message ?? JSON.stringify(inquiry),
+          benificiaryAccountInfo: params.benificiaryAccountInfo,
+          environment: params.environment,
         }),
+      })
+      .returning();
+
+    if (!tx) throw new Error("Failed to create transaction");
+
+    await txDb.insert(ledgerEntries).values({
+      walletId: wallet.id,
+      environment: params.environment,
+      amount: params.amount,
+      direction: "debit",
+      type: "payout",
+      referenceId: tx.id,
+    });
+
+    await txDb
+      .update(wallets)
+      .set({
+        balance: subAmount(wallet.balance, params.amount),
         updatedAt: new Date(),
       })
-      .where(eq(transactions.id, tx.id));
-    throw new PayoutCreationError(
-      `Payok account inquiry failed: ${inquiry.message ?? JSON.stringify(inquiry)}`,
-      tx.id
-    );
+      .where(eq(wallets.id, wallet.id));
+
+    return { tx };
+  });
+
+  const tx = created.tx;
+
+  // Account inquiry (network call, no lock held).
+  let inquiryResult: { status: number; body: unknown };
+  try {
+    inquiryResult = await payokPayoutAccountInquiry({
+      environment: params.environment,
+      merchantOrderId: tx.id,
+      amount: params.amount,
+      benificiaryAccountInfo: params.benificiaryAccountInfo,
+    });
+  } catch (err) {
+    await refundPendingPayout({
+      txId: tx.id,
+      merchantId: params.merchantId,
+      environment: params.environment,
+      amount: params.amount,
+      failedStage: "account_inquiry",
+      failureReason: err instanceof Error ? err.message : String(err),
+    });
+    throw err;
+  }
+
+  const inquiry = inquiryResult.body as { code?: string; inquiryToken?: string; message?: string };
+  if (inquiryResult.status !== 200 || inquiry.code === "FAIL" || !inquiry.inquiryToken) {
+    const reason = inquiry.message ?? JSON.stringify(inquiry);
+    await refundPendingPayout({
+      txId: tx.id,
+      merchantId: params.merchantId,
+      environment: params.environment,
+      amount: params.amount,
+      failedStage: "account_inquiry",
+      failureReason: reason,
+    });
+    throw new PayoutCreationError(`Payok account inquiry failed: ${reason}`, tx.id);
   }
 
   const notificationUrl = `${params.baseUrl.replace(/\/$/, "")}/webhooks/payok/payout`;
 
-  const { status: createStatus, body: createBody } = await payokPayoutCreate({
-    environment: params.environment,
-    merchantOrderId: tx.id,
-    amount: params.amount,
-    inquiryToken: inquiry.inquiryToken,
-    notificationUrl,
-    benificiaryAccountInfo: params.benificiaryAccountInfo,
-    cardHolderInfo: params.cardHolderInfo,
-  });
+  // Create payout (network call, no lock held).
+  let createResult: { status: number; body: unknown };
+  try {
+    createResult = await payokPayoutCreate({
+      environment: params.environment,
+      merchantOrderId: tx.id,
+      amount: params.amount,
+      inquiryToken: inquiry.inquiryToken,
+      notificationUrl,
+      benificiaryAccountInfo: params.benificiaryAccountInfo,
+      cardHolderInfo: params.cardHolderInfo,
+    });
+  } catch (err) {
+    await refundPendingPayout({
+      txId: tx.id,
+      merchantId: params.merchantId,
+      environment: params.environment,
+      amount: params.amount,
+      failedStage: "create_payout",
+      failureReason: err instanceof Error ? err.message : String(err),
+    });
+    throw err;
+  }
 
-  const create = createBody as { code?: string; status?: string; platformOrderId?: string };
-  if (createStatus !== 200 || create.code === "FAIL") {
-    const prevMetadata = tx.metadata ? (JSON.parse(tx.metadata) as Record<string, unknown>) : {};
-    await db
-      .update(transactions)
-      .set({
-        status: "failed",
-        externalId: create.platformOrderId,
-        metadata: JSON.stringify({
-          ...prevMetadata,
-          failedStage: "create_payout",
-          failureReason: JSON.stringify(create),
-        }),
-        updatedAt: new Date(),
-      })
-      .where(eq(transactions.id, tx.id));
+  const create = createResult.body as { code?: string; status?: string; platformOrderId?: string };
+  if (createResult.status !== 200 || create.code === "FAIL") {
+    await refundPendingPayout({
+      txId: tx.id,
+      merchantId: params.merchantId,
+      environment: params.environment,
+      amount: params.amount,
+      failedStage: "create_payout",
+      failureReason: JSON.stringify(create),
+      externalId: create.platformOrderId ?? null,
+    });
     throw new PayoutCreationError(
       `Payok create payout failed: ${JSON.stringify(create)}`,
       tx.id,
@@ -133,27 +271,15 @@ export async function createPayoutOrder(params: {
     );
   }
 
-  await db
-    .update(transactions)
-    .set({ externalId: create.platformOrderId, updatedAt: new Date() })
-    .where(eq(transactions.id, tx.id));
-
-  await db.insert(ledgerEntries).values({
-    walletId: wallet.id,
-    environment: params.environment,
-    amount: params.amount,
-    direction: "debit",
-    type: "payout",
-    referenceId: tx.id,
-  });
-
-  await db
-    .update(wallets)
-    .set({
-      balance: String(Number(wallet.balance) - Number(params.amount)),
-      updatedAt: new Date(),
-    })
-    .where(eq(wallets.id, wallet.id));
+  // Record externalId. The conditional UPDATE leaves the row alone if a webhook
+  // already raced ahead and flipped the status; that's OK because the webhook
+  // body carries platformOrderId too.
+  if (create.platformOrderId) {
+    await db
+      .update(transactions)
+      .set({ externalId: create.platformOrderId, updatedAt: new Date() })
+      .where(eq(transactions.id, tx.id));
+  }
 
   audit({
     action: "payout.created",
@@ -208,31 +334,38 @@ export async function handlePayoutCallback(body: {
   const isSuccess = body.code === "SUCCESS" && body.status === "SUCCESS";
   const platformOrderId = body.platformOrderId ?? tx.externalId ?? null;
 
-  await db
-    .update(transactions)
-    .set({
-      status: isSuccess ? "success" : "failed",
-      externalId: body.platformOrderId ?? tx.externalId,
-      updatedAt: new Date(),
-    })
-    .where(eq(transactions.id, tx.id));
+  const result = await db.transaction(async (txDb) => {
+    // Conditional pending->terminal transition. Returns no row on a duplicate callback.
+    const [updated] = await txDb
+      .update(transactions)
+      .set({
+        status: isSuccess ? "success" : "failed",
+        externalId: body.platformOrderId ?? tx.externalId,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(transactions.id, tx.id), eq(transactions.status, "pending")))
+      .returning({ id: transactions.id });
 
-  if (isSuccess) {
-    await tryApplyTransactionFee({
-      merchantId: tx.merchantId,
-      transactionId: tx.id,
-      environment: tx.environment,
-      amount: String(tx.amount),
-      feeType: "payout",
-    });
-    audit({
-      action: "payout.completed",
-      resource: tx.id,
-      merchantId: tx.merchantId,
-      meta: { platformOrderId: body.platformOrderId },
-    });
-  } else {
-    const [wallet] = await db
+    if (!updated) {
+      return null;
+    }
+
+    if (isSuccess) {
+      await tryApplyTransactionFee(
+        {
+          merchantId: tx.merchantId,
+          transactionId: tx.id,
+          environment: tx.environment,
+          amount: String(tx.amount),
+          feeType: "payout",
+        },
+        txDb
+      );
+      return { isSuccess: true as const };
+    }
+
+    // Failure path: refund the upfront debit posted in createPayoutOrder.
+    const [wallet] = await txDb
       .select()
       .from(wallets)
       .where(
@@ -242,10 +375,11 @@ export async function handlePayoutCallback(body: {
           eq(wallets.type, "merchant")
         )
       )
-    .limit(1);
+      .for("update")
+      .limit(1);
 
     if (wallet) {
-      await db.insert(ledgerEntries).values({
+      await txDb.insert(ledgerEntries).values({
         walletId: wallet.id,
         environment: tx.environment,
         amount: String(tx.amount),
@@ -254,15 +388,30 @@ export async function handlePayoutCallback(body: {
         referenceId: tx.id,
       });
 
-      await db
+      await txDb
         .update(wallets)
         .set({
-          balance: String(Number(wallet.balance) + Number(tx.amount)),
+          balance: addAmount(wallet.balance, String(tx.amount)),
           updatedAt: new Date(),
         })
         .where(eq(wallets.id, wallet.id));
     }
 
+    return { isSuccess: false as const };
+  });
+
+  if (!result) {
+    return null;
+  }
+
+  if (result.isSuccess) {
+    audit({
+      action: "payout.completed",
+      resource: tx.id,
+      merchantId: tx.merchantId,
+      meta: { platformOrderId: body.platformOrderId },
+    });
+  } else {
     audit({
       action: "payout.failed",
       resource: tx.id,

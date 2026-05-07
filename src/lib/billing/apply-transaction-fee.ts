@@ -1,6 +1,7 @@
 import { getMerchantPricing } from "./pricing.js";
 import { computeTransactionFee, type TransactionFeeType } from "./fee-calculator.js";
-import { applyTransactionFee } from "./fee-applier.js";
+import { applyTransactionFee, type DbTx } from "./fee-applier.js";
+import { toCents } from "../money.js";
 
 export interface TryApplyTransactionFeeInput {
   merchantId: string;
@@ -13,9 +14,13 @@ export interface TryApplyTransactionFeeInput {
 /**
  * Get merchant pricing, compute fee, and apply if applicable.
  * No-op when: no pricing, monthly_only mode, zero fee, or insufficient balance.
+ *
+ * Pass `parentTx` when the caller is already inside a `db.transaction` so the
+ * fee posting commits or rolls back atomically with the parent operation.
  */
 export async function tryApplyTransactionFee(
-  input: TryApplyTransactionFeeInput
+  input: TryApplyTransactionFeeInput,
+  parentTx?: DbTx
 ): Promise<{ applied: boolean; feeAmount?: string }> {
   const { merchantId, transactionId, environment, amount, feeType } = input;
 
@@ -25,18 +30,21 @@ export async function tryApplyTransactionFee(
   }
 
   const computed = computeTransactionFee(pricing, amount, feeType);
-  if (!computed || Number(computed.feeAmount) <= 0) {
+  if (!computed || toCents(computed.feeAmount) <= 0n) {
     return { applied: false };
   }
 
-  const applied = await applyTransactionFee({
-    merchantId,
-    transactionId,
-    environment,
-    amount,
-    feeAmount: computed.feeAmount,
-    feeType,
-  });
+  const applied = await applyTransactionFee(
+    {
+      merchantId,
+      transactionId,
+      environment,
+      amount,
+      feeAmount: computed.feeAmount,
+      feeType,
+    },
+    parentTx
+  );
 
   return applied
     ? { applied: true, feeAmount: computed.feeAmount }

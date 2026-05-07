@@ -3,6 +3,7 @@ import { ledgerEntries, wallets } from "../../db/schema/index.js";
 import { and, eq } from "drizzle-orm";
 import { PLATFORM_WALLET_ID } from "./platform-wallet.js";
 import { audit } from "../audit.js";
+import { addAmount, cmpAmount, subAmount, toCents } from "../money.js";
 import type { TransactionFeeType } from "./fee-calculator.js";
 
 export interface ApplyFeeInput {
@@ -14,19 +15,17 @@ export interface ApplyFeeInput {
   feeType: TransactionFeeType;
 }
 
-/**
- * Apply transaction fee: debit merchant wallet, credit platform wallet.
- * Skips if merchant has insufficient balance (logs audit, no throw).
- */
-export async function applyTransactionFee(input: ApplyFeeInput): Promise<boolean> {
+/** Internal alias for an executor that supports the same query API as `db`. */
+export type DbTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+async function applyFeeWithTx(tx: DbTx, input: ApplyFeeInput): Promise<boolean> {
   const { merchantId, transactionId, environment, amount, feeAmount, feeType } = input;
 
-  const fee = Number(feeAmount);
-  if (fee <= 0 || !Number.isFinite(fee)) {
+  if (toCents(feeAmount) <= 0n) {
     return false;
   }
 
-  const [merchantWallet] = await db
+  const [merchantWallet] = await tx
     .select()
     .from(wallets)
     .where(
@@ -37,6 +36,7 @@ export async function applyTransactionFee(input: ApplyFeeInput): Promise<boolean
         eq(wallets.status, "active")
       )
     )
+    .for("update")
     .limit(1);
 
   if (!merchantWallet) {
@@ -49,8 +49,7 @@ export async function applyTransactionFee(input: ApplyFeeInput): Promise<boolean
     return false;
   }
 
-  const balance = Number(merchantWallet.balance);
-  if (balance < fee) {
+  if (cmpAmount(merchantWallet.balance, feeAmount) < 0) {
     audit({
       action: "billing.fee_skipped",
       resource: transactionId,
@@ -59,63 +58,90 @@ export async function applyTransactionFee(input: ApplyFeeInput): Promise<boolean
         reason: "insufficient_balance",
         feeType,
         feeAmount,
-        balance: String(balance),
+        balance: merchantWallet.balance,
       },
     });
     return false;
   }
 
-  await db.transaction(async (tx) => {
-    const refId = `fee:${transactionId}:${feeType}`;
+  const [platformWallet] = await tx
+    .select({ id: wallets.id, balance: wallets.balance })
+    .from(wallets)
+    .where(eq(wallets.id, PLATFORM_WALLET_ID))
+    .for("update")
+    .limit(1);
 
-    await tx.insert(ledgerEntries).values([
-      {
-        walletId: merchantWallet.id,
-        environment,
-        amount: feeAmount,
-        direction: "debit",
-        type: "platform_fee",
-        referenceId: refId,
-      },
-      {
-        walletId: PLATFORM_WALLET_ID,
-        environment,
-        amount: feeAmount,
-        direction: "credit",
-        type: "platform_fee",
-        referenceId: refId,
-      },
-    ]);
+  if (!platformWallet) {
+    audit({
+      action: "billing.fee_skipped",
+      resource: transactionId,
+      merchantId,
+      meta: { reason: "platform_wallet_not_found", feeType, feeAmount },
+    });
+    return false;
+  }
 
-    await tx
-      .update(wallets)
-      .set({
-        balance: String(balance - fee),
-        updatedAt: new Date(),
-      })
-      .where(eq(wallets.id, merchantWallet.id));
+  const refId = `fee:${transactionId}:${feeType}`;
 
-    const [plat] = await tx
-      .select({ balance: wallets.balance })
-      .from(wallets)
-      .where(eq(wallets.id, PLATFORM_WALLET_ID))
-      .limit(1);
-    const platBalance = plat ? Number(plat.balance) : 0;
-    await tx
-      .update(wallets)
-      .set({
-        balance: String(platBalance + fee),
-        updatedAt: new Date(),
-      })
-      .where(eq(wallets.id, PLATFORM_WALLET_ID));
-  });
+  await tx.insert(ledgerEntries).values([
+    {
+      walletId: merchantWallet.id,
+      environment,
+      amount: feeAmount,
+      direction: "debit",
+      type: "platform_fee",
+      referenceId: refId,
+    },
+    {
+      walletId: platformWallet.id,
+      environment,
+      amount: feeAmount,
+      direction: "credit",
+      type: "platform_fee",
+      referenceId: refId,
+    },
+  ]);
+
+  await tx
+    .update(wallets)
+    .set({
+      balance: subAmount(merchantWallet.balance, feeAmount),
+      updatedAt: new Date(),
+    })
+    .where(eq(wallets.id, merchantWallet.id));
+
+  await tx
+    .update(wallets)
+    .set({
+      balance: addAmount(platformWallet.balance, feeAmount),
+      updatedAt: new Date(),
+    })
+    .where(eq(wallets.id, platformWallet.id));
 
   audit({
     action: "billing.fee_applied",
     resource: transactionId,
     merchantId,
-    meta: { feeType, amount: String(amount), feeAmount },
+    meta: { feeType, amount, feeAmount },
   });
 
   return true;
+}
+
+/**
+ * Apply transaction fee: debit merchant wallet, credit platform wallet.
+ * Skips (no throw, audit-logged) on missing wallet or insufficient balance.
+ *
+ * Pass `parentTx` when the caller is already inside a `db.transaction` so the
+ * fee shares the same atomic boundary as the parent operation; otherwise this
+ * opens its own transaction.
+ */
+export async function applyTransactionFee(
+  input: ApplyFeeInput,
+  parentTx?: DbTx
+): Promise<boolean> {
+  if (parentTx) {
+    return applyFeeWithTx(parentTx, input);
+  }
+  return db.transaction((tx) => applyFeeWithTx(tx, input));
 }
