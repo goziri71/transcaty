@@ -11,10 +11,17 @@ import {
   hashProviderPassword,
   signProviderToken,
   signProviderMfaPendingToken,
+  signProviderStepUpToken,
   verifyProviderMfaPendingToken,
-  verifyProviderPassword,
+  verifyProviderToken,
   type ProviderRole,
+  type ProviderStepUpAction,
 } from "../../src/lib/provider-auth.js";
+import {
+  UNIFIED_LOGIN_FAILURE,
+  verifyPasswordOrDummy,
+} from "../../src/lib/login-timing.js";
+import { revokeJti } from "../../src/lib/jwt-revocation.js";
 import { decryptTotpSecret, verifyTotp } from "../../src/lib/mfa-totp.js";
 import { audit } from "../../src/lib/audit.js";
 import { checkRedisRateLimit } from "../../src/lib/rate-limit-redis.js";
@@ -79,13 +86,32 @@ export async function registerProviderAuthRoutes(app: FastifyInstance) {
         .where(eq(providerUsers.email, email))
         .limit(1);
 
-      if (!user || user.status !== "active") {
-        return reply.status(401).send({ error: "Unauthorized", message: "Invalid credentials" });
-      }
+      // P4: Always run a bcrypt compare so the user-not-found and
+      // suspended-user paths take the same wall-clock time as the
+      // wrong-password path; always return the same generic message.
+      const passwordOk = await verifyPasswordOrDummy(
+        body.password,
+        user?.passwordHash ?? null
+      );
 
-      const valid = await verifyProviderPassword(body.password, user.passwordHash);
-      if (!valid) {
-        return reply.status(401).send({ error: "Unauthorized", message: "Invalid credentials" });
+      const denyReason = !user
+        ? "no_user"
+        : user.status !== "active"
+          ? "suspended"
+          : !passwordOk
+            ? "wrong_password"
+            : null;
+
+      if (denyReason || !user) {
+        if (user) {
+          audit({
+            action: "auth.failed",
+            meta: { realm: "provider", reason: denyReason, providerUserId: user.id },
+          });
+        }
+        return reply
+          .status(401)
+          .send({ error: "Unauthorized", message: UNIFIED_LOGIN_FAILURE });
       }
 
       const now = new Date();
@@ -604,8 +630,137 @@ export async function registerProviderAuthRoutes(app: FastifyInstance) {
         },
       },
     },
-    async (_request, reply) => {
+    async (request, reply) => {
+      const authHeader = request.headers.authorization;
+      const headerToken = request.headers["x-provider-token"] as string | undefined;
+      const token =
+        (authHeader?.startsWith("Bearer ") ? authHeader.slice(7).trim() : undefined) ??
+        headerToken;
+      if (token) {
+        const session = await verifyProviderToken(token);
+        if (session?.jti) {
+          await revokeJti({
+            realm: "provider",
+            jti: session.jti,
+            expiresAt: session.expiresAt,
+            subjectId: session.providerUserId,
+            reason: "logout",
+          }).catch((err) => {
+            console.warn("[provider-auth] logout revoke failed", err);
+          });
+          audit({
+            action: "provider.session.logout",
+            actor: session.providerUserId,
+            meta: { jti: session.jti },
+          });
+        }
+      }
       return reply.send({ ok: true });
+    }
+  );
+
+  /**
+   * Step-up MFA: exchange a fresh TOTP code for a short-lived token
+   * scoped to a specific sensitive action (e.g. wallet.adjust). Routes
+   * that require it call `requireProviderStepUp(action)` and clients
+   * pass the token in `X-Provider-Step-Up`.
+   */
+  const STEP_UP_ACTIONS = [
+    "wallet.adjust",
+    "tx.status.write",
+    "merchant.kyc.write",
+    "any",
+  ] as const satisfies readonly ProviderStepUpAction[];
+
+  app.post(
+    "/provider/auth/step-up",
+    {
+      schema: {
+        body: z.object({
+          code: z.string().min(6).max(12),
+          action: z.enum(STEP_UP_ACTIONS).default("any"),
+        }),
+        response: {
+          200: z.object({
+            token: z.string(),
+            tokenType: z.literal("Bearer"),
+            expiresIn: z.string(),
+            action: z.enum(STEP_UP_ACTIONS),
+          }),
+          401: errorResponse,
+          403: errorResponse,
+        },
+      },
+    },
+    async (request, reply) => {
+      const actor = request.provider;
+      if (!actor) return reply.status(401).send({ error: "Unauthorized" });
+      if (actor.authType === "api_key" || !actor.providerUserId) {
+        return reply.status(403).send({
+          error: "Forbidden",
+          message: "Step-up requires a JWT session",
+        });
+      }
+      const body = request.body as { code: string; action: ProviderStepUpAction };
+
+      const [u] = await db
+        .select({
+          mfaEnabled: providerUsers.mfaEnabled,
+          mfaSecretEnc: providerUsers.mfaSecretEnc,
+        })
+        .from(providerUsers)
+        .where(eq(providerUsers.id, actor.providerUserId))
+        .limit(1);
+
+      if (!u?.mfaEnabled || !u.mfaSecretEnc) {
+        return reply.status(403).send({
+          error: "Forbidden",
+          message: "MFA must be enrolled to perform this action",
+        });
+      }
+
+      let secret: string;
+      try {
+        secret = decryptTotpSecret(u.mfaSecretEnc);
+      } catch {
+        return reply
+          .status(401)
+          .send({ error: "Unauthorized", message: "MFA misconfigured" });
+      }
+
+      if (!verifyTotp(secret, body.code)) {
+        audit({
+          action: "auth.failed",
+          meta: {
+            realm: "provider",
+            reason: "step_up_invalid_code",
+            providerUserId: actor.providerUserId,
+            action: body.action,
+          },
+        });
+        return reply.status(401).send({
+          error: "Unauthorized",
+          message: "Invalid authenticator code",
+        });
+      }
+
+      const token = signProviderStepUpToken({
+        providerUserId: actor.providerUserId,
+        action: body.action,
+      });
+
+      audit({
+        action: "provider.step_up.issued",
+        actor: actor.providerUserId,
+        meta: { action: body.action },
+      });
+
+      return reply.send({
+        token,
+        tokenType: "Bearer" as const,
+        expiresIn: "5m",
+        action: body.action,
+      });
     }
   );
 

@@ -14,11 +14,16 @@ import {
 } from "../../src/db/schema/index.js";
 import {
   hashPassword,
-  verifyPassword,
   signPortalToken,
   signPortalMfaPendingToken,
   verifyPortalMfaPendingToken,
+  verifyPortalToken,
 } from "../../src/lib/portal-auth.js";
+import {
+  UNIFIED_LOGIN_FAILURE,
+  verifyPasswordOrDummy,
+} from "../../src/lib/login-timing.js";
+import { revokeJti } from "../../src/lib/jwt-revocation.js";
 import { decryptTotpSecret, verifyTotp } from "../../src/lib/mfa-totp.js";
 import { audit } from "../../src/lib/audit.js";
 import { checkRedisRateLimit } from "../../src/lib/rate-limit-redis.js";
@@ -222,32 +227,38 @@ export async function registerPortalAuthRoutes(app: FastifyInstance) {
         .where(eq(merchantUsers.email, body.email.toLowerCase().trim()))
         .limit(1);
 
-      if (!existing) {
-        return reply.status(401).send({
-          error: "Unauthorized",
-          message: "Invalid email or password",
-        });
-      }
+      // P4: Always run a bcrypt compare so user-not-found, suspended,
+      // no-password and wrong-password paths take the same wall-clock
+      // time; always return the same generic message. The actual
+      // failure reason goes to the audit log only.
+      const passwordOk = await verifyPasswordOrDummy(
+        body.password,
+        existing?.passwordHash ?? null
+      );
 
-      if (existing.status !== "active") {
-        return reply.status(401).send({
-          error: "Unauthorized",
-          message: "Account suspended",
-        });
-      }
+      const denyReason = !existing
+        ? "no_user"
+        : existing.status !== "active"
+          ? "suspended"
+          : !existing.passwordHash
+            ? "no_password"
+            : !passwordOk
+              ? "wrong_password"
+              : null;
 
-      if (!existing.passwordHash) {
+      if (denyReason || !existing) {
+        if (existing) {
+          audit({
+            action: "auth.failed",
+            merchantId: existing.merchantId,
+            merchantUserId: existing.id,
+            actorEmail: existing.email,
+            meta: { realm: "portal", reason: denyReason },
+          });
+        }
         return reply.status(401).send({
           error: "Unauthorized",
-          message: "Account has no password set",
-        });
-      }
-
-      const valid = await verifyPassword(body.password, existing.passwordHash);
-      if (!valid) {
-        return reply.status(401).send({
-          error: "Unauthorized",
-          message: "Invalid email or password",
+          message: UNIFIED_LOGIN_FAILURE,
         });
       }
 
@@ -478,7 +489,37 @@ export async function registerPortalAuthRoutes(app: FastifyInstance) {
         },
       },
     },
-    async (_request, reply) => {
+    async (request, reply) => {
+      // Best-effort revocation: the route is unauthenticated by design
+      // (we don't want a 401 on logout), so we accept the same Bearer
+      // header the rest of /portal/* uses and revoke the embedded jti
+      // if present. Idempotent — duplicate logouts are no-ops.
+      const authHeader = request.headers.authorization;
+      const headerToken = request.headers["x-portal-token"] as string | undefined;
+      const token =
+        (authHeader?.startsWith("Bearer ") ? authHeader.slice(7).trim() : undefined) ??
+        headerToken;
+      if (token) {
+        const session = await verifyPortalToken(token);
+        if (session?.jti) {
+          await revokeJti({
+            realm: "portal",
+            jti: session.jti,
+            expiresAt: session.expiresAt,
+            subjectId: session.merchantUserId,
+            reason: "logout",
+          }).catch((err) => {
+            console.warn("[portal-auth] logout revoke failed", err);
+          });
+          audit({
+            action: "portal.session.logout",
+            merchantId: session.merchantId,
+            merchantUserId: session.merchantUserId,
+            actorEmail: session.email,
+            meta: { jti: session.jti },
+          });
+        }
+      }
       return reply.send({ ok: true });
     }
   );

@@ -4,5 +4,41 @@ services:
     runtime: node
     buildCommand: npm install && npm run build
     startCommand: npm start
-    # Run DB migrations before each deploy (requires DATABASE_URL)
+    # Run DB migrations before each deploy (requires DATABASE_URL).
     releaseCommand: npm run db:migrate
+    # Render uses this path for the load-balancer / zero-downtime deploy
+    # readiness check. /health returns 200 only when Postgres + Redis
+    # are both reachable, so a deploy will not be cut over until the
+    # new instance has live dependencies. See app.ts.
+    healthCheckPath: /health
+    # Sticky sessions are NOT required: rate-limit and circuit-breaker
+    # state both live in Redis (P2). Multiple instances can be promoted
+    # without coordination. Set numInstances >1 once the underlying
+    # plan supports it; default left at 1 to avoid a silent bill bump.
+    numInstances: 1
+    # autoDeploy is opt-in via the Render dashboard; we deliberately do
+    # NOT enable it here so an in-flight P3 webhook batch can finish
+    # before a deploy cuts over. Promote manually after the queue
+    # backlog metric (transacty_pgboss_*) is clear.
+    plan: starter
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # The default 1 MiB body limit is enforced in Fastify; raise here
+      # only if a provider sends larger webhook bodies. Keep redact
+      # config (PINO_REDACT_*) opt-in via the dashboard.
+
+  # ------------------------------------------------------------------
+  # FUTURE WORK (P4): split queue workers into a dedicated service so
+  # the web instance is not single-point-of-failure for pg-boss jobs.
+  # Today pg-boss workers run in-process inside `transacty` (see
+  # src/server.ts). When the split lands:
+  #
+  # - type: worker
+  #   name: transacty-worker
+  #   runtime: node
+  #   buildCommand: npm install && npm run build
+  #   startCommand: npm run worker
+  #   plan: starter
+  #   numInstances: 1
+  # ------------------------------------------------------------------

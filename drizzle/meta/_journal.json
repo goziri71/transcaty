@@ -134,6 +134,13 @@
       "when": 1774131700000,
       "tag": "0018_idempotency_body_hash",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1774131800000,
+      "tag": "0019_jwt_revocations",
+      "breakpoints": true
     }
   ]
 }

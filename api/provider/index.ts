@@ -20,7 +20,12 @@ import {
   payokPayinInquiry,
   payokPayoutInquiry,
 } from "../../services/domestic/bangladesh/provider/client.js";
-import { PROVIDER_ROLES, canProviderAccess } from "../../src/lib/provider-auth.js";
+import {
+  PROVIDER_ROLES,
+  canProviderAccess,
+  canProviderActionContext,
+  requireProviderStepUp,
+} from "../../src/lib/provider-auth.js";
 import { getDefaultPayokEnvironment, type PayokEnvironment } from "../../services/domestic/bangladesh/provider/config.js";
 import { reconcileCrossRampPayinByTransactionId } from "../../services/integrations/tylt/index.js";
 import { ProviderCircuitOpenError } from "../../src/lib/provider-circuit-breaker.js";
@@ -101,8 +106,14 @@ function ensureProviderPermission(
     reply.status(401).send({ error: "Unauthorized" });
     return false;
   }
-  if (!canProviderAccess(actor.role, permission)) {
-    reply.status(403).send({ error: "Forbidden", message: "Insufficient role permission" });
+  if (!canProviderActionContext(actor, permission)) {
+    const message =
+      actor.authType === "api_key" && !canProviderAccess(actor.role, permission)
+        ? "Insufficient role permission"
+        : actor.authType === "api_key"
+          ? "API-key sessions cannot perform this action; use a JWT session with MFA"
+          : "Insufficient role permission";
+    reply.status(403).send({ error: "Forbidden", message });
     return false;
   }
   return true;
@@ -1387,6 +1398,7 @@ export async function registerProviderRoutes(app: FastifyInstance) {
     },
     async (request, reply) => {
       if (!ensureProviderPermission(request, reply, "wallet.adjust")) return;
+      if (!(await requireProviderStepUp(request, reply, "wallet.adjust"))) return;
       const { walletId } = request.params as { walletId: string };
       const body = request.body as {
         direction: (typeof ADJUSTMENT_DIRECTION)[number];
@@ -1432,6 +1444,7 @@ export async function registerProviderRoutes(app: FastifyInstance) {
               amount: toMoneyString(amount),
               reason: body.reason,
               referenceId: body.referenceId,
+              stepUpVerified: actor.stepUpVerified ?? false,
             }),
             reason: body.reason,
             ticketId: body.referenceId,
@@ -1564,6 +1577,7 @@ export async function registerProviderRoutes(app: FastifyInstance) {
     },
     async (request, reply) => {
       if (!ensureProviderPermission(request, reply, "wallet.adjust")) return;
+      if (!(await requireProviderStepUp(request, reply, "wallet.adjust"))) return;
       const { merchantId } = request.params as { merchantId: string };
       const body = request.body as {
         environment: "test" | "live";
@@ -1822,6 +1836,7 @@ export async function registerProviderRoutes(app: FastifyInstance) {
     },
     async (request, reply) => {
       if (!ensureProviderPermission(request, reply, "tx.status.write")) return;
+      if (!(await requireProviderStepUp(request, reply, "tx.status.write"))) return;
       const { transactionId } = request.params as { transactionId: string };
       const body = request.body as {
         status: (typeof TRANSACTION_STATUS)[number];

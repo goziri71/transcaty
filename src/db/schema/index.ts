@@ -282,6 +282,33 @@ export const idempotencyKeys = pgTable(
 );
 
 /**
+ * JWT revocation list (P4 Auth Hardening). On logout / admin session
+ * kill we insert the `jti` claim of the revoked token. Auth middleware
+ * checks this set on every authenticated request via an in-process
+ * TTL cache. Rows can be garbage-collected once `expires_at` has
+ * passed (the corresponding tokens have already expired anyway).
+ */
+export const jwtRevocations = pgTable(
+  "jwt_revocations",
+  {
+    jti: text("jti").primaryKey().notNull(),
+    /** "portal" | "provider". */
+    realm: text("realm").notNull(),
+    /** merchantUserId or providerUserId; nullable so admin scripts can
+     * insert a manual jti without a known subject. */
+    subjectId: uuid("subject_id"),
+    reason: text("reason"),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("jwt_revocations_realm_idx").on(t.realm),
+    index("jwt_revocations_subject_idx").on(t.subjectId),
+    index("jwt_revocations_expires_at_idx").on(t.expiresAt),
+  ]
+);
+
+/**
  * Audit log of every webhook payload accepted from a payment processor.
  * Replays are absorbed by the unique index on `dedupe_hash`, so the
  * apply function only runs the first time a given (rail, environment,

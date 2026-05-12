@@ -1,10 +1,32 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcrypt";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { providerUsers } from "../db/schema/index.js";
 import { getSecret } from "./encryption.js";
+import { isJtiRevoked } from "./jwt-revocation.js";
+
+export const PROVIDER_JWT_ISSUER = "transacty.provider";
+export const PROVIDER_JWT_AUDIENCE = "transacty.provider.session";
+export const PROVIDER_MFA_PENDING_AUDIENCE = "transacty.provider.mfa_pending";
+export const PROVIDER_STEP_UP_AUDIENCE = "transacty.provider.step_up";
+const PROVIDER_CLOCK_TOLERANCE_SEC = 30;
+
+/** Constant-time string compare for secret material. Returns false on
+ * length mismatch instead of throwing. */
+function timingSafeStringEqual(a: string, b: string): boolean {
+  const ab = Buffer.from(a, "utf8");
+  const bb = Buffer.from(b, "utf8");
+  if (ab.length !== bb.length) {
+    // Still run a same-length compare so the mismatch path doesn't take
+    // a measurably different amount of time than the success path.
+    timingSafeEqual(ab, ab);
+    return false;
+  }
+  return timingSafeEqual(ab, bb);
+}
 
 export const PROVIDER_ROLES = ["super_admin", "ops", "risk", "finance", "support"] as const;
 export type ProviderRole = (typeof PROVIDER_ROLES)[number];
@@ -24,16 +46,34 @@ export type ProviderPermission =
   | "approval.review"
   | "provider.users.manage";
 
+/** Permissions that mutate money or transaction state. API-key auth is
+ * always denied these regardless of the role mapping — JWT + MFA is
+ * required for these actions. See P4 Auth Hardening. */
+export const API_KEY_DENIED_PERMISSIONS = new Set<ProviderPermission>([
+  "wallet.adjust",
+  "tx.status.write",
+  "merchant.status.write",
+  "merchant.kyc.write",
+  "merchant.pricing.write",
+  "approval.review",
+  "provider.users.manage",
+]);
+
 export type ProviderContext = {
   providerUserId?: string;
   email?: string;
   role: ProviderRole;
   authType: "api_key" | "jwt";
+  /** Set true once the request has presented a valid step-up MFA token
+   * for the action it is performing. P4 step-up enforcement reads this
+   * via `requireProviderStepUp` middleware. */
+  stepUpVerified?: boolean;
 };
 
 declare module "fastify" {
   interface FastifyRequest {
     provider?: ProviderContext;
+    providerSession?: ProviderSessionToken;
   }
 }
 
@@ -53,6 +93,44 @@ export function getProviderApiKey(): string | null {
   return expected?.trim() || null;
 }
 
+/** Role assigned to API-key sessions. Defaults to `support` (read-only).
+ * Set `PROVIDER_API_KEY_ROLE` to override (e.g. `ops` for legacy callers
+ * that need to ack approvals). `super_admin` is intentionally rejected
+ * to prevent the leaked-key god-mode that originally motivated P4. */
+export function getProviderApiKeyRole(): ProviderRole {
+  const raw = process.env.PROVIDER_API_KEY_ROLE?.trim().toLowerCase();
+  if (!raw) return "support";
+  if (raw === "super_admin") {
+    // Hard reject; loud warning at boot below also fires.
+    return "support";
+  }
+  if ((PROVIDER_ROLES as readonly string[]).includes(raw)) {
+    return raw as ProviderRole;
+  }
+  return "support";
+}
+
+let providerApiKeyBootWarningEmitted = false;
+function emitProviderApiKeyBootWarning(): void {
+  if (providerApiKeyBootWarningEmitted) return;
+  providerApiKeyBootWarningEmitted = true;
+  const role = getProviderApiKeyRole();
+  const requested = process.env.PROVIDER_API_KEY_ROLE?.trim().toLowerCase();
+  if (requested === "super_admin") {
+    console.warn(
+      "[provider-auth] PROVIDER_API_KEY_ROLE='super_admin' is rejected; " +
+        "API-key sessions cannot perform money mutations. Falling back to 'support'."
+    );
+  } else {
+    console.warn(
+      `[provider-auth] PROVIDER_API_KEY is configured with role=${role}. ` +
+        "API-key sessions are denied wallet.adjust, tx.status.write, " +
+        "merchant.status.write, merchant.kyc.write, merchant.pricing.write, " +
+        "approval.review and provider.users.manage. Use a JWT session for those actions."
+    );
+  }
+}
+
 function getProviderJwtSecret(): string {
   const secret = process.env.PROVIDER_JWT_SECRET ?? process.env.PORTAL_JWT_SECRET ?? process.env.JWT_SECRET;
   if (!secret?.trim()) {
@@ -60,6 +138,14 @@ function getProviderJwtSecret(): string {
   }
   return secret;
 }
+
+export type ProviderSessionToken = {
+  providerUserId: string;
+  email: string;
+  role: ProviderRole;
+  jti: string;
+  expiresAt: Date;
+};
 
 export function signProviderToken(payload: {
   providerUserId: string;
@@ -69,33 +155,69 @@ export function signProviderToken(payload: {
   return jwt.sign(
     { ...payload, purpose: "provider_session" as const },
     getProviderJwtSecret(),
-    { expiresIn: PROVIDER_JWT_EXPIRY }
+    {
+      expiresIn: PROVIDER_JWT_EXPIRY,
+      issuer: PROVIDER_JWT_ISSUER,
+      audience: PROVIDER_JWT_AUDIENCE,
+      subject: payload.providerUserId,
+      jwtid: randomUUID(),
+    }
   );
 }
 
-export function verifyProviderToken(token: string): {
+interface ProviderTokenPayload {
   providerUserId: string;
   email: string;
   role: ProviderRole;
-} | null {
+  purpose?: string;
+  sub?: string;
+  jti?: string;
+  exp?: number;
+  iss?: string;
+  aud?: string | string[];
+}
+
+function decodeProviderToken(token: string, audience?: string): ProviderTokenPayload | null {
   try {
-    const decoded = jwt.verify(token, getProviderJwtSecret()) as {
-      providerUserId: string;
-      email: string;
-      role: ProviderRole;
-      purpose?: string;
-      sub?: string;
-    };
-    if (decoded.sub === "mfa_pending") return null;
-    if (decoded.purpose != null && decoded.purpose !== "provider_session") return null;
-    return {
-      providerUserId: decoded.providerUserId,
-      email: decoded.email,
-      role: decoded.role,
-    };
+    const decoded = jwt.verify(token, getProviderJwtSecret(), {
+      ...(audience ? { audience, issuer: PROVIDER_JWT_ISSUER } : {}),
+      clockTolerance: PROVIDER_CLOCK_TOLERANCE_SEC,
+    }) as ProviderTokenPayload;
+    return decoded;
   } catch {
     return null;
   }
+}
+
+/**
+ * Verify a provider session token. Backward-compatible with pre-P4
+ * tokens (no aud/iss/jti) so a deploy doesn't kick everyone out.
+ */
+export async function verifyProviderToken(
+  token: string
+): Promise<ProviderSessionToken | null> {
+  let decoded = decodeProviderToken(token, PROVIDER_JWT_AUDIENCE);
+  if (!decoded) {
+    decoded = decodeProviderToken(token);
+  }
+  if (!decoded) return null;
+  if (decoded.sub === "mfa_pending") return null;
+  if (decoded.aud === PROVIDER_MFA_PENDING_AUDIENCE) return null;
+  if (decoded.aud === PROVIDER_STEP_UP_AUDIENCE) return null;
+  if (decoded.purpose != null && decoded.purpose !== "provider_session") return null;
+  if (decoded.aud && decoded.aud !== PROVIDER_JWT_AUDIENCE) return null;
+  if (decoded.iss && decoded.iss !== PROVIDER_JWT_ISSUER) return null;
+  if (!decoded.providerUserId || !decoded.email || !decoded.role) return null;
+  if (decoded.jti && (await isJtiRevoked("provider", decoded.jti))) {
+    return null;
+  }
+  return {
+    providerUserId: decoded.providerUserId,
+    email: decoded.email,
+    role: decoded.role,
+    jti: decoded.jti ?? "",
+    expiresAt: decoded.exp ? new Date(decoded.exp * 1000) : new Date(0),
+  };
 }
 
 export function signProviderMfaPendingToken(payload: {
@@ -111,7 +233,12 @@ export function signProviderMfaPendingToken(payload: {
       role: payload.role,
     },
     getProviderJwtSecret(),
-    { expiresIn: "5m" }
+    {
+      expiresIn: "5m",
+      issuer: PROVIDER_JWT_ISSUER,
+      audience: PROVIDER_MFA_PENDING_AUDIENCE,
+      jwtid: randomUUID(),
+    }
   );
 }
 
@@ -120,19 +247,70 @@ export function verifyProviderMfaPendingToken(token: string): {
   email: string;
   role: ProviderRole;
 } | null {
+  const tryVerify = (audience?: string): ProviderTokenPayload | null => {
+    try {
+      return jwt.verify(token, getProviderJwtSecret(), {
+        ...(audience ? { audience, issuer: PROVIDER_JWT_ISSUER } : {}),
+        clockTolerance: PROVIDER_CLOCK_TOLERANCE_SEC,
+      }) as ProviderTokenPayload;
+    } catch {
+      return null;
+    }
+  };
+  const decoded = tryVerify(PROVIDER_MFA_PENDING_AUDIENCE) ?? tryVerify();
+  if (!decoded) return null;
+  if (decoded.sub !== "mfa_pending") return null;
+  return {
+    providerUserId: decoded.providerUserId,
+    email: decoded.email,
+    role: decoded.role,
+  };
+}
+
+/**
+ * Step-up MFA token: issued via `POST /provider/auth/step-up` after
+ * the actor presents a fresh TOTP code. The token is bound to a
+ * specific `action` (e.g. "wallet.adjust") and is only valid for a
+ * short window. Requests that mutate sensitive state must present
+ * `X-Provider-Step-Up: <token>`; see `requireProviderStepUp`.
+ */
+const STEP_UP_EXPIRY = "5m";
+export type ProviderStepUpAction =
+  | "wallet.adjust"
+  | "tx.status.write"
+  | "merchant.kyc.write"
+  | "any";
+
+export function signProviderStepUpToken(payload: {
+  providerUserId: string;
+  action: ProviderStepUpAction;
+}): string {
+  return jwt.sign(
+    { providerUserId: payload.providerUserId, action: payload.action },
+    getProviderJwtSecret(),
+    {
+      expiresIn: STEP_UP_EXPIRY,
+      issuer: PROVIDER_JWT_ISSUER,
+      audience: PROVIDER_STEP_UP_AUDIENCE,
+      subject: payload.providerUserId,
+      jwtid: randomUUID(),
+    }
+  );
+}
+
+export function verifyProviderStepUpToken(
+  token: string,
+  action: ProviderStepUpAction
+): { providerUserId: string; jti: string } | null {
   try {
-    const decoded = jwt.verify(token, getProviderJwtSecret()) as {
-      providerUserId: string;
-      email: string;
-      role: ProviderRole;
-      sub?: string;
-    };
-    if (decoded.sub !== "mfa_pending") return null;
-    return {
-      providerUserId: decoded.providerUserId,
-      email: decoded.email,
-      role: decoded.role,
-    };
+    const decoded = jwt.verify(token, getProviderJwtSecret(), {
+      audience: PROVIDER_STEP_UP_AUDIENCE,
+      issuer: PROVIDER_JWT_ISSUER,
+      clockTolerance: PROVIDER_CLOCK_TOLERANCE_SEC,
+    }) as { providerUserId: string; action: ProviderStepUpAction; jti?: string };
+    if (decoded.action !== action && decoded.action !== "any") return null;
+    if (!decoded.providerUserId) return null;
+    return { providerUserId: decoded.providerUserId, jti: decoded.jti ?? "" };
   } catch {
     return null;
   }
@@ -198,6 +376,22 @@ export function canProviderAccess(role: ProviderRole, permission: ProviderPermis
   return ROLE_PERMISSIONS[role].includes(permission);
 }
 
+/**
+ * Authorization gate aware of `authType`. API-key sessions are
+ * permanently denied money- and admin-mutating permissions even when
+ * the role mapping would otherwise allow them. Use this in routes that
+ * mutate state; pass `request.provider` in.
+ */
+export function canProviderActionContext(
+  ctx: ProviderContext,
+  permission: ProviderPermission
+): boolean {
+  if (ctx.authType === "api_key" && API_KEY_DENIED_PERMISSIONS.has(permission)) {
+    return false;
+  }
+  return canProviderAccess(ctx.role, permission);
+}
+
 function normalizeIp(ip: string): string {
   if (ip.startsWith("::ffff:")) return ip.slice(7);
   return ip;
@@ -225,11 +419,16 @@ export async function providerAuth(request: FastifyRequest, reply: FastifyReply)
   const authHeader = request.headers.authorization;
   const bearer = authHeader?.startsWith("Bearer ") ? authHeader.slice(7).trim() : undefined;
 
-  // 1) API key auth (fallback + bootstrap)
+  // 1) API key auth (fallback + bootstrap). Downgraded role per P4: API
+  //    keys map to `support` by default and never to `super_admin`. The
+  //    `canProviderActionContext` gate further denies money-mutating
+  //    permissions for `authType === "api_key"`, so this path can only
+  //    perform read-mostly actions plus bootstrap.
   const apiKey = getProviderApiKey();
   const providedApiKey = headerKey ?? bearer;
-  if (apiKey && providedApiKey && providedApiKey === apiKey) {
-    request.provider = { role: "super_admin", authType: "api_key" };
+  if (apiKey) emitProviderApiKeyBootWarning();
+  if (apiKey && providedApiKey && timingSafeStringEqual(providedApiKey, apiKey)) {
+    request.provider = { role: getProviderApiKeyRole(), authType: "api_key" };
     return;
   }
 
@@ -241,8 +440,8 @@ export async function providerAuth(request: FastifyRequest, reply: FastifyReply)
       message: "Missing provider credentials",
     });
   }
-  const payload = verifyProviderToken(token);
-  if (!payload) {
+  const session = await verifyProviderToken(token);
+  if (!session) {
     return reply.status(401).send({
       error: "Unauthorized",
       message: "Invalid or expired provider token",
@@ -257,7 +456,7 @@ export async function providerAuth(request: FastifyRequest, reply: FastifyReply)
       status: providerUsers.status,
     })
     .from(providerUsers)
-    .where(and(eq(providerUsers.id, payload.providerUserId), eq(providerUsers.email, payload.email)))
+    .where(and(eq(providerUsers.id, session.providerUserId), eq(providerUsers.email, session.email)))
     .limit(1);
 
   if (!user || user.status !== "active") {
@@ -273,5 +472,76 @@ export async function providerAuth(request: FastifyRequest, reply: FastifyReply)
     role: user.role as ProviderRole,
     authType: "jwt",
   };
+  request.providerSession = session;
+}
+
+/**
+ * Require that the request presents a step-up MFA token bound to the
+ * given action. Bypassed when the actor authenticated via API key
+ * (those are blocked from money mutations by `canProviderActionContext`
+ * already) or has not enrolled MFA; the audit log records `stepUp:
+ * "skipped_no_mfa"` so ops can chase enrollment.
+ */
+export async function requireProviderStepUp(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  action: ProviderStepUpAction
+): Promise<boolean> {
+  const actor = request.provider;
+  if (!actor) {
+    reply.status(401).send({ error: "Unauthorized" });
+    return false;
+  }
+
+  if (actor.authType === "api_key") {
+    // Money mutations from API keys are already blocked higher up; if
+    // we got here for a non-mutating action, no step-up is required.
+    return true;
+  }
+
+  if (!actor.providerUserId) {
+    reply.status(401).send({ error: "Unauthorized" });
+    return false;
+  }
+
+  const [user] = await db
+    .select({ mfaEnabled: providerUsers.mfaEnabled })
+    .from(providerUsers)
+    .where(eq(providerUsers.id, actor.providerUserId))
+    .limit(1);
+
+  if (!user?.mfaEnabled) {
+    // MFA not enrolled — flag in context but allow (so we don't lock
+    // out non-MFA admins until enrollment is universal). Use audit
+    // logs to track.
+    actor.stepUpVerified = false;
+    return true;
+  }
+
+  const headerToken = request.headers["x-provider-step-up"];
+  const token = Array.isArray(headerToken) ? headerToken[0] : headerToken;
+  if (!token || typeof token !== "string") {
+    reply.status(403).send({
+      error: "Forbidden",
+      message: "Step-up MFA required",
+      stepUpRequired: true,
+      action,
+    });
+    return false;
+  }
+
+  const verified = verifyProviderStepUpToken(token, action);
+  if (!verified || verified.providerUserId !== actor.providerUserId) {
+    reply.status(403).send({
+      error: "Forbidden",
+      message: "Step-up MFA token invalid for this action",
+      stepUpRequired: true,
+      action,
+    });
+    return false;
+  }
+
+  actor.stepUpVerified = true;
+  return true;
 }
  

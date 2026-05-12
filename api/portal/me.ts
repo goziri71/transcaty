@@ -4,7 +4,7 @@
  */
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { eq, and, count } from "drizzle-orm";
+import { eq, and, asc, count, sql } from "drizzle-orm";
 import { db } from "../../src/db/index.js";
 import {
   merchants,
@@ -168,6 +168,9 @@ export async function registerPortalMeRoutes(app: FastifyInstance) {
     "/portal/me/balance",
     {
       schema: {
+        querystring: z.object({
+          environment: z.enum(["test", "live"]).default("test"),
+        }),
         response: {
           200: z.object({
             balance: z.string(),
@@ -189,6 +192,8 @@ export async function registerPortalMeRoutes(app: FastifyInstance) {
       if (!user) return reply.status(401).send({ error: "Unauthorized" });
       const { environment } = request.query as { environment: "test" | "live" };
 
+      // Prefer BDT when multiple active merchant wallets exist (e.g. BDT + USDT for
+      // Tylt). Single-wallet merchants behave exactly as before. Deterministic tie-break.
       const [w] = await db
         .select({
           balance: wallets.balance,
@@ -203,6 +208,11 @@ export async function registerPortalMeRoutes(app: FastifyInstance) {
             eq(wallets.type, "merchant"),
             eq(wallets.status, "active")
           )
+        )
+        .orderBy(
+          sql`(case when ${wallets.currency} = 'BDT' then 0 else 1 end)`,
+          asc(wallets.currency),
+          asc(wallets.id)
         )
         .limit(1);
 
@@ -224,6 +234,77 @@ export async function registerPortalMeRoutes(app: FastifyInstance) {
         currency: w.currency,
         lastUpdated: w.updatedAt?.toISOString() ?? null,
         limits: LIMITS,
+      });
+    }
+  );
+
+  app.get(
+    "/portal/me/wallets",
+    {
+      schema: {
+        querystring: z.object({
+          environment: z.enum(["test", "live"]).default("test"),
+        }),
+        response: {
+          200: z.object({
+            environment: z.enum(["test", "live"]),
+            items: z.array(
+              z.object({
+                id: z.string(),
+                currency: z.string(),
+                balance: z.string(),
+                status: z.string(),
+                label: z.string().nullable(),
+                updatedAt: z.string().nullable(),
+                createdAt: z.string(),
+              })
+            ),
+          }),
+          401: errorResponse,
+        },
+      },
+    },
+    async (request, reply) => {
+      const user = request.portalUser;
+      if (!user) return reply.status(401).send({ error: "Unauthorized" });
+      const { environment } = request.query as { environment: "test" | "live" };
+
+      const rows = await db
+        .select({
+          id: wallets.id,
+          currency: wallets.currency,
+          balance: wallets.balance,
+          status: wallets.status,
+          label: wallets.label,
+          updatedAt: wallets.updatedAt,
+          createdAt: wallets.createdAt,
+        })
+        .from(wallets)
+        .where(
+          and(
+            eq(wallets.merchantId, user.merchantId),
+            eq(wallets.environment, environment),
+            eq(wallets.type, "merchant"),
+            eq(wallets.status, "active")
+          )
+        )
+        .orderBy(
+          sql`(case when ${wallets.currency} = 'BDT' then 0 else 1 end)`,
+          asc(wallets.currency),
+          asc(wallets.id)
+        );
+
+      return reply.send({
+        environment,
+        items: rows.map((r) => ({
+          id: r.id,
+          currency: r.currency,
+          balance: String(r.balance),
+          status: r.status,
+          label: r.label ?? null,
+          updatedAt: r.updatedAt?.toISOString() ?? null,
+          createdAt: r.createdAt.toISOString(),
+        })),
       });
     }
   );

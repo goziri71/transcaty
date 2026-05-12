@@ -87,6 +87,20 @@ Response includes `mfaEnabled`, `mfaPendingSetup` (among other profile fields).
 
 ---
 
+## 3a. Balance and merchant wallets
+
+**Primary balance (single row — BDT preferred when multiple wallets exist)**  
+GET `{{baseUrl}}/portal/me/balance?environment=test`  
+Headers: `Authorization: Bearer {{portalToken}}`
+
+**All active merchant pockets (per currency — for dashboard cards)**  
+GET `{{baseUrl}}/portal/me/wallets?environment=test`  
+Headers: `Authorization: Bearer {{portalToken}}`
+
+Use `environment=live` for production pockets. The wallets list is safe to call on every shell load; it returns only `type=merchant` rows for that merchant.
+
+---
+
 ## 4. MFA enrollment (optional)
 
 Requires **`ENCRYPTION_MASTER_KEY`** on the server.

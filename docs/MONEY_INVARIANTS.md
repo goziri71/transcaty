@@ -124,3 +124,8 @@ Scripts:
 - `docs/WEBHOOK_DEDUPE_AND_IDEMPOTENCY.md` — webhook_events,
   transactions provider uniqueness, ledger immutability, and request
   idempotency body-hash semantics (P3).
+- `docs/AUTH_HARDENING.md` — `PROVIDER_API_KEY` downgrade,
+  constant-time login, JWT `iss`/`aud`/`jti` + revocation, step-up MFA
+  on `wallet.adjust` and `tx.status.write` (P4).
+- `docs/TYLT_MERCHANT_API_TESTING.md` — merchant HMAC auth, Postman setup,
+  and step-by-step Tylt `/v1` flows (CrossRamp, H2H, CPG, internal transfer).

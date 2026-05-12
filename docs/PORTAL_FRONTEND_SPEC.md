@@ -360,7 +360,9 @@ Requires **session JWT** (`Authorization: Bearer <token>`). Backend needs **`ENC
 
 ### 5. Get balance
 
-**GET** `/portal/me/balance`
+**GET** `/portal/me/balance?environment=test|live` (default: `test`)
+
+**Semantics (backward-compatible):** Returns a **single** row for the **domestic primary** wallet. If the merchant has **more than one** active merchant wallet in that environment (e.g. BDT + USDT for cross-border), the API **prefers BDT**, then orders by `currency` and `id` so the result is deterministic. Merchants with only the default BDT wallet see **unchanged** behaviour.
 
 **Success (200)**
 
@@ -377,6 +379,37 @@ Requires **session JWT** (`Authorization: Bearer <token>`). Backend needs **`ENC
   }
 }
 ```
+
+To show **every** currency “pocket” (e.g. Bangladesh BDT vs Tylt settled balance) in the dashboard, use **`GET /portal/me/wallets`** below instead of inferring from this endpoint alone.
+
+---
+
+### 5a. List merchant wallets (multi-currency pockets)
+
+**GET** `/portal/me/wallets?environment=test|live` (default: `test`)
+
+Returns all **active** **merchant** wallets for this merchant and environment—one entry per `currency` pocket. **Customer** wallets are not included (use customers APIs). Use this to render separate balance cards (e.g. “Bangladesh” vs “Cross-border”) without merging amounts.
+
+**Success (200)**
+
+```json
+{
+  "environment": "live",
+  "items": [
+    {
+      "id": "uuid",
+      "currency": "BDT",
+      "balance": "1000.00",
+      "status": "active",
+      "label": null,
+      "updatedAt": "2025-03-09T12:00:00.000Z",
+      "createdAt": "2025-01-01T10:00:00.000Z"
+    }
+  ]
+}
+```
+
+`label` is reserved for future use on merchant wallets (usually `null`). Ordering matches the balance endpoint: **BDT first**, then alphabetical currency, then `id`.
 
 ---
 
@@ -1021,7 +1054,7 @@ All errors follow:
 
 - Header: business name, email, balance, logout.
 - Sidebar or tabs: Overview, Balance, Transactions, Customers, KYC, API Keys, **Settings** (optional).
-- On load: `GET /portal/me`, `GET /portal/me/balance`. If `needsActivation`, show activation modal (or redirect to activation wizard).
+- On load: `GET /portal/me`, `GET /portal/me/balance`, and `GET /portal/me/wallets` (to show **per-currency** merchant pockets, e.g. BDT vs USDT, without merging). If `needsActivation`, show activation modal (or redirect to activation wizard).
 - If `mfaPendingSetup === true`, show banner: “Finish two-factor setup” linking to Security.
 
 ### Activation flow (modal or wizard)
