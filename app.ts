@@ -267,19 +267,27 @@ export async function buildApp() {
   await app.register(compress, { global: true });
   const corsAllowedOrigins = new Set<string>([
     "https://transacty-admin.vercel.app",
+    "https://dashboard.transacty.ai",
     "http://localhost:3000",
     "http://localhost:5173",
   ]);
   const corsExtra = process.env.CORS_ALLOWED_ORIGINS?.split(",")
-    .map((v) => v.trim())
+    .map((v) => v.trim().replace(/\/$/, ""))
     .filter(Boolean) ?? [];
   for (const origin of corsExtra) {
     corsAllowedOrigins.add(origin);
   }
+  if (corsExtra.length > 0) {
+    app.log.info(
+      { extraOrigins: corsExtra.length },
+      "CORS: merged CORS_ALLOWED_ORIGINS into allowlist (merchant/provider SPAs must be listed or preflight returns 404)"
+    );
+  }
   await app.register(cors, {
     origin: (origin, cb) => {
       if (!origin) return cb(null, true);
-      cb(null, corsAllowedOrigins.has(origin));
+      const normalized = origin.trim().replace(/\/$/, "");
+      cb(null, corsAllowedOrigins.has(normalized));
     },
   });
 

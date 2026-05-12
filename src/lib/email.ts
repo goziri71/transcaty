@@ -72,7 +72,18 @@ export async function sendTransactionalEmail(params: SendEmailParams): Promise<b
           errorDetail = e instanceof Error ? e.message : String(e);
         }
       } else {
-        errorDetail = e instanceof Error ? e.message : String(e);
+        errorDetail =
+          e instanceof Error
+            ? e.message
+            : e && typeof e === "object"
+              ? (() => {
+                  try {
+                    return JSON.stringify(e);
+                  } catch {
+                    return String(e);
+                  }
+                })()
+              : String(e);
       }
       console.error(
         JSON.stringify({
