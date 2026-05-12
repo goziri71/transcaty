@@ -8,7 +8,7 @@
 
 | API | Doc |
 | --- | --- |
-| **Merchant API** `/v1/*` (HMAC) | `POSTMAN_MERCHANT_API_GUIDE.md` — **unchanged** by portal flows |
+| **Merchant API** `/v1/*` (HMAC) | `POSTMAN_MERCHANT_API_GUIDE.md` (domestic); **Tylt / India:** `TYLT_MERCHANT_API_TESTING.md` §11 — **unchanged** by portal flows |
 | **Portal** `/portal/*` | **this document** |
 | **Provider admin** `/provider/*` | `POSTMAN_PROVIDER_ADMIN_API_GUIDE.md` |
 

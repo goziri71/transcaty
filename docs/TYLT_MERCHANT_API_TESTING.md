@@ -5,6 +5,12 @@ This document is for **operators and integrators** who expose Transacty as **API
 - **Merchant → Transacty:** HMAC-signed HTTP (this guide).
 - **Tylt → Transacty:** Webhooks to `/webhooks/tylt/...` (not called from Postman; needs a public URL for real E2E).
 
+**Same auth as Bangladesh merchant API:** one **API key + secret**, same HMAC headers and collection Pre-request Script pattern as `docs/POSTMAN_MERCHANT_API_GUIDE.md`. Use **one** Postman collection for all `/v1/*` regression (Payok + Tylt); add folders “Domestic BD” vs “Tylt” if you like.
+
+**Recommended scopes** to exercise **everything** in [§11](#11-full-postman-regression-order-all-tylt-endpoints) without scope errors (tighten in production):
+
+`payin:create,payout:create,balance:read,tylt:internal_transfer` — or `*` only in sandboxes.
+
 Related: environment variables for Tylt are listed in `.env.example` (`TYLT_*`, `TYLT_TEST_*`, `TYLT_LIVE_*`, `TYLT_ALLOW_KYC_BYPASS`).
 
 ---
@@ -261,21 +267,59 @@ You can still test **create** endpoints in Postman without webhooks; transaction
 
 ---
 
-## 9. Suggested end-to-end checklist
+## 9. Short end-to-end checklist (pick one product)
 
 1. [ ] `GET /health`
 2. [ ] `GET /v1/me` (HMAC OK)
-3. [ ] If `KYC_REQUIRED=true`: complete KYC until `GET /v1/me/kyc` shows verified (or use a pre-verified test merchant)
-4. [ ] (Optional) `GET` discovery / `account-balance` with correct scopes
-5. [ ] Pick one product: **CrossRamp** *or* **H2H** *or* **CPG pay-in** *or* **CPG payout** *or* **internal transfer**
-6. [ ] POST create with **`Idempotency-Key`**; save `transactionId`
-7. [ ] Complete user step (browser / chain) as required by that product
-8. [ ] Confirm webhooks received (ngrok logs or production logs) **or** poll `GET /v1/transactions`
-9. [ ] (Optional) Verify merchant webhook receiver got the event
+3. [ ] If `KYC_REQUIRED=true`: merchant KYC **verified** (`kycStatus` on merchant / portal) or Tylt **create** routes return `403`
+4. [ ] (Optional) Discovery GETs ([§6](#6-route-reference))
+5. [ ] Pick **one** product: CrossRamp *or* H2H *or* CPG pay-in *or* CPG payout *or* internal transfer
+6. [ ] POST create with **`Idempotency-Key`** where applicable; save `transactionId`
+7. [ ] Browser / chain step if needed
+8. [ ] Webhooks (ngrok/prod) **or** `GET /v1/transactions`
+9. [ ] (Optional) Merchant webhook delivery
 
 ---
 
-## 10. Related docs
+## 11. Full Postman regression order (all Tylt `/v1` endpoints)
+
+Use this sequence to prove the **entire** Tylt merchant surface is healthy after a deploy. Re-use the same HMAC setup as `docs/POSTMAN_MERCHANT_API_GUIDE.md`. Use **`test`** API key environment until you intentionally test **live**.
+
+| # | Method | Path | Scope | Notes |
+|---|--------|------|--------|--------|
+| **0** | GET | `/health` | — | No HMAC. |
+| **1** | GET | `/v1/me` | any | Confirms key, scopes, `environment` (`test` \| `live`). |
+| **2** | GET | `/v1/balance?environment=test` | `balance:read` or `*` | BDT wallet for BD; confirms domestic path still OK with same key. |
+| **3** | GET | `/v1/tylt/supported/crypto-currencies` | discovery | Empty body signing. |
+| **4** | GET | `/v1/tylt/supported/fiat-currencies` | discovery | |
+| **5** | GET | `/v1/tylt/supported/crypto-networks` | discovery | |
+| **6** | GET | `/v1/tylt/supported/base-currencies` | discovery | |
+| **7** | GET | `/v1/tylt/account-balance` | `balance:read` | Add query params per Tylt if needed. |
+| **8** | GET | `/v1/tylt/h2h/payment-methods` | `payin:create` | |
+| **9** | GET | `/v1/tylt/h2h/crypto-currencies` | `payin:create` | |
+| **10** | POST | `/v1/tylt/crossramp/payin-instances` | `payin:create` | `Idempotency-Key` recommended. Body: `amount`, `currencySymbol` (USDT\|INR), `returnUrl`, optional `userEmail`. Expect `rampUrl`. |
+| **11** | POST | `/v1/tylt/h2h/payin-instances` | `payin:create` | Optional `returnUrl`. Expect `paymentDetails`. |
+| **12** | POST | `/v1/tylt/h2h/buyer-confirms-payment` | `payin:create` | Body: `transactionId` from **11**, optional `utr`. Only after H2H instance exists and rules allow. |
+| **13** | POST | `/v1/tylt/cpg/payin-requests` | `payin:create` | `payeeDetails` object required; see Tylt docs for shape. |
+| **14** | GET | `/v1/tylt/cpg/payin-information/:transactionId` | `payin:create` | Use `transactionId` from **13**. |
+| **15** | GET | `/v1/tylt/cpg/payin-history?rows=20&page=1` | `payin:create` | |
+| **16** | POST | `/v1/tylt/cpg/payout-requests` | `payout:create` | Needs **sufficient balance** in merchant wallet for `settledCurrency`. `destinationDetails` required. |
+| **17** | GET | `/v1/tylt/cpg/payout-information/:transactionId` | `payout:create` | From **16**. |
+| **18** | GET | `/v1/tylt/cpg/payout-history?rows=20&page=1` | `payout:create` | |
+| **19** | GET | `/v1/tylt/merchant-details` | `tylt:internal_transfer` | Discover UUIDs for **20**. |
+| **20** | POST | `/v1/tylt/internal-transfer` | `tylt:internal_transfer` | `fromUUID`, `toUUID`, `settledAmount`, `settledCurrency`. |
+| **21** | GET | `/v1/transactions` | (same key) | Confirms rows for Tylt creates; filter client-side by `metadata` / provider if exposed. |
+
+**Practical notes**
+
+- Steps **10–12** may create **real** upstream state; use **test** keys and small amounts.
+- **16** debits the **merchant wallet** in **settled** currency — fund that pocket first (e.g. prior pay-in) or expect `Insufficient balance`.
+- Steps you cannot complete without browser/UPI/chain (**10**, **11–12**, **13**) still validate **HTTP + auth + validation** if Tylt returns an error — capture status and body.
+- **Webhook E2E** remains outside Postman unless you tunnel; see [§8](#8-webhooks--what-postman-does-not-cover).
+
+---
+
+## 12. Related docs
 
 - `docs/MONEY_INVARIANTS.md` — wallet / ledger / payout debit semantics.
 - `docs/WEBHOOK_DEDUPE_AND_IDEMPOTENCY.md` — provider callback dedupe and merchant `Idempotency-Key` behavior.
@@ -285,4 +329,5 @@ You can still test **create** endpoints in Postman without webhooks; transaction
 
 ## Changelog
 
+- **Full regression table (§11):** Ordered checklist for all Tylt `/v1` routes + links to domestic `/v1/me` and `/v1/balance` on the same key.
 - **Initial:** Merchant-facing Tylt route list, HMAC rules, Postman variables + pre-request script template, flows and webhook limitations.

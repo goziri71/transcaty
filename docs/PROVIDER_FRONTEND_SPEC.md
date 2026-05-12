@@ -48,6 +48,11 @@ Provider auth supports:
 
 Frontend should use JWT mode for humans.
 
+### API key vs JWT (important)
+
+- **Human operators** must use the **session JWT** after login (and MFA when required).
+- **`X-Provider-Key`** is for **automation / break-glass testing** only. Requests authenticated as **API key** are **downgraded**: they **cannot** perform **money mutations** (wallet adjustments, certain transaction writes, etc.). Details: **`docs/AUTH_HARDENING.md`**.
+
 ### Login flow
 1. `POST /provider/auth/login` with email/password.
 2. If `requiresMfa=true`:
@@ -55,6 +60,17 @@ Frontend should use JWT mode for humans.
    - submit `mfaToken` + TOTP code to `POST /provider/auth/mfa/verify`
 3. Persist JWT securely in memory + secure storage strategy.
 4. Call `GET /provider/me` for current context.
+
+### Step-up MFA (sensitive actions)
+
+Some mutating routes need a **fresh TOTP confirmation** in addition to the session JWT. Full contract: **`docs/AUTH_HARDENING.md`** (§5).
+
+1. When the API returns **403** with `stepUpRequired: true`, or **before** submitting a sensitive form, prompt for **TOTP**.
+2. **`POST /provider/auth/step-up`** with `Authorization: Bearer <session JWT>` and body `{ "code": "<totp>", "action": "<action>" }`. Actions include at least **`wallet.adjust`** and **`tx.status.write`** (match backend `action` values).
+3. Put the returned **`token`** in **`X-Provider-Step-Up: <token>`** on the actual write request, **alongside** `Authorization: Bearer <session JWT>`.
+4. Step-up tokens are **short-lived** (~5 minutes). On expiry, repeat step 2.
+
+**Wired routes (current):** `POST /provider/merchants/:merchantId/wallet-adjustments`, `POST /provider/customers/:walletId/wallet-adjustments`, **`PATCH /provider/transactions/:transactionId/status`**.
 
 ### Password reset flow
 - `POST /provider/auth/forgot-password`
@@ -127,7 +143,7 @@ Actions:
   - `GET /provider/merchants/:merchantId/pricing`
   - `PATCH /provider/merchants/:merchantId/pricing`
 - Wallet adjustment request:
-  - `POST /provider/merchants/:merchantId/wallet-adjustments`
+  - `POST /provider/merchants/:merchantId/wallet-adjustments` — requires **step-up** (`wallet.adjust`) when MFA is enrolled; see [Step-up MFA](#step-up-mfa-sensitive-actions).
 
 Pricing UX fields:
 - `billingMode`: `percentage_only` | `monthly_only` | `both`
@@ -140,6 +156,7 @@ Pricing UX fields:
 Endpoints:
 - `GET /provider/customers`
 - `PATCH /provider/customers/:walletId/status`
+- `POST /provider/customers/:walletId/wallet-adjustments` — **step-up** (`wallet.adjust`) when MFA enrolled (same pattern as merchant wallet adjustments)
 
 Use:
 - Investigate abuse
@@ -154,8 +171,10 @@ Endpoints:
 
 Use:
 - Review transaction history/status
-- Request or apply controlled status changes
+- Request or apply controlled status changes ( **`PATCH /provider/transactions/:transactionId/status`** requires **step-up** `tx.status.write` when MFA is enrolled)
 - Reconcile with provider when needed
+
+**Multi-product visibility:** Transaction rows may reflect **different rails** (e.g. domestic Payok vs **Tylt**). Prefer displaying **provider / product / metadata** fields when the API exposes them so ops can filter or scan **Bangladesh vs India** flows in one monitor. Treat missing metadata as “unknown” rather than inferring rail from amount/currency alone.
 
 ## 5.6 Approvals (Maker-Checker)
 
@@ -235,24 +254,30 @@ Frontend app config:
 
 1. Auth login + MFA verify + logout
 2. `/provider/me` bootstrap and role-based route guards
-3. Merchant list/detail + status/KYC actions
-4. Pricing update UI
-5. Transactions + reconcile view
-6. Approvals queue (approve/reject)
-7. Provider users management
-8. MFA settings + password reset screens
+3. **Step-up prompt** helper (TOTP → `POST /provider/auth/step-up` → attach `X-Provider-Step-Up`) wired to wallet adjustment + transaction status writes
+4. Merchant list/detail + status/KYC actions
+5. Pricing update UI
+6. Transactions + reconcile view (include **rail / product** columns when available)
+7. Approvals queue (approve/reject)
+8. Provider users management
+9. MFA settings + password reset screens
 
 ## 11) QA Checklist (Release Gate)
 
 - Login works for MFA and non-MFA users
 - Unauthorized roles cannot execute restricted actions
+- **Step-up:** Wallet adjustment and transaction status mutation require a valid `X-Provider-Step-Up` when MFA is enrolled; expired step-up shows a clear re-prompt
+- **API key:** Smoke-test that keyed clients cannot money-mutate (expect deny), matching **`AUTH_HARDENING.md`**
 - Merchant pricing updates persist and reload correctly
 - Wallet adjustment flows create approval requests where required
 - Approve/reject flow updates status and UI instantly
 - Transaction reconcile path handles provider failures safely
+- **Transactions list** distinguishes or labels domestic vs Tylt (or equivalent) when API provides signals
 - All critical actions show IDs and clear success/failure feedback
 
 ---
 
 For endpoint request/response examples and test payloads, use:
 - `docs/POSTMAN_PROVIDER_ADMIN_API_GUIDE.md`
+
+Security behavior (JWT claims, revocation, step-up, API key downgrade): **`docs/AUTH_HARDENING.md`**

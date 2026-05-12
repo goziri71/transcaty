@@ -1011,6 +1011,22 @@ All errors follow:
 
 ---
 
+## Cross-border (Tylt / India) – merchant dashboard
+
+**Product model.** Merchants use **one** programmatic API key and the **same HMAC signing flow** as Bangladesh for **all** server-to-server calls. Domestic payins/payouts and **Tylt / India rails** (`/v1/tylt/*`) are **not** split into separate keys; **scopes** on the key decide what is allowed.
+
+**Balances.** Do **not** merge BDT and cross-border settled currency into one headline number. Use **`GET /portal/me/wallets`** to show **pockets** (one row per merchant wallet currency). **`GET /portal/me/balance`** stays backward-compatible: when several wallets exist it returns a deterministic **primary** row (BDT first). Use wallets whenever the UI must show every pocket.
+
+**Suggested UI.**
+
+- **Tabs or sections** such as “Bangladesh” vs “India / Cross-border” can be driven entirely from **`/portal/me/wallets`** (e.g. group by `currency` or by rules in the app). No extra backend contract is required for v1.
+- **API Keys:** Surface **scopes** on create/revoke flows. Copy should state that domestic and Tylt capabilities are **permissioned on the same key** (e.g. `payin:create`, `payout:create`, `balance:read`, plus Tylt routes where `tylt:*` or related scopes apply). Link engineers to **`docs/TYLT_MERCHANT_API_TESTING.md`** for Postman coverage.
+- **Never** put the API **secret** in the merchant SPA. The dashboard uses **`/portal/*` (JWT)** only. HMAC + `/v1/*` testing belongs in **Postman** or the merchant’s **backend**.
+
+**Regression order for Tylt `/v1` (Postman):** See **`docs/TYLT_MERCHANT_API_TESTING.md`** §11.
+
+---
+
 ## UX recommendations
 
 ### Signup page
@@ -1068,6 +1084,7 @@ All errors follow:
 
 - Show only when `canCreateApiKeys === true`.
 - List keys with masked display. "Create key" button → modal with copy for key + secret.
+- Show **scopes** per key and explain that **Bangladesh and Tylt** shares one key; scopes gate both. Point integrators to **`docs/TYLT_MERCHANT_API_TESTING.md`** for India-rail Postman steps.
 - Revoke button per key.
 
 ### Customers page
@@ -1100,8 +1117,9 @@ All errors follow:
 | **Profile** | `GET /portal/me` on app shell load; use `mfaEnabled` / `mfaPendingSetup` for Security UI. |
 | **KYC** | Upload flow via Supabase `uploadToSignedUrl` per [File upload](#file-upload-documents). |
 | **Ops** | Balance, customers, transactions, transfers, refunds, payouts per sections below. |
+| **Cross-border** | India/Tylt areas driven from **`/portal/me/wallets`**; API key scope UX; no browser `/v1` secrets. |
 
-For **Postman-only** testing (no UI), see `docs/POSTMAN_PORTAL_TESTING.md`.
+For **Postman-only** testing (no UI), see `docs/POSTMAN_PORTAL_TESTING.md`. For **Tylt `/v1`** regression, see `docs/TYLT_MERCHANT_API_TESTING.md`.
 
 ---
 

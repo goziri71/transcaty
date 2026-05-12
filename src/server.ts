@@ -16,6 +16,11 @@ import { closeOutboundHttp } from "./lib/outbound-http.js";
 const PORT = Number(process.env.PORT) || 3000;
 const HOST = process.env.HOST || "0.0.0.0";
 
+/** Log promise rejections that never reach Fastify's error handler (local debugging). */
+process.on("unhandledRejection", (reason) => {
+  console.error("[unhandledRejection]", reason);
+});
+
 function validateEnv() {
   const portalSecret = process.env.PORTAL_JWT_SECRET ?? process.env.JWT_SECRET;
   if (!portalSecret?.trim()) {

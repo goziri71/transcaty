@@ -229,7 +229,7 @@ Provider routes that mutate money state now require a fresh
 | ----------------------------------------------------------- | -------------------- |
 | `POST /provider/customers/:walletId/wallet-adjustments`     | `wallet.adjust`      |
 | `POST /provider/merchants/:merchantId/wallet-adjustments`   | `wallet.adjust`      |
-| `POST /provider/transactions/:transactionId/status`         | `tx.status.write`    |
+| `PATCH /provider/transactions/:transactionId/status`         | `tx.status.write`    |
 
 KYC overrides (`merchant.kyc.write`) intentionally still go through
 the maker-checker queue rather than step-up; bringing them under

@@ -1,6 +1,6 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
-import Fastify, { type FastifyRequest, type FastifyReply } from "fastify";
+import Fastify, { type FastifyRequest, type FastifyReply, type FastifyError } from "fastify";
 import cors from "@fastify/cors";
 import helmet from "@fastify/helmet";
 import rateLimit from "@fastify/rate-limit";
@@ -92,6 +92,9 @@ import {
 } from "./src/lib/tylt-merchant-api-schemas.js";
 
 export async function buildApp() {
+  /** Avoid duplicate 5xx logs when Fastify's error handler already logged the thrown error. */
+  const serverErrorHandledByErrorHandler = new WeakSet<FastifyRequest>();
+
   const isProduction = process.env.NODE_ENV === "production";
   const debugBodyEnvSet = process.env.PAYOK_WEBHOOK_DEBUG_BODY === "1";
   const allowDebugBody = debugBodyEnvSet && !isProduction;
@@ -141,12 +144,63 @@ export async function buildApp() {
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
 
+  app.setErrorHandler(async (error: FastifyError, request: FastifyRequest, reply: FastifyReply) => {
+    const statusCode =
+      typeof error.statusCode === "number" && error.statusCode >= 100 && error.statusCode <= 599
+        ? error.statusCode
+        : 500;
+    const path = request.url.split("?")[0];
+    const routeTemplate =
+      request.routeOptions?.method != null && request.routeOptions?.url != null
+        ? `${String(request.routeOptions.method)} ${String(request.routeOptions.url)}`
+        : undefined;
+
+    const meta = {
+      statusCode,
+      method: request.method,
+      path,
+      route: routeTemplate,
+      message: error.message,
+      code: typeof error.code === "string" ? error.code : undefined,
+      validation: error.validation,
+      reqId: request.id,
+    };
+
+    if (statusCode >= 500) {
+      serverErrorHandledByErrorHandler.add(request);
+      request.log.error({ err: error, ...meta }, `server error: ${request.method} ${path}`);
+    } else if (statusCode >= 400) {
+      request.log.warn({ err: error, ...meta }, `client error: ${request.method} ${path}`);
+    } else {
+      request.log.info({ err: error, ...meta }, `request error: ${request.method} ${path}`);
+    }
+
+    await reply.send(error);
+  });
+
   app.addHook("onRequest", async (request) => {
     (request as FastifyRequest & { metricsStart?: bigint }).metricsStart = process.hrtime.bigint();
   });
 
   app.addHook("onResponse", async (request, reply) => {
     const path = request.url.split("?")[0];
+    const status = reply.statusCode;
+    if (status >= 500 && !serverErrorHandledByErrorHandler.has(request)) {
+      const routeTemplate =
+        request.routeOptions?.method != null && request.routeOptions?.url != null
+          ? `${String(request.routeOptions.method)} ${String(request.routeOptions.url)}`
+          : undefined;
+      request.log.error(
+        {
+          statusCode: status,
+          method: request.method,
+          path,
+          route: routeTemplate,
+          reqId: request.id,
+        },
+        `5xx response (no route throw): ${request.method} ${path}${routeTemplate ? ` => ${routeTemplate}` : ""}`
+      );
+    }
     if (path === "/metrics" || path === "/health") return;
     const start = (request as FastifyRequest & { metricsStart?: bigint }).metricsStart;
     if (start == null) return;
@@ -198,7 +252,9 @@ export async function buildApp() {
     timeWindow: rateLimitWindow,
     nameSpace: "tx-rl:",
     continueExceeding: true,
-    ...(rateLimitRedis ? { redis: rateLimitRedis as never } : {}),
+    // When Redis is configured but unreachable, ioredis throws before /health can run;
+    // skipOnError lets requests through (no distributed limit until Redis is back).
+    ...(rateLimitRedis ? { redis: rateLimitRedis as never, skipOnError: true } : {}),
   });
   app.log.info(
     {
@@ -276,11 +332,14 @@ export async function buildApp() {
       },
     },
     async () => {
-      await db.execute(sql`SELECT 1`);
       const hasRedis = !!getSecret("REDIS_URL", "REDIS_URL_ENC")?.trim();
+      const [, redisPingOk] = await Promise.all([
+        db.execute(sql`SELECT 1`),
+        hasRedis ? pingRedis() : Promise.resolve<boolean | null>(null),
+      ]);
       const redis: "ok" | "skipped" | "error" = !hasRedis
         ? "skipped"
-        : (await pingRedis())
+        : redisPingOk
           ? "ok"
           : "error";
       return {
