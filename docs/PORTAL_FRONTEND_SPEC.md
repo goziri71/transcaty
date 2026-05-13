@@ -1015,7 +1015,7 @@ All errors follow:
 
 ## Tylt and cross-border — merchant portal flows
 
-This section is the **implementation guide** for showing **Tylt / India (cross-border)** alongside **Bangladesh (domestic)** in the merchant dashboard. It complements `docs/TYLT_MERCHANT_API_TESTING.md`, which documents **programmatic** `/v1/tylt/*` calls (Postman, HMAC), not portal routes.
+This section is the **implementation guide** for showing **Tylt / India (cross-border)** alongside **Bangladesh (domestic)** in the merchant dashboard. For **Postman / `v1` HMAC** testing of the API you give merchants, use **`docs/TYLT_MERCHANT_API_TESTING.md`**—that file is **not** for frontend dashboard implementation.
 
 ### Product model (what the merchant understands)
 
@@ -1044,7 +1044,7 @@ This section is the **implementation guide** for showing **Tylt / India (cross-b
 1. **Environment switch** — `test` \| `live` on dashboard (already required for balance, keys, and txs). Tylt and domestic rows share the same `environment` dimension.
 2. **Wallets-first overview** — On shell load (after auth): `GET /portal/me`, `GET /portal/me/balance`, **`GET /portal/me/wallets`**. Render **one card per** `items[]` pocket; do **not** sum unlike currencies into one headline.
 3. **Optional regional UX** — Group pockets in the UI (e.g. “Bangladesh” when `currency === BDT`, “Cross-border / India” when `currency` is the settled pocket used for Tylt—**you can derive labels from `currency` and product rules**; no extra API field is required for v1).
-4. **API Keys** — Obey `canCreateApiKeys` (KYC **verified**). Show **scopes** on each key; explain **one key** gates **both** domestic and Tylt (see **API keys and scopes (flow)** below). Link to **`docs/TYLT_MERCHANT_API_TESTING.md`** for engineers (esp. §11 regression order).
+4. **API Keys** — Obey `canCreateApiKeys` (KYC **verified**). Show **scopes** on each key; explain **one key** gates **both** domestic and Tylt (see **API keys and scopes (flow)** below). In **help text or docs links** for integrators, point to **`docs/TYLT_MERCHANT_API_TESTING.md`** (Postman, **`/v1` HMAC only**—not for building the portal UI). See esp. §11.
 5. **Transactions** — Same list for all rails. **`GET /portal/me/transactions`** returns **id, type, status, amount**, etc. (see route schema in this doc—**currency** / **provider** are not always exposed on list items); **`GET /portal/me/transactions/:id`** returns **`metadata`** when present—**Tylt** rows often include **`rail`**, **`tyltProduct`**, etc. Use **metadata** on **detail** (when present) to show a **badge** or filter “Tylt” vs domestic; if `metadata` is missing or opaque, show **type / amount / status** (and **currency** when the API exposes it).
 6. **Webhooks** — Configure **one** merchant webhook URL in portal settings where supported; server delivers events for activity originating from any rail the merchant uses.
 7. **KYC / live** — If the environment is **live** and `KYC_REQUIRED` is on in production, **Tylt create** routes and some domestic flows require **`kycStatus === verified`**—mirror existing portal messaging (“complete verification”).
@@ -1139,7 +1139,7 @@ This section is the **implementation guide** for showing **Tylt / India (cross-b
 
 - Show only when `canCreateApiKeys === true`.
 - List keys with masked display. "Create key" button → modal with copy for key + secret.
-- Show **scopes** per key and explain that **Bangladesh and Tylt share one key**; scopes gate both. Point integrators to **`docs/TYLT_MERCHANT_API_TESTING.md`** for India-rail Postman steps. For the full portal-side flow (wallets, tabs, what is not in the portal), see [§ Tylt and cross-border — merchant portal flows](#tylt-and-cross-border--merchant-portal-flows).
+- Show **scopes** per key and explain that **Bangladesh and Tylt share one key**; scopes gate both. Optional **“API docs”** link for **merchant server / Postman** testers: **`docs/TYLT_MERCHANT_API_TESTING.md`** (not the portal frontend spec). For the full **portal** flow (wallets, tabs, what is not in the portal), see [§ Tylt and cross-border — merchant portal flows](#tylt-and-cross-border--merchant-portal-flows).
 - Revoke button per key.
 
 ### Customers page

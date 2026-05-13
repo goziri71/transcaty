@@ -1,6 +1,17 @@
 # Tylt merchant API — testing guide (Postman & flows)
 
-This document is for **operators and integrators** who expose Transacty as **API-as-a-service** to merchants. Merchants call **your** Transacty `/v1/*` endpoints; Transacty authenticates them and calls **Tylt** with server-side credentials.
+## Who this guide is for
+
+- **Transacty operators / you** — Step-by-step **Postman** (or similar) checks against the **merchant-facing HTTP API** you ship: **`/v1/tylt/*`** and related **`/v1/*`** calls, using **HMAC** (API key + secret). Use it to confirm the integration you give merchants works before or after deploy.
+- **Merchant-side backend engineers** — Anyone integrating **server-to-server** against Transacty (never from a browser with the secret).
+
+## Who this guide is **not** for
+
+- **Merchant portal / dashboard frontend** — That UI uses **`/portal/*`** and JWT, not HMAC. Spec: **`docs/PORTAL_FRONTEND_SPEC.md`**. Do not point storefront or SPA devs here as their primary doc.
+
+---
+
+This document assumes **you** expose Transacty as **API-as-a-service**: merchants (or their backends) call **your** Transacty **`/v1/*`** endpoints; Transacty authenticates them and calls **Tylt** with server-side credentials.
 
 - **Merchant → Transacty:** HMAC-signed HTTP (this guide).
 - **Tylt → Transacty:** Webhooks to `/webhooks/tylt/...` (not called from Postman; needs a public URL for real E2E).
@@ -321,6 +332,7 @@ Use this sequence to prove the **entire** Tylt merchant surface is healthy after
 
 ## 12. Related docs
 
+- `docs/PORTAL_FRONTEND_SPEC.md` — **Merchant dashboard UI** (`/portal/*`, JWT). Not a substitute for this Postman guide.
 - `docs/MONEY_INVARIANTS.md` — wallet / ledger / payout debit semantics.
 - `docs/WEBHOOK_DEDUPE_AND_IDEMPOTENCY.md` — provider callback dedupe and merchant `Idempotency-Key` behavior.
 - `docs/HIGH_TRAFFIC_POSTURE.md` — outbound HTTP and rate limits (affects retries under load).
@@ -329,5 +341,6 @@ Use this sequence to prove the **entire** Tylt merchant surface is healthy after
 
 ## Changelog
 
+- **Audience:** Clarified this guide is for **Postman / server-side `/v1` testing** (Transacty operators + merchant backend integrators), **not** for merchant portal frontend (`PORTAL_FRONTEND_SPEC.md`).
 - **Full regression table (§11):** Ordered checklist for all Tylt `/v1` routes + links to domestic `/v1/me` and `/v1/balance` on the same key.
 - **Initial:** Merchant-facing Tylt route list, HMAC rules, Postman variables + pre-request script template, flows and webhook limitations.
