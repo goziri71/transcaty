@@ -218,9 +218,9 @@ Notes:
 - Prefer these APIs as runtime validation sources for requested currency/network combinations
 - Cache with TTL for performance, but allow manual refresh in admin/ops flows
 
-### 8.1 Transacty merchant API (`/v1/tylt/*`)
+### 8.1 Transacty merchant API (`/v1/*`)
 
-Implemented merchant-facing proxies and create endpoints are documented in **[tylt-merchant-api.md](./tylt-merchant-api.md)** (scopes, idempotency, error conventions, Zod schema pointers).
+Implemented merchant-facing proxies and create endpoints are documented in **[tylt-merchant-api.md](./tylt-merchant-api.md)** (scopes, idempotency, error conventions, Zod schema pointers). **Public paths** are processor-neutral (e.g. `/v1/cpg/...`); **`/v1/tylt/...`** remains as a **legacy alias** in `app.ts`.
 
 ## 9) Webhook Lifecycle Mapping (Current)
 

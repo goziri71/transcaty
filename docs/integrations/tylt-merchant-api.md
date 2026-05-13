@@ -1,6 +1,8 @@
-# Tylt merchant API (`/v1/tylt/*`)
+# Cross-border merchant API (Transacty `/v1/*`)
 
-All routes require **merchant API key** authentication (`Authorization: Bearer <secret>`) via the same middleware as other `/v1/*` merchant endpoints.
+**Public merchant paths** omit the processor name (e.g. `/v1/crossramp`, `/v1/cpg`, `/v1/h2h`). Legacy **`/v1/tylt/...`** URLs register the same handlers for backward compatibility.
+
+All routes require **merchant HMAC** (`X-Transacty-Key`, `X-Transacty-Timestamp`, `X-Transacty-Signature`) like other `/v1/*` merchant endpoints (`docs/POSTMAN_MERCHANT_API_GUIDE.md`).
 
 ## Error shapes
 
@@ -18,34 +20,34 @@ These **`POST`** endpoints honor **`Idempotency-Key`** (same collision semantics
 
 | Route |
 |-------|
-| `/v1/tylt/crossramp/payin-instances` |
-| `/v1/tylt/h2h/payin-instances` |
-| `/v1/tylt/cpg/payin-requests` |
-| `/v1/tylt/cpg/payout-requests` |
-| `/v1/tylt/internal-transfer` |
+| `/v1/crossramp/payin-instances` |
+| `/v1/h2h/payin-instances` |
+| `/v1/cpg/payin-requests` |
+| `/v1/cpg/payout-requests` |
+| `/v1/internal-transfer` |
 
 ## Route matrix
 
 | Method | Path | Scope(s) | KYC | Notes |
 |--------|------|----------|-----|--------|
-| POST | `/v1/tylt/crossramp/payin-instances` | `payin:create` or `*` | If `KYC_REQUIRED=true` | Hosted CrossRamp widget |
-| POST | `/v1/tylt/h2h/payin-instances` | `payin:create` or `*` | If required | H2H UPI instance |
-| POST | `/v1/tylt/h2h/buyer-confirms-payment` | `payin:create` or `*` | If required | Body: `transactionId`, optional `utr` |
-| GET | `/v1/tylt/h2h/payment-methods` | `payin:create` or `*` | — | Proxies Tylt JSON |
-| GET | `/v1/tylt/h2h/crypto-currencies` | `payin:create` or `*` | — | Proxies Tylt JSON |
-| GET | `/v1/tylt/supported/crypto-currencies` | `balance:read` **or** `payin:create` **or** `payout:create` or `*` | — | Cached lists (`TYLT_DISCOVERY_CACHE_TTL_MS`) |
-| GET | `/v1/tylt/supported/fiat-currencies` | same | — | Cached |
-| GET | `/v1/tylt/supported/crypto-networks` | same | — | Cached |
-| GET | `/v1/tylt/supported/base-currencies` | same | — | Cached |
-| GET | `/v1/tylt/account-balance` | `balance:read` or `*` | — | Query passthrough to Tylt; balance cache `TYLT_ACCOUNT_BALANCE_CACHE_TTL_MS` (default off) |
-| POST | `/v1/tylt/cpg/payin-requests` | `payin:create` or `*` | If required | Travel-rule `payeeDetails` |
-| GET | `/v1/tylt/cpg/payin-information/:transactionId` | `payin:create` or `*` | — | UUID path param |
-| GET | `/v1/tylt/cpg/payin-history` | `payin:create` or `*` | — | Query `rows` (1–100), `page` |
-| POST | `/v1/tylt/cpg/payout-requests` | `payout:create` or `*` | If required | Debits merchant wallet on success |
-| GET | `/v1/tylt/cpg/payout-information/:transactionId` | `payout:create` or `*` | — | UUID path param |
-| GET | `/v1/tylt/cpg/payout-history` | `payout:create` or `*` | — | Query `rows`, `page` |
-| GET | `/v1/tylt/merchant-details` | `tylt:internal_transfer` or `*` | — | Wallet UUID discovery |
-| POST | `/v1/tylt/internal-transfer` | `tylt:internal_transfer` or `*` | If required | Pair allowlist env vars required |
+| POST | `/v1/crossramp/payin-instances` | `payin:create` or `*` | If `KYC_REQUIRED=true` | Hosted CrossRamp widget |
+| POST | `/v1/h2h/payin-instances` | `payin:create` or `*` | If required | H2H UPI instance |
+| POST | `/v1/h2h/buyer-confirms-payment` | `payin:create` or `*` | If required | Body: `transactionId`, optional `utr` |
+| GET | `/v1/h2h/payment-methods` | `payin:create` or `*` | — | Proxies Tylt JSON |
+| GET | `/v1/h2h/crypto-currencies` | `payin:create` or `*` | — | Proxies Tylt JSON |
+| GET | `/v1/supported/crypto-currencies` | `balance:read` **or** `payin:create` **or** `payout:create` or `*` | — | Cached lists (`TYLT_DISCOVERY_CACHE_TTL_MS`) |
+| GET | `/v1/supported/fiat-currencies` | same | — | Cached |
+| GET | `/v1/supported/crypto-networks` | same | — | Cached |
+| GET | `/v1/supported/base-currencies` | same | — | Cached |
+| GET | `/v1/account-balance` | `balance:read` or `*` | — | Query passthrough to Tylt; balance cache `TYLT_ACCOUNT_BALANCE_CACHE_TTL_MS` (default off) |
+| POST | `/v1/cpg/payin-requests` | `payin:create` or `*` | If required | Travel-rule `payeeDetails` |
+| GET | `/v1/cpg/payin-information/:transactionId` | `payin:create` or `*` | — | UUID path param |
+| GET | `/v1/cpg/payin-history` | `payin:create` or `*` | — | Query `rows` (1–100), `page` |
+| POST | `/v1/cpg/payout-requests` | `payout:create` or `*` | If required | Debits merchant wallet on success |
+| GET | `/v1/cpg/payout-information/:transactionId` | `payout:create` or `*` | — | UUID path param |
+| GET | `/v1/cpg/payout-history` | `payout:create` or `*` | — | Query `rows`, `page` |
+| GET | `/v1/merchant-details` | `internal_transfer:create` or `*` (legacy `tylt:internal_transfer`) | — | Wallet UUID discovery |
+| POST | `/v1/internal-transfer` | `internal_transfer:create` or `*` (legacy `tylt:internal_transfer`) | If required | Pair allowlist env vars required |
 
 ## Zod route schemas
 

@@ -178,11 +178,11 @@ All v1 mutation endpoints now flow through `withIdempotency`:
 
 - `POST /v1/payins` (Payok pay-in)
 - `POST /v1/payouts` (Payok payout)
-- `POST /v1/tylt/crossramp/payin-instances`
-- `POST /v1/tylt/h2h/payin-instances`
-- `POST /v1/tylt/cpg/payin-requests`
-- `POST /v1/tylt/cpg/payout-requests`
-- `POST /v1/tylt/internal/transfers`
+- `POST /v1/crossramp/payin-instances` (legacy `POST /v1/tylt/crossramp/payin-instances`)
+- `POST /v1/h2h/payin-instances` (legacy `.../v1/tylt/...`)
+- `POST /v1/cpg/payin-requests` (legacy `.../v1/tylt/...`)
+- `POST /v1/cpg/payout-requests` (legacy `.../v1/tylt/...`)
+- `POST /v1/internal-transfer` (legacy `.../v1/tylt/...`)
 
 ### Schema additions
 

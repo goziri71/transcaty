@@ -15,7 +15,7 @@ Merchants sign up with minimal info, log in (optionally **MFA**), complete activ
 
 **Implementation order for auth UI:** Login → if `requiresMfa`, show TOTP step → store session JWT → protected routes. Optional: **Forgot password** flow (email link to your SPA → reset form). Optional: **Security** settings for MFA enrollment (`/portal/me/mfa/*`).
 
-**Tylt / cross-border (India)** uses the **same** merchant portal as Bangladesh: operators see **wallet pockets** (per currency), **one programmatic API key** permissioned by **scopes**, and **one transactions** timeline. Tylt **pay-in/pay-out initiation** is **not** a separate portal wizard—it happens via the merchant **`/v1/tylt/*`** API (HMAC); the portal shows **balances** and **history**. Full UI flow for that product line: [§ Tylt and cross-border — merchant portal flows](#tylt-and-cross-border--merchant-portal-flows).
+**Tylt / cross-border (India)** uses the **same** merchant portal as Bangladesh: operators see **wallet pockets** (per currency), **one programmatic API key** permissioned by **scopes**, and **one transactions** timeline. Cross-border **pay-in/pay-out initiation** is **not** a separate portal wizard—it happens via the merchant **`/v1/crossramp`**, **`/v1/h2h`**, **`/v1/cpg`**, etc. API (HMAC); the portal shows **balances** and **history**. Full UI flow for that product line: [§ Tylt and cross-border — merchant portal flows](#tylt-and-cross-border--merchant-portal-flows).
 
 ---
 
@@ -1019,7 +1019,7 @@ This section is the **implementation guide** for showing **Tylt / India (cross-b
 
 ### Product model (what the merchant understands)
 
-- **Transacty** is what merchants see (portal + `/v1` API). Under the hood, **domestic** traffic may use Payok (Bangladesh); **cross-border / India** traffic uses **Tylt** (`/v1/tylt/*`).
+- **Transacty** is what merchants see (portal + `/v1` API). Under the hood, **domestic** traffic may use Payok (Bangladesh); **cross-border / India** traffic is processed via integration routes exposed as **`/v1/crossramp`**, **`/v1/h2h`**, **`/v1/cpg`**, etc. (merchants never see the processor name in the URL).
 - **One merchant account**, **one portal login**, **one programmatic API key type** (`transacty_…`). There are **not** separate “BD keys” and “Tylt keys”—**scopes** on the key decide whether domestic payin/payout, Tylt rails, or balances are allowed.
 - **Wallet balances** are **not** merged across rails: each **currency** is a separate **merchant wallet** row (**pocket**), e.g. BDT vs a settled USD-like/crypto pocket used for Tylt.
 
@@ -1033,7 +1033,7 @@ This section is the **implementation guide** for showing **Tylt / India (cross-b
 | View **balance** snapshot (single primary row) | `GET /portal/me/balance` | `GET /v1/balance` |
 | View **all wallet pockets** (per currency) | **`GET /portal/me/wallets`** | — |
 | **Domestic** payin/payout (Bangladesh) | Optional portal payins/payouts where implemented | `POST /v1/payins`, payouts, etc. |
-| **Tylt** CrossRamp / H2H / CPG pay-in/out, internal transfer | **No dedicated portal wizard**—merchants (or integrators) call API | **`POST` / `GET` under `/v1/tylt/...`** (see testing doc) |
+| **Cross-border** CrossRamp / H2H / CPG pay-in/out, internal transfer | **No dedicated portal wizard**—merchants (or integrators) call API | **`POST` / `GET` under `/v1/crossramp`, `/v1/h2h`, `/v1/cpg`, …** (see testing doc) |
 | **Transactions** history (all rails that write to ledger) | `GET /portal/me/transactions` (+ detail) | `GET /v1/transactions` |
 | Merchant **webhook** URL | `PATCH /portal/me/webhook` (and GET) | `PATCH /v1/me/webhook` pattern (HMAC) for programmatic |
 
@@ -1059,9 +1059,9 @@ This section is the **implementation guide** for showing **Tylt / India (cross-b
 ### API keys and scopes (flow)
 
 1. **List keys** — `GET /portal/me/api-keys` (when authenticated); show masked key, **scopes** string, environment, created/revoked state per your existing spec.
-2. **Create key** — Modal: enforce **scopes** input or **preset** chips (e.g. “Domestic payin/payout”, “Tylt full”, “Read-only balance”). **Document in UI** that **Tylt** paths under `/v1/tylt/*` require the same key as domestic routes; missing scopes yield **403** on the API.
+2. **Create key** — Modal: enforce **scopes** input or **preset** chips (e.g. “Domestic payin/payout”, “Cross-border full”, “Read-only balance”). **Document in UI** that **cross-border** paths under `/v1/crossramp`, `/v1/h2h`, `/v1/cpg`, etc. use the **same** key as domestic routes; missing scopes yield **403** on the API.
 3. **Recommended scope string** (sandbox / full regression; tighten in production):  
-   `payin:create,payout:create,balance:read,tylt:internal_transfer` or `*` only in non-prod sandboxes. Align copy with `docs/TYLT_MERCHANT_API_TESTING.md` § scopes.
+   `payin:create,payout:create,balance:read,internal_transfer:create` or `*` only in non-prod sandboxes. Align copy with `docs/TYLT_MERCHANT_API_TESTING.md` § scopes (`tylt:internal_transfer` legacy).
 4. **Secret** — Show **once** on create; warn **not** to commit to frontend. Point to **Postman** doc for HMAC testing.
 5. **Revocation** — Existing revoke flow; after revoke, Tylt and domestic calls with that key fail.
 
@@ -1069,11 +1069,11 @@ This section is the **implementation guide** for showing **Tylt / India (cross-b
 
 1. **`GET /portal/me/transactions`** — Paginated list; includes **all** merchant ledger transactions the backend records (domestic + Tylt) for that `environment`.
 2. **Detail** — `GET /portal/me/transactions/:id` — display **`metadata`** JSON in an “Advanced” or ops-friendly panel if useful; parse known keys (`rail`, `tyltProduct`) for a **product** label when present.
-3. **Payouts UI** — Existing **domestic** portal payout flows (if any) remain **Payok-shaped**; **Tylt CPG payouts** are initiated via **`/v1/tylt/cpg/payout-requests`**; the portal still shows **resulting** balance and **transaction** rows.
+3. **Payouts UI** — Existing **domestic** portal payout flows (if any) remain **Payok-shaped**; **CPG payouts** are initiated via **`POST /v1/cpg/payout-requests`**; the portal still shows **resulting** balance and **transaction** rows.
 
 ### What we do **not** build in the portal for v1 (by design)
 
-- Hosted **CrossRamp** iframe / redirect UI, **H2H** UPI step-by-step, or **CPG** travel-rule forms—the merchant product surface for those is **`/v1/tylt/*`** or a **merchant-built** checkout. The portal’s job is **visibility** (money + history + keys), not replacing those APIs.
+- Hosted **CrossRamp** iframe / redirect UI, **H2H** UPI step-by-step, or **CPG** travel-rule forms—the merchant product surface for those is the **`/v1/*` cross-border API** or a **merchant-built** checkout. The portal’s job is **visibility** (money + history + keys), not replacing those APIs.
 
 ### Engineer reference (Postman / `/v1`)
 

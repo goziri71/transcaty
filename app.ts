@@ -1137,6 +1137,15 @@ export async function buildApp() {
     return m.scopes.includes("*") || m.scopes.includes("balance:read");
   }
 
+  /** Cross-border wallet-to-wallet moves (`/v1/internal-transfer`, legacy `tylt:internal_transfer` scope still accepted). */
+  function merchantHasInternalTransferScope(m: { scopes: string[] }): boolean {
+    return (
+      m.scopes.includes("*") ||
+      m.scopes.includes("internal_transfer:create") ||
+      m.scopes.includes("tylt:internal_transfer")
+    );
+  }
+
   function tyltPassthroughQuery(query: unknown): Record<string, unknown> {
     if (!query || typeof query !== "object") return {};
     const out: Record<string, unknown> = {};
@@ -1252,9 +1261,19 @@ export async function buildApp() {
 
   const tyltKycBypass = process.env.TYLT_ALLOW_KYC_BYPASS === "true" || process.env.TYLT_ALLOW_KYC_BYPASS === "1";
 
-  app.post(
-    "/v1/tylt/crossramp/payin-instances",
-    {
+  /** Merchant docs use `/v1/...` without a provider segment; `/v1/tylt/...` remains for backward compatibility. */
+  function merchantV1GetPair(canonicalPath: string, legacyPath: string, register: (path: string) => void): void {
+    register(canonicalPath);
+    register(legacyPath);
+  }
+
+  function merchantV1PostPair(canonicalPath: string, legacyPath: string, register: (path: string) => void): void {
+    register(canonicalPath);
+    register(legacyPath);
+  }
+
+  merchantV1PostPair("/v1/crossramp/payin-instances", "/v1/tylt/crossramp/payin-instances", (path) =>
+    app.post(path, {
       schema: {
         body: z.object({
           amount: z.string(),
@@ -1343,12 +1362,11 @@ export async function buildApp() {
         sendMerchantFacingReply(reply, mapped);
         return;
       }
-    }
+    })
   );
 
-  app.post(
-    "/v1/tylt/h2h/payin-instances",
-    {
+  merchantV1PostPair("/v1/h2h/payin-instances", "/v1/tylt/h2h/payin-instances", (path) =>
+    app.post(path, {
       schema: {
         body: z.object({
           amount: z.string(),
@@ -1440,12 +1458,11 @@ export async function buildApp() {
         sendMerchantFacingReply(reply, mapped);
         return;
       }
-    }
+    })
   );
 
-  app.post(
-    "/v1/tylt/h2h/buyer-confirms-payment",
-    {
+  merchantV1PostPair("/v1/h2h/buyer-confirms-payment", "/v1/tylt/h2h/buyer-confirms-payment", (path) =>
+    app.post(path, {
       schema: {
         body: z.object({
           transactionId: z.string().uuid(),
@@ -1510,12 +1527,11 @@ export async function buildApp() {
         sendMerchantFacingReply(reply, mapped);
         return;
       }
-    }
+    })
   );
 
-  app.get(
-    "/v1/tylt/h2h/payment-methods",
-    { schema: { response: tyltMerchantProxyResponses } },
+  merchantV1GetPair("/v1/h2h/payment-methods", "/v1/tylt/h2h/payment-methods", (path) =>
+    app.get(path, { schema: { response: tyltMerchantProxyResponses } },
     async (request, reply) => {
     const m = request.merchant;
     if (!m) return reply.status(401).send({ error: "Unauthorized" });
@@ -1531,12 +1547,11 @@ export async function buildApp() {
       sendMerchantFacingReply(reply, mapped);
       return;
     }
-  }
+  })
   );
 
-  app.get(
-    "/v1/tylt/h2h/crypto-currencies",
-    { schema: { response: tyltMerchantProxyResponses } },
+  merchantV1GetPair("/v1/h2h/crypto-currencies", "/v1/tylt/h2h/crypto-currencies", (path) =>
+    app.get(path, { schema: { response: tyltMerchantProxyResponses } },
     async (request, reply) => {
     const m = request.merchant;
     if (!m) return reply.status(401).send({ error: "Unauthorized" });
@@ -1552,12 +1567,11 @@ export async function buildApp() {
       sendMerchantFacingReply(reply, mapped);
       return;
     }
-  }
+  })
   );
 
-  app.get(
-    "/v1/tylt/supported/crypto-currencies",
-    { schema: { response: tyltMerchantProxyResponses } },
+  merchantV1GetPair("/v1/supported/crypto-currencies", "/v1/tylt/supported/crypto-currencies", (path) =>
+    app.get(path, { schema: { response: tyltMerchantProxyResponses } },
     async (request, reply) => {
     const m = request.merchant;
     if (!m) return reply.status(401).send({ error: "Unauthorized" });
@@ -1576,12 +1590,11 @@ export async function buildApp() {
       sendMerchantFacingReply(reply, mapped);
       return;
     }
-  }
+  })
   );
 
-  app.get(
-    "/v1/tylt/supported/fiat-currencies",
-    { schema: { response: tyltMerchantProxyResponses } },
+  merchantV1GetPair("/v1/supported/fiat-currencies", "/v1/tylt/supported/fiat-currencies", (path) =>
+    app.get(path, { schema: { response: tyltMerchantProxyResponses } },
     async (request, reply) => {
     const m = request.merchant;
     if (!m) return reply.status(401).send({ error: "Unauthorized" });
@@ -1600,12 +1613,11 @@ export async function buildApp() {
       sendMerchantFacingReply(reply, mapped);
       return;
     }
-  }
+  })
   );
 
-  app.get(
-    "/v1/tylt/supported/crypto-networks",
-    { schema: { response: tyltMerchantProxyResponses } },
+  merchantV1GetPair("/v1/supported/crypto-networks", "/v1/tylt/supported/crypto-networks", (path) =>
+    app.get(path, { schema: { response: tyltMerchantProxyResponses } },
     async (request, reply) => {
     const m = request.merchant;
     if (!m) return reply.status(401).send({ error: "Unauthorized" });
@@ -1624,12 +1636,11 @@ export async function buildApp() {
       sendMerchantFacingReply(reply, mapped);
       return;
     }
-  }
+  })
   );
 
-  app.get(
-    "/v1/tylt/supported/base-currencies",
-    { schema: { response: tyltMerchantProxyResponses } },
+  merchantV1GetPair("/v1/supported/base-currencies", "/v1/tylt/supported/base-currencies", (path) =>
+    app.get(path, { schema: { response: tyltMerchantProxyResponses } },
     async (request, reply) => {
     const m = request.merchant;
     if (!m) return reply.status(401).send({ error: "Unauthorized" });
@@ -1648,12 +1659,11 @@ export async function buildApp() {
       sendMerchantFacingReply(reply, mapped);
       return;
     }
-  }
+  })
   );
 
-  app.get(
-    "/v1/tylt/account-balance",
-    {
+  merchantV1GetPair("/v1/account-balance", "/v1/tylt/account-balance", (path) =>
+    app.get(path, {
       schema: {
         querystring: tyltPassthroughQuerySchema,
         response: tyltMerchantProxyResponses,
@@ -1678,12 +1688,11 @@ export async function buildApp() {
       sendMerchantFacingReply(reply, mapped);
       return;
     }
-  }
+  })
   );
 
-  app.post(
-    "/v1/tylt/cpg/payin-requests",
-    {
+  merchantV1PostPair("/v1/cpg/payin-requests", "/v1/tylt/cpg/payin-requests", (path) =>
+    app.post(path, {
       schema: {
         body: z.object({
           baseAmount: z.string(),
@@ -1773,12 +1782,11 @@ export async function buildApp() {
         sendMerchantFacingReply(reply, mapped);
         return;
       }
-    }
+    })
   );
 
-  app.get(
-    "/v1/tylt/cpg/payin-information/:transactionId",
-    {
+  merchantV1GetPair("/v1/cpg/payin-information/:transactionId", "/v1/tylt/cpg/payin-information/:transactionId", (path) =>
+    app.get(path, {
       schema: {
         params: tyltTransactionIdParamSchema,
         response: tyltMerchantProxyResponses,
@@ -1812,12 +1820,11 @@ export async function buildApp() {
         sendMerchantFacingReply(reply, mapped);
         return;
       }
-    }
+    })
   );
 
-  app.get(
-    "/v1/tylt/cpg/payin-history",
-    {
+  merchantV1GetPair("/v1/cpg/payin-history", "/v1/tylt/cpg/payin-history", (path) =>
+    app.get(path, {
       schema: {
         querystring: tyltRowsPageQuerySchema,
         response: tyltMerchantProxyResponses,
@@ -1845,12 +1852,11 @@ export async function buildApp() {
         sendMerchantFacingReply(reply, mapped);
         return;
       }
-    }
+    })
   );
 
-  app.post(
-    "/v1/tylt/cpg/payout-requests",
-    {
+  merchantV1PostPair("/v1/cpg/payout-requests", "/v1/tylt/cpg/payout-requests", (path) =>
+    app.post(path, {
       schema: {
         body: z.object({
           amount: z.string(),
@@ -1936,12 +1942,11 @@ export async function buildApp() {
         sendMerchantFacingReply(reply, mapped);
         return;
       }
-    }
+    })
   );
 
-  app.get(
-    "/v1/tylt/cpg/payout-information/:transactionId",
-    {
+  merchantV1GetPair("/v1/cpg/payout-information/:transactionId", "/v1/tylt/cpg/payout-information/:transactionId", (path) =>
+    app.get(path, {
       schema: {
         params: tyltTransactionIdParamSchema,
         response: tyltMerchantProxyResponses,
@@ -1975,12 +1980,11 @@ export async function buildApp() {
         sendMerchantFacingReply(reply, mapped);
         return;
       }
-    }
+    })
   );
 
-  app.get(
-    "/v1/tylt/cpg/payout-history",
-    {
+  merchantV1GetPair("/v1/cpg/payout-history", "/v1/tylt/cpg/payout-history", (path) =>
+    app.get(path, {
       schema: {
         querystring: tyltRowsPageQuerySchema,
         response: tyltMerchantProxyResponses,
@@ -2008,17 +2012,19 @@ export async function buildApp() {
         sendMerchantFacingReply(reply, mapped);
         return;
       }
-    }
+    })
   );
 
-  app.get(
-    "/v1/tylt/merchant-details",
-    { schema: { response: tyltMerchantProxyResponses } },
+  merchantV1GetPair("/v1/merchant-details", "/v1/tylt/merchant-details", (path) =>
+    app.get(path, { schema: { response: tyltMerchantProxyResponses } },
     async (request, reply) => {
       const m = request.merchant;
       if (!m) return reply.status(401).send({ error: "Unauthorized" });
-      if (!m.scopes.includes("tylt:internal_transfer") && !m.scopes.includes("*")) {
-        return reply.status(403).send({ error: "Forbidden", message: "Missing scope: tylt:internal_transfer" });
+      if (!merchantHasInternalTransferScope(m)) {
+        return reply.status(403).send({
+          error: "Forbidden",
+          message: "Missing scope: internal_transfer:create (legacy tylt:internal_transfer accepted)",
+        });
       }
       try {
         const res = await tyltGetMerchantDetails(m.environment);
@@ -2029,12 +2035,11 @@ export async function buildApp() {
         sendMerchantFacingReply(reply, mapped);
         return;
       }
-    }
+    })
   );
 
-  app.post(
-    "/v1/tylt/internal-transfer",
-    {
+  merchantV1PostPair("/v1/internal-transfer", "/v1/tylt/internal-transfer", (path) =>
+    app.post(path, {
       schema: {
         body: z.object({
           fromUUID: z.string().uuid(),
@@ -2060,8 +2065,11 @@ export async function buildApp() {
     async (request, reply) => {
       const m = request.merchant;
       if (!m) return reply.status(401).send({ error: "Unauthorized" });
-      if (!m.scopes.includes("tylt:internal_transfer") && !m.scopes.includes("*")) {
-        return reply.status(403).send({ error: "Forbidden", message: "Missing scope: tylt:internal_transfer" });
+      if (!merchantHasInternalTransferScope(m)) {
+        return reply.status(403).send({
+          error: "Forbidden",
+          message: "Missing scope: internal_transfer:create (legacy tylt:internal_transfer accepted)",
+        });
       }
       if (!(await requireKycVerified(m.merchantId, reply))) return;
       const body = request.body as {
@@ -2110,7 +2118,7 @@ export async function buildApp() {
         sendMerchantFacingReply(reply, mapped);
         return;
       }
-    }
+    })
   );
 
   app.post(

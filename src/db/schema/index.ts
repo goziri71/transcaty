@@ -124,7 +124,7 @@ export const merchantApiKeys = pgTable(
     keyHash: text("key_hash").notNull().unique(),
     secretEnc: text("secret_enc").notNull(),
     environment: text("environment").notNull(), // "live" | "test"
-    scopes: text("scopes").notNull().default(""), // comma-separated: payin:create,payout:create,balance:read,tylt:internal_transfer
+    scopes: text("scopes").notNull().default(""), // comma-separated: payin:create,payout:create,balance:read,internal_transfer:create (legacy tylt:internal_transfer)
     status: keyStatusEnum("status").notNull().default("active"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
