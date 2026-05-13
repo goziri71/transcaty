@@ -122,6 +122,13 @@ pm.request.headers.upsert({ key: "X-Transacty-Signature", value: sig });
 
 > **Note:** Postman’s default might not include `crypto-js`. If `CryptoJS` is undefined, use **Postman → Settings → Experimental → Crypto** or install the **CryptoJS** snippet from Postman learning center, or compute the signature with an external script and paste `X-Transacty-Signature` manually for one-off tests.
 
+### 3.3 Common mistakes (401 “Missing X-Transacty-Key…”)
+
+1. **Script on “Post-response” instead of “Pre-request Script”** — The HMAC script must run **before** the request is sent. If it lives under **Post-res**, headers are added **too late** and the server sees none of them → this exact error.
+2. **Wrong variable names** — The snippet uses **`merchantKey`** / **`merchantSecret`**. If you store **`TRANSCATY_KEY`** / **`TRANSCATY_SECRET`** in an **environment**, either rename those collection variables or change the script to `pm.environment.get("TRANSCATY_KEY")` (and same for secret).
+3. **Manual headers with empty `{{vars}}`** — If variables don’t resolve, headers are blank and behave as “missing.”
+4. **Stale `timestamp` / `signature` in env** — Don’t send a months-old timestamp (clock skew); regenerate **timestamp + signature in the pre-request script** every time (the snippet above does this).
+
 Alternative: use ** Newman ** or a tiny Node script with `createHmac("sha256", secret).update(payload).digest("hex")` — same algorithm as production.
 
 ### 3.3 Optional: Idempotency header

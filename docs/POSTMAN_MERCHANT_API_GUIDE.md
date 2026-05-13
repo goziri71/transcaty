@@ -116,6 +116,8 @@ pm.environment.set("signature", signature);
 
 4. Save
 
+**Important:** The script must live on **Pre-request Script**, not **Tests** or **Post-response**. If it runs after the response, the server never receives the headers and returns `401` “Missing X-Transacty-Key…”.
+
 ### 1.4 Set collection-level headers
 
 1. In the collection, go to **Headers**

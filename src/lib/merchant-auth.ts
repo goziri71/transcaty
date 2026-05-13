@@ -49,6 +49,10 @@ function verifyHmac(payload: string, secret: string, signature: string): boolean
   return timingSafeEqual(a, b);
 }
 
+function merchantHmacHeaderPresent(value: string | undefined): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
 async function loadMerchantKey(keyHash: string): Promise<MerchantKeyCacheValue | null> {
   const cached = getMerchantKeyCache(keyHash);
   if (cached?.kind === "hit") return cached.value;
@@ -109,10 +113,15 @@ export async function merchantAuth(
   const signature = request.headers["x-transacty-signature"] as string | undefined;
   const timestamp = request.headers["x-transacty-timestamp"] as string | undefined;
 
-  if (!key || !signature || !timestamp) {
+  if (!merchantHmacHeaderPresent(key) || !merchantHmacHeaderPresent(signature) || !merchantHmacHeaderPresent(timestamp)) {
+    const missing: string[] = [];
+    if (!merchantHmacHeaderPresent(key)) missing.push("X-Transacty-Key");
+    if (!merchantHmacHeaderPresent(timestamp)) missing.push("X-Transacty-Timestamp");
+    if (!merchantHmacHeaderPresent(signature)) missing.push("X-Transacty-Signature");
     return reply.status(401).send({
       error: "Unauthorized",
-      message: "Missing X-Transacty-Key, X-Transacty-Signature, or X-Transacty-Timestamp",
+      message: `HMAC headers missing or empty: ${missing.join(", ")}. Send all three with non-empty values (see docs: signing payload is "{X-Transacty-Timestamp}.{rawRequestBody}"; for GET with no body use "timestamp." including the trailing dot).`,
+      missingHeaders: missing,
     });
   }
 
