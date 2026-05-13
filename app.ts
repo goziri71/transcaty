@@ -283,11 +283,31 @@ export async function buildApp() {
       "CORS: merged CORS_ALLOWED_ORIGINS into allowlist (merchant/provider SPAs must be listed or preflight returns 404)"
     );
   }
+
+  /** Same primary domain as API (e.g. dashboard vs www vs apex). */
+  function isTransactyAiOrigin(originUrl: string): boolean {
+    try {
+      const u = new URL(originUrl);
+      const host = u.hostname.toLowerCase();
+      if (u.protocol !== "https:") return false;
+      return host === "transacty.ai" || host.endsWith(".transacty.ai");
+    } catch {
+      return false;
+    }
+  }
+
+  function isAllowedCorsOrigin(origin: string): boolean {
+    const normalized = origin.trim().replace(/\/$/, "");
+    if (corsAllowedOrigins.has(normalized)) return true;
+    if (isTransactyAiOrigin(normalized)) return true;
+    return false;
+  }
+
   await app.register(cors, {
     origin: (origin, cb) => {
       if (!origin) return cb(null, true);
       const normalized = origin.trim().replace(/\/$/, "");
-      cb(null, corsAllowedOrigins.has(normalized));
+      cb(null, isAllowedCorsOrigin(normalized));
     },
   });
 
