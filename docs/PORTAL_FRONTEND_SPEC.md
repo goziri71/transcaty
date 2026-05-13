@@ -15,6 +15,8 @@ Merchants sign up with minimal info, log in (optionally **MFA**), complete activ
 
 **Implementation order for auth UI:** Login → if `requiresMfa`, show TOTP step → store session JWT → protected routes. Optional: **Forgot password** flow (email link to your SPA → reset form). Optional: **Security** settings for MFA enrollment (`/portal/me/mfa/*`).
 
+**Tylt / cross-border (India)** uses the **same** merchant portal as Bangladesh: operators see **wallet pockets** (per currency), **one programmatic API key** permissioned by **scopes**, and **one transactions** timeline. Tylt **pay-in/pay-out initiation** is **not** a separate portal wizard—it happens via the merchant **`/v1/tylt/*`** API (HMAC); the portal shows **balances** and **history**. Full UI flow for that product line: [§ Tylt and cross-border — merchant portal flows](#tylt-and-cross-border--merchant-portal-flows).
+
 ---
 
 ## Base URL
@@ -1011,19 +1013,72 @@ All errors follow:
 
 ---
 
-## Cross-border (Tylt / India) – merchant dashboard
+## Tylt and cross-border — merchant portal flows
 
-**Product model.** Merchants use **one** programmatic API key and the **same HMAC signing flow** as Bangladesh for **all** server-to-server calls. Domestic payins/payouts and **Tylt / India rails** (`/v1/tylt/*`) are **not** split into separate keys; **scopes** on the key decide what is allowed.
+This section is the **implementation guide** for showing **Tylt / India (cross-border)** alongside **Bangladesh (domestic)** in the merchant dashboard. It complements `docs/TYLT_MERCHANT_API_TESTING.md`, which documents **programmatic** `/v1/tylt/*` calls (Postman, HMAC), not portal routes.
 
-**Balances.** Do **not** merge BDT and cross-border settled currency into one headline number. Use **`GET /portal/me/wallets`** to show **pockets** (one row per merchant wallet currency). **`GET /portal/me/balance`** stays backward-compatible: when several wallets exist it returns a deterministic **primary** row (BDT first). Use wallets whenever the UI must show every pocket.
+### Product model (what the merchant understands)
 
-**Suggested UI.**
+- **Transacty** is what merchants see (portal + `/v1` API). Under the hood, **domestic** traffic may use Payok (Bangladesh); **cross-border / India** traffic uses **Tylt** (`/v1/tylt/*`).
+- **One merchant account**, **one portal login**, **one programmatic API key type** (`transacty_…`). There are **not** separate “BD keys” and “Tylt keys”—**scopes** on the key decide whether domestic payin/payout, Tylt rails, or balances are allowed.
+- **Wallet balances** are **not** merged across rails: each **currency** is a separate **merchant wallet** row (**pocket**), e.g. BDT vs a settled USD-like/crypto pocket used for Tylt.
 
-- **Tabs or sections** such as “Bangladesh” vs “India / Cross-border” can be driven entirely from **`/portal/me/wallets`** (e.g. group by `currency` or by rules in the app). No extra backend contract is required for v1.
-- **API Keys:** Surface **scopes** on create/revoke flows. Copy should state that domestic and Tylt capabilities are **permissioned on the same key** (e.g. `payin:create`, `payout:create`, `balance:read`, plus Tylt routes where `tylt:*` or related scopes apply). Link engineers to **`docs/TYLT_MERCHANT_API_TESTING.md`** for Postman coverage.
-- **Never** put the API **secret** in the merchant SPA. The dashboard uses **`/portal/*` (JWT)** only. HMAC + `/v1/*` testing belongs in **Postman** or the merchant’s **backend**.
+### Portal vs merchant API — who does what
 
-**Regression order for Tylt `/v1` (Postman):** See **`docs/TYLT_MERCHANT_API_TESTING.md`** §11.
+| Concern | Merchant portal (`/portal/*`, JWT) | Merchant API (`/v1/*`, HMAC) |
+|--------|-------------------------------------|--------------------------------|
+| Signup, login, MFA, password reset | Yes | No |
+| KYC uploads / activation | Yes | No |
+| Create, list, revoke **API keys** (incl. **scopes**) | Yes | N/A (uses keys) |
+| View **balance** snapshot (single primary row) | `GET /portal/me/balance` | `GET /v1/balance` |
+| View **all wallet pockets** (per currency) | **`GET /portal/me/wallets`** | — |
+| **Domestic** payin/payout (Bangladesh) | Optional portal payins/payouts where implemented | `POST /v1/payins`, payouts, etc. |
+| **Tylt** CrossRamp / H2H / CPG pay-in/out, internal transfer | **No dedicated portal wizard**—merchants (or integrators) call API | **`POST` / `GET` under `/v1/tylt/...`** (see testing doc) |
+| **Transactions** history (all rails that write to ledger) | `GET /portal/me/transactions` (+ detail) | `GET /v1/transactions` |
+| Merchant **webhook** URL | `PATCH /portal/me/webhook` (and GET) | `PATCH /v1/me/webhook` pattern (HMAC) for programmatic |
+
+**Important:** The SPA must **never** embed the API **secret** or implement browser-side HMAC for production. Portal features use **JWT** only. Integrators test Tylt with **Postman** or a **server**.
+
+### Recommended frontend implementation order (Tylt-aware)
+
+1. **Environment switch** — `test` \| `live` on dashboard (already required for balance, keys, and txs). Tylt and domestic rows share the same `environment` dimension.
+2. **Wallets-first overview** — On shell load (after auth): `GET /portal/me`, `GET /portal/me/balance`, **`GET /portal/me/wallets`**. Render **one card per** `items[]` pocket; do **not** sum unlike currencies into one headline.
+3. **Optional regional UX** — Group pockets in the UI (e.g. “Bangladesh” when `currency === BDT`, “Cross-border / India” when `currency` is the settled pocket used for Tylt—**you can derive labels from `currency` and product rules**; no extra API field is required for v1).
+4. **API Keys** — Obey `canCreateApiKeys` (KYC **verified**). Show **scopes** on each key; explain **one key** gates **both** domestic and Tylt (see **API keys and scopes (flow)** below). Link to **`docs/TYLT_MERCHANT_API_TESTING.md`** for engineers (esp. §11 regression order).
+5. **Transactions** — Same list for all rails. **`GET /portal/me/transactions`** returns **id, type, status, amount**, etc. (see route schema in this doc—**currency** / **provider** are not always exposed on list items); **`GET /portal/me/transactions/:id`** returns **`metadata`** when present—**Tylt** rows often include **`rail`**, **`tyltProduct`**, etc. Use **metadata** on **detail** (when present) to show a **badge** or filter “Tylt” vs domestic; if `metadata` is missing or opaque, show **type / amount / status** (and **currency** when the API exposes it).
+6. **Webhooks** — Configure **one** merchant webhook URL in portal settings where supported; server delivers events for activity originating from any rail the merchant uses.
+7. **KYC / live** — If the environment is **live** and `KYC_REQUIRED` is on in production, **Tylt create** routes and some domestic flows require **`kycStatus === verified`**—mirror existing portal messaging (“complete verification”).
+
+### Balances and wallet pockets (flow)
+
+1. User selects **test** or **live** (persist per session or user preference).
+2. Call **`GET /portal/me/wallets?environment=…`**.
+3. For each item: show **currency**, **balance**, **status**, **updatedAt**; optional **copy** explaining this pocket may reflect **cross-border** activity when the currency is not BDT.
+4. **`GET /portal/me/balance`** remains the **compat** single-row view (BDT-first when multiple wallets exist). Prefer **wallets** for any “India / Tylt” or multi-currency headline area.
+
+### API keys and scopes (flow)
+
+1. **List keys** — `GET /portal/me/api-keys` (when authenticated); show masked key, **scopes** string, environment, created/revoked state per your existing spec.
+2. **Create key** — Modal: enforce **scopes** input or **preset** chips (e.g. “Domestic payin/payout”, “Tylt full”, “Read-only balance”). **Document in UI** that **Tylt** paths under `/v1/tylt/*` require the same key as domestic routes; missing scopes yield **403** on the API.
+3. **Recommended scope string** (sandbox / full regression; tighten in production):  
+   `payin:create,payout:create,balance:read,tylt:internal_transfer` or `*` only in non-prod sandboxes. Align copy with `docs/TYLT_MERCHANT_API_TESTING.md` § scopes.
+4. **Secret** — Show **once** on create; warn **not** to commit to frontend. Point to **Postman** doc for HMAC testing.
+5. **Revocation** — Existing revoke flow; after revoke, Tylt and domestic calls with that key fail.
+
+### Transactions and support (flow)
+
+1. **`GET /portal/me/transactions`** — Paginated list; includes **all** merchant ledger transactions the backend records (domestic + Tylt) for that `environment`.
+2. **Detail** — `GET /portal/me/transactions/:id` — display **`metadata`** JSON in an “Advanced” or ops-friendly panel if useful; parse known keys (`rail`, `tyltProduct`) for a **product** label when present.
+3. **Payouts UI** — Existing **domestic** portal payout flows (if any) remain **Payok-shaped**; **Tylt CPG payouts** are initiated via **`/v1/tylt/cpg/payout-requests`**; the portal still shows **resulting** balance and **transaction** rows.
+
+### What we do **not** build in the portal for v1 (by design)
+
+- Hosted **CrossRamp** iframe / redirect UI, **H2H** UPI step-by-step, or **CPG** travel-rule forms—the merchant product surface for those is **`/v1/tylt/*`** or a **merchant-built** checkout. The portal’s job is **visibility** (money + history + keys), not replacing those APIs.
+
+### Engineer reference (Postman / `/v1`)
+
+- **Full ordered checklist** of Tylt merchant endpoints: **`docs/TYLT_MERCHANT_API_TESTING.md`** §11.  
+- **Domestic HMAC** primer (same signing pattern): **`docs/POSTMAN_MERCHANT_API_GUIDE.md`**.
 
 ---
 
@@ -1084,7 +1139,7 @@ All errors follow:
 
 - Show only when `canCreateApiKeys === true`.
 - List keys with masked display. "Create key" button → modal with copy for key + secret.
-- Show **scopes** per key and explain that **Bangladesh and Tylt** shares one key; scopes gate both. Point integrators to **`docs/TYLT_MERCHANT_API_TESTING.md`** for India-rail Postman steps.
+- Show **scopes** per key and explain that **Bangladesh and Tylt share one key**; scopes gate both. Point integrators to **`docs/TYLT_MERCHANT_API_TESTING.md`** for India-rail Postman steps. For the full portal-side flow (wallets, tabs, what is not in the portal), see [§ Tylt and cross-border — merchant portal flows](#tylt-and-cross-border--merchant-portal-flows).
 - Revoke button per key.
 
 ### Customers page
@@ -1117,7 +1172,7 @@ All errors follow:
 | **Profile** | `GET /portal/me` on app shell load; use `mfaEnabled` / `mfaPendingSetup` for Security UI. |
 | **KYC** | Upload flow via Supabase `uploadToSignedUrl` per [File upload](#file-upload-documents). |
 | **Ops** | Balance, customers, transactions, transfers, refunds, payouts per sections below. |
-| **Cross-border** | India/Tylt areas driven from **`/portal/me/wallets`**; API key scope UX; no browser `/v1` secrets. |
+| **Cross-border / Tylt** | Full flow: [§ Tylt and cross-border — merchant portal flows](#tylt-and-cross-border--merchant-portal-flows). **`/portal/me/wallets`**, API key **scopes**, **`metadata`** on tx detail, no browser `/v1` secrets. |
 
 For **Postman-only** testing (no UI), see `docs/POSTMAN_PORTAL_TESTING.md`. For **Tylt `/v1`** regression, see `docs/TYLT_MERCHANT_API_TESTING.md`.
 
