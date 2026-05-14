@@ -1266,8 +1266,6 @@ export async function buildApp() {
     }
   );
 
-  const tyltKycBypass = process.env.TYLT_ALLOW_KYC_BYPASS === "true" || process.env.TYLT_ALLOW_KYC_BYPASS === "1";
-
   /** Merchant docs use `/v1/...` without a provider segment; `/v1/tylt/...` remains for backward compatibility. */
   function merchantV1GetPair(canonicalPath: string, legacyPath: string, register: (path: string) => void): void {
     register(canonicalPath);
@@ -1365,7 +1363,6 @@ export async function buildApp() {
               currencySymbol: body.currencySymbol,
               userDetails,
               returnUrl: normalizedReturn,
-              kycBypass: tyltKycBypass,
             });
             const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
             return {

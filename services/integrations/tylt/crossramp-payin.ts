@@ -1,7 +1,7 @@
 /**
  * Tylt CrossRamp UPI pay-in: create hosted instance, finalize on signed webhook only.
  */
-import { eq, and } from "drizzle-orm";
+import { and, eq, or, sql } from "drizzle-orm";
 import { db } from "../../../src/db/index.js";
 import { transactions, wallets, ledgerEntries } from "../../../src/db/schema/index.js";
 import { audit } from "../../../src/lib/audit.js";
@@ -148,6 +148,30 @@ function readMetadata(tx: { metadata: string | null }): Record<string, unknown> 
 
 export function parseTransactionMetadata(tx: { metadata: string | null }): Record<string, unknown> {
   return readMetadata(tx);
+}
+
+/**
+ * `merchantOrderId` sent to TL Pay on create: stored as `metadata.tyltMerchantOrderId` (H2H);
+ * hosted CrossRamp uses `transactions.id` only.
+ */
+export function resolveTyltPayinMerchantOrderIdForRemote(meta: Record<string, unknown>, txId: string): string {
+  const raw = meta.tyltMerchantOrderId;
+  if (typeof raw === "string" && raw.trim()) return raw.trim();
+  return txId;
+}
+
+export async function selectPayinTxByMerchantOrderRef(orderRef: string) {
+  const [row] = await db
+    .select()
+    .from(transactions)
+    .where(
+      and(
+        eq(transactions.type, "payin"),
+        or(eq(transactions.id, orderRef), sql`(metadata::jsonb->>'tyltMerchantOrderId') = ${orderRef}`)
+      )
+    )
+    .limit(1);
+  return row ?? null;
 }
 
 export function isTyltCrossRampPayinMetadata(meta: Record<string, unknown>): boolean {
@@ -378,11 +402,7 @@ export async function applyTyltCrossRampWebhookPayload(
     return null;
   }
 
-  const [tx] = await db
-    .select()
-    .from(transactions)
-    .where(and(eq(transactions.id, merchantOrderId), eq(transactions.type, "payin")))
-    .limit(1);
+  const tx = await selectPayinTxByMerchantOrderRef(merchantOrderId);
 
   if (!tx) {
     return null;
@@ -404,9 +424,10 @@ export async function applyTyltCrossRampWebhookPayload(
 
   const terminalStatus = parseTerminalStatus(parsed);
   const callbackDecisionWithStatus = classifyCrossRampDecision(eventId, terminalStatus);
+  const tyltMerchantOrderIdForRemote = resolveTyltPayinMerchantOrderIdForRemote(meta, tx.id);
   const remote = await fetchRemoteCrossRampDecision({
     environment: tx.environment as TyltMerchantEnvironment,
-    merchantOrderId: tx.id,
+    merchantOrderId: tyltMerchantOrderIdForRemote,
     instanceId: tx.externalId,
   });
   if (remote.decision !== callbackDecisionWithStatus) {

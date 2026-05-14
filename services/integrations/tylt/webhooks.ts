@@ -9,6 +9,7 @@ import {
   applyTyltCrossRampWebhookPayload,
   parseCrossRampMerchantOrderId,
   parseTransactionMetadata,
+  selectPayinTxByMerchantOrderRef,
   TYLT_PRODUCT_CROSSRAMP,
   TYLT_PRODUCT_H2H_UPI,
 } from "./crossramp-payin.js";
@@ -17,7 +18,7 @@ import { applyTyltCpgPayoutWebhookPayload, extractCpgPayOutWebhookFields, TYLT_P
 import { getTyltCredentials, type TyltCredentialRole, type TyltMerchantEnvironment } from "./config.js";
 import { verifyTyltSignature } from "./sign.js";
 
-/** Prefer structured CrossRamp shape first, then CPG extractors (merchant order id is our transactions.id). */
+/** Prefer structured CrossRamp shape first, then CPG extractors. Ref may be `transactions.id` or H2H `metadata.tyltMerchantOrderId`. */
 export function extractTyltWebhookMerchantOrderId(parsed: unknown): string | undefined {
   const cross = parseCrossRampMerchantOrderId(parsed)?.trim();
   if (cross) return cross;
@@ -96,7 +97,8 @@ export async function applyTyltWebhookByStoredRailProduct(
   const orderId = extractTyltWebhookMerchantOrderId(parsed);
   if (!orderId) return null;
 
-  const [tx] = await db.select().from(transactions).where(eq(transactions.id, orderId)).limit(1);
+  const [txById] = await db.select().from(transactions).where(eq(transactions.id, orderId)).limit(1);
+  const tx = txById ?? (await selectPayinTxByMerchantOrderRef(orderId));
   if (!tx) return null;
 
   const meta = parseTransactionMetadata(tx);

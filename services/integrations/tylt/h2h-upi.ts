@@ -1,6 +1,7 @@
 /**
  * Tylt H2H UPI pay-in (§4.2): API-led flow; credits use same signed webhook + ledger path as CrossRamp UPI.
  */
+import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { db } from "../../../src/db/index.js";
 import { transactions } from "../../../src/db/schema/index.js";
@@ -14,6 +15,14 @@ const RAIL = "tylt";
 
 export function isTyltH2hPayinMetadata(meta: Record<string, unknown>): boolean {
   return meta.rail === RAIL && meta.tyltProduct === TYLT_PRODUCT_H2H_UPI;
+}
+
+/** Tylt H2H: default `isKYCNeeded=0` (per merchant agreement). Set `TYLT_H2H_REQUIRE_END_USER_KYC=true` to send `1`. */
+function h2hIsKycNeededForTylt(): 0 | 1 {
+  if (process.env.TYLT_H2H_REQUIRE_END_USER_KYC === "true" || process.env.TYLT_H2H_REQUIRE_END_USER_KYC === "1") {
+    return 1;
+  }
+  return 0;
 }
 
 function extractH2hCreateResponse(json: unknown): {
@@ -109,15 +118,22 @@ export async function createTyltH2hPayinInstance(params: {
   userDetails: { email: string; name?: string; phone?: string };
   /** Optional redirect when Tylt expects redirectUrl for mobile/browser flows. */
   returnUrl?: string;
-  kycBypass: boolean;
 }) {
   const callBackUrl = `${params.baseUrl.replace(/\/$/, "")}/webhooks/tylt/h2h/${params.environment}`;
+  /** Fresh UUID for each create so TL Pay never sees a repeated merchantOrderId across retries/tests. */
+  const tyltMerchantOrderId = randomUUID();
+
+  const email = params.userDetails.email.trim();
+  if (!email) {
+    throw new Error("Tylt H2H create requires a non-empty userDetails.email");
+  }
 
   const metadata = {
     rail: RAIL,
     tyltProduct: TYLT_PRODUCT_H2H_UPI,
     merchantReturnUrl: params.returnUrl ?? "",
     currencySymbol: params.currencySymbol,
+    tyltMerchantOrderId,
   };
 
   const settlementCurrency: "USDT" | "INR" = params.currencySymbol === "INR" ? "INR" : "USDT";
@@ -138,13 +154,6 @@ export async function createTyltH2hPayinInstance(params: {
 
   if (!tx) throw new Error("Failed to create transaction");
 
-  const email = params.userDetails.email.trim();
-  if (!email) {
-    throw new Error("Tylt H2H create requires a non-empty userDetails.email");
-  }
-
-  /** TL Pay validates these fields strictly; keep plain JSON-serializable values only. */
-  const merchantOrderId = String(tx.id);
   const amountRaw = (() => {
     const n = parseFloat(params.amount);
     return Number.isFinite(n) ? n : params.amount;
@@ -158,10 +167,10 @@ export async function createTyltH2hPayinInstance(params: {
     },
     amount: amountRaw,
     currencySymbol: params.currencySymbol,
-    merchantOrderId,
+    merchantOrderId: tyltMerchantOrderId,
     callBackUrl,
     userEmail: email,
-    isKYCNeeded: params.kycBypass ? 0 : 1,
+    isKYCNeeded: h2hIsKycNeededForTylt(),
     isUTRNeeded: 1,
   };
   if (params.returnUrl?.trim()) {
