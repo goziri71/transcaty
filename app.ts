@@ -65,6 +65,7 @@ import {
   tyltH2hGetCryptoCurrencyListForPrime,
   tyltH2hGetMerchantRampSpecialRates,
   tyltH2hGetPaymentMethodsP2pOnRamp,
+  pickTyltJsonPrimaryMessage,
   tyltGetAccountBalance,
   tyltGetMerchantDetails,
   tyltGetSupportedBaseCurrenciesList,
@@ -1395,7 +1396,8 @@ export async function buildApp() {
       schema: {
         body: z.object({
           transactionId: z.string().uuid(),
-          utr: z.string().min(4).max(64).optional(),
+          /** TL Pay requires UTR when create sent `isUTRNeeded: 1` (always the case on our create). */
+          utr: z.string().min(4).max(64),
         }),
         response: {
           200: z.object({
@@ -1417,7 +1419,7 @@ export async function buildApp() {
         return reply.status(403).send({ error: "Forbidden", message: "Missing scope: payin:create" });
       }
       if (!(await requireKycVerified(m.merchantId, reply))) return;
-      const body = request.body as { transactionId: string; utr?: string };
+      const body = request.body as { transactionId: string; utr: string };
       const [txRow] = await db
         .select()
         .from(transactions)
@@ -1443,10 +1445,32 @@ export async function buildApp() {
           utr: body.utr,
         });
         if (upstream.status >= 400) {
-          app.log.warn({ transactionId: body.transactionId, status: upstream.status }, "tylt H2H buyer confirm rejected");
+          const merchantMsg4xx =
+            pickTyltJsonPrimaryMessage(upstream.json) ??
+            "Could not confirm payment. Check UTR, timing (after payer completed UPI), and TL Pay trade state.";
+          const merchantMsg5xx =
+            pickTyltJsonPrimaryMessage(upstream.json) ??
+            "Payment confirmation is temporarily unavailable. Try again shortly.";
+          const merchantMsg = upstream.status >= 500 ? merchantMsg5xx : merchantMsg4xx;
+          app.log.warn(
+            {
+              transactionId: body.transactionId,
+              status: upstream.status,
+              upstreamMessage: merchantMsg,
+            },
+            "tylt H2H buyer confirm rejected"
+          );
+          if (upstream.status >= 500) {
+            return reply.status(503).send({
+              error: "Service Unavailable",
+              message: merchantMsg,
+              code: "payment_unavailable",
+            });
+          }
           return reply.status(400).send({
             error: "Bad Request",
-            message: "Could not confirm payment",
+            message: merchantMsg,
+            code: "payment_provider_rejected",
           });
         }
         return { transactionId: txRow.id, acknowledged: true };

@@ -34,6 +34,7 @@ export {
   tyltH2hGetCryptoCurrencyListForPrime,
   tyltH2hGetMerchantRampSpecialRates,
   isTyltH2hPayinMetadata,
+  pickTyltJsonPrimaryMessage,
 } from "./h2h-upi.js";
 export {
   createTyltCpgPayinRequest,

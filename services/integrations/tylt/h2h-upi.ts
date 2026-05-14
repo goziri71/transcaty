@@ -36,8 +36,8 @@ function extractH2hCreateResponse(json: unknown): {
   return { instanceId, paymentDetails: data };
 }
 
-/** First human-readable error line from TL Pay createPayinInstance JSON (4xx bodies). */
-function pickTyltCreatePayinPrimaryMessage(json: unknown): string | undefined {
+/** First human-readable message from TL Pay JSON bodies (4xx errors, common success wrappers). */
+export function pickTyltJsonPrimaryMessage(json: unknown): string | undefined {
   const root = json as Record<string, unknown> | null;
   if (!root || typeof root !== "object") return undefined;
 
@@ -102,7 +102,7 @@ function h2hCreateFailureHint(status: number, json: unknown): string {
     return parts.join("; ");
   }
 
-  const picked = pickTyltCreatePayinPrimaryMessage(json);
+  const picked = pickTyltJsonPrimaryMessage(json);
   if (picked) {
     const safe = picked.slice(0, 240);
     parts.push(`upstream_message=${safe}`);
@@ -211,7 +211,7 @@ export async function createTyltH2hPayinInstance(params: {
     const internal = `Tylt H2H create instance failed (${hint})`;
     if (status >= 400 && status < 500) {
       const merchantMsg =
-        pickTyltCreatePayinPrimaryMessage(json) ?? "Payment request was declined. Check amounts, currency, and required fields.";
+        pickTyltJsonPrimaryMessage(json) ?? "Payment request was declined. Check amounts, currency, and required fields.";
       throw new UpstreamProviderClientError(internal, merchantMsg, status);
     }
     throw new Error(internal);

@@ -10,9 +10,8 @@ Responses follow the shared merchant schemas in [`src/lib/merchant-api-zod.ts`](
 
 - **`401`** — `{ error, message? }` (unauthorized).
 - **`403`** — `{ error, message? }` (forbidden / missing scope / KYC).
-- **`400`** / **`502`** / **`500`** — merchant-facing body may include optional **`code`**, **`transactionId`**, **`platformOrderId`** (never includes upstream processor names or raw upstream payloads).
-
-Proxy **`GET`** handlers declare OpenAPI-oriented response codes **`200`**, **`400`**, **`401`**, **`403`**, **`404`**, **`502`**, **`500`**. Upstream Tylt HTTP statuses are forwarded when they match Transacty validation rules; upstream **`5xx`** is surfaced as **`502`**.
+- **`400`** — validation or partner rejection; may include **`code: "payment_provider_rejected"`** and a clear **`message`** (limits, KYC, confirm timing) when TL Pay returns a 4xx with text. Still no raw upstream payloads or secrets.
+- **`502`** / **`500`** — merchant-facing body may include optional **`code`**, **`transactionId`**, **`platformOrderId`** (never includes raw upstream payloads or secrets). OpenAPI-oriented response codes **`200`**, **`400`**, **`401`**, **`403`**, **`404`**, **`502`**, **`500`**. Upstream Tylt HTTP statuses are forwarded when they match Transacty validation rules; upstream **`5xx`** is surfaced as **`502`**.
 
 ## Idempotency
 
@@ -30,7 +29,7 @@ These **`POST`** endpoints honor **`Idempotency-Key`** (same collision semantics
 | Method | Path | Scope(s) | KYC | Notes |
 |--------|------|----------|-----|--------|
 | POST | `/v1/h2h/payin-instances` | `payin:create` or `*` | If required | H2H UPI instance (India pay-in on `/v1`) |
-| POST | `/v1/h2h/buyer-confirms-payment` | `payin:create` or `*` | If required | Body: `transactionId`, optional `utr` |
+| POST | `/v1/h2h/buyer-confirms-payment` | `payin:create` or `*` | If required | Body: `transactionId`, **`utr`** (required; TL Pay `isUTRNeeded: 1` on create) |
 | GET | `/v1/h2h/payment-methods` | `payin:create` or `*` | — | Proxies Tylt JSON |
 | GET | `/v1/h2h/crypto-currencies` | `payin:create` or `*` | — | Proxies Tylt JSON |
 | GET | `/v1/supported/crypto-currencies` | `balance:read` **or** `payin:create` **or** `payout:create` or `*` | — | Cached lists (`TYLT_DISCOVERY_CACHE_TTL_MS`) |

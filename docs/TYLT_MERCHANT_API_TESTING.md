@@ -233,7 +233,23 @@ In Postman, use the **Params** tab; empty values are dropped before the upstream
 
 ### 6.3 India UPI — H2H only (no hosted CrossRamp create)
 
-The merchant API **does not** expose `POST /v1/crossramp/payin-instances` (no **`rampUrl`** / hosted-widget create). Use **H2H** below so payment instructions and UX stay **on your side**. See [§6.4](#64-h2h-upi-pay-in--create-post) and [§6.5](#65-h2h--buyer-confirms-payment-post).
+The merchant API **does not** expose `POST /v1/crossramp/payin-instances` (no **`rampUrl`** / hosted-widget create). Use **H2H** below so payment instructions and UX stay **on your side**.
+
+#### End-to-end flow (aligned with TL Pay H2H UPI docs)
+
+This mirrors TL Pay’s sequence: [Create a Pay-in Instance](https://docs.tylt.money/introduction/tylt-crossramp-fiat-crypto-solutions/india-inr/upi-payin-inr-usdt-or-h2h/create-a-pay-in-instance) → lifecycle **webhooks** on your `callBackUrl` → payer completes UPI → [Buyer Confirms Payment](https://docs.tylt.money/introduction/tylt-crossramp-fiat-crypto-solutions/india-inr/upi-payin-inr-usdt-or-h2h/buyer-confirms-payment) → terminal **webhook** / completed trade.
+
+| Step | Who | What |
+|------|-----|------|
+| **1** | Your backend | **`POST /v1/h2h/payin-instances`** with amount, `currencySymbol`, `userDetails.email`, etc. You receive `transactionId` (Transacty row), **`instanceId`** (TL Pay), and `paymentDetails`. |
+| **2** | TL Pay → your server | **`POST`** signed webhooks to **`{APP_BASE_URL}/webhooks/tylt/h2h/{test\|live}`** ([Web-hook: UPI Pay-In](https://docs.tylt.money/introduction/tylt-crossramp-fiat-crypto-solutions/india-inr/upi-payin-inr-usdt-or-h2h/web-hook-upi-pay-in)). Process lifecycle by `data.trade.event.id` (e.g. **2** = seller found / UPI instructions for the payer). Instructions may also appear in create **`paymentDetails`** depending on TL Pay response shape—prefer webhooks + docs for production UX. |
+| **3** | Payer | Pays via UPI using the **UPI ID / QR** from your UI (from webhook and/or create response). |
+| **4** | Your backend | After payment, **`POST /v1/h2h/buyer-confirms-payment`** with `transactionId` + **`utr`** (UTR is **mandatory** here: Transacty always sends **`isUTRNeeded: 1`** to TL Pay on create, per their API). This maps to TL Pay `instanceId` + `utr`. |
+| **5** | TL Pay → your server | Further webhooks until terminal events (**4** / **6** completed, **9** expired, etc.). Transacty finalizes ledger / merchant webhooks on success paths. |
+
+**`APP_BASE_URL` must match the deployment that receives webhooks.** It is the prefix of `callBackUrl` sent to TL Pay. If merchants call **`api.example.com`** but `APP_BASE_URL` is another host (e.g. a different Render service), TL Pay will POST webhooks to the **wrong** URL—creates may succeed but lifecycle/payment instructions won’t match the same app you’re testing from.
+
+See [§6.4](#64-h2h-upi-pay-in--create-post) and [§6.5](#65-h2h--buyer-confirms-payment-post).
 
 ### 6.4 H2H UPI pay-in — create (POST)
 
@@ -271,7 +287,9 @@ The merchant API **does not** expose `POST /v1/crossramp/payin-instances` (no **
 
 `returnUrl` is optional; if sent, it uses the same validator as other merchant `returnUrl` fields ([§8](#8-returnurl-rules-payok--optional-h2h)).
 
-**Expect (200):** `transactionId`, `status: "pending"`, `amount`, `currency`, `instanceId`, `paymentDetails` (object), optional `expiresAt`.
+**Expect (200):** `transactionId`, `status: "pending"`, `amount`, `currency`, `instanceId`, `paymentDetails` (object), optional `expiresAt`. Continue the flow in [§6.3](#63-india-upi--h2h-only-no-hosted-crossramp-create) (webhooks → payer UPI → [§6.5](#65-h2h--buyer-confirms-payment-post)).
+
+**Upstream 4xx on create:** Response body may include **`code: "payment_provider_rejected"`** and TL Pay’s **`message`** (amount bands, KYC, etc.) for faster debugging.
 
 **Troubleshooting upstream 400:** The server forwards `APP_BASE_URL` into Tylt’s required **`callBackUrl`** (`{APP_BASE_URL}/webhooks/tylt/h2h/{test|live}`). If `APP_BASE_URL` is **`http://localhost:...`**, Tylt may **reject** the create with **HTTP 400** (they often require a **public** webhook URL). Use **ngrok** (or your deployed API URL) in `APP_BASE_URL` for integration tests, restart the API, then retry. Check server logs for `upstream_message=` / `upstream_body=` after failures (operators only).
 
@@ -282,7 +300,7 @@ The merchant API **does not** expose `POST /v1/crossramp/payin-instances` (no **
 - **Scope:** `payin:create` or `*`  
 - **Idempotency:** **not** used on this route
 
-**Body:**
+**Body (TL Pay–aligned — `utr` required):**
 
 ```json
 {
@@ -293,18 +311,14 @@ The merchant API **does not** expose `POST /v1/crossramp/payin-instances` (no **
 
 | Field | Required | Notes |
 |-------|----------|--------|
-| `transactionId` | yes | UUID of the Transacty transaction created in [§6.4](#64-h2h-upi-pay-in--create-post). |
-| `utr` | no | If present: length 4–64. |
+| `transactionId` | yes | UUID of the Transacty transaction from [§6.4](#64-h2h-upi-pay-in--create-post). |
+| `utr` | **yes** | **4–64** chars. TL Pay treats UTR as **mandatory** when `isUTRNeeded: 1` at create; Transacty **always** sends `1` on create, so omitting `utr` is invalid on this API. Use the real UTR from the payer’s bank/UPI app after they paid. |
 
-`utr` may be omitted:
+Call **after** the payer has completed UPI and ideally when webhooks show the trade is waiting for confirm (e.g. TL Pay **`event.id` 2** / **3** per their [webhook doc](https://docs.tylt.money/introduction/tylt-crossramp-fiat-crypto-solutions/india-inr/upi-payin-inr-usdt-or-h2h/web-hook-upi-pay-in)). Confirming too early can produce TL Pay **400**—the response `message` is passed through when present, with `code` set to `payment_provider_rejected` when the failure comes from TL Pay.
 
-```json
-{
-  "transactionId": "{{tyltTransactionId}}"
-}
-```
+**Expect (200):** `{ "transactionId": "...", "acknowledged": true }` when TL Pay accepts the confirm.
 
-**Expect (200):** `{ "transactionId": "...", "acknowledged": true }` when Tylt accepts the confirm; **400** if the row is not an H2H pay-in, instance id missing, or upstream rejects.
+**Expect (400):** Wrong row type, missing `instanceId`, or TL Pay rejects; body may include **`code: "payment_provider_rejected"`** and TL Pay’s **`message`**.
 
 ### 6.6 CPG pay-in — create (POST)
 
