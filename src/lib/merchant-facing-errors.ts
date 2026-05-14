@@ -1,6 +1,7 @@
 /**
- * Merchant / portal API responses must never expose upstream processor names, URLs, or raw payloads.
- * Full detail stays in logs and audit meta only.
+ * Merchant / portal API responses avoid exposing raw upstream payloads, secrets, and URLs.
+ * Validator-style messages from partners (limits, KYC, field errors) may be passed through
+ * via {@link UpstreamProviderClientError} when the upstream returns a 4xx with clear text.
  */
 
 import type { FastifyReply } from "fastify";
@@ -45,6 +46,21 @@ export type MerchantFacingResult = {
 };
 
 /**
+ * Upstream payment partner rejected the request with a 4xx and a human-readable message
+ * (validation, limits, KYC copy). Safe to return to merchants for faster debugging.
+ */
+export class UpstreamProviderClientError extends Error {
+  constructor(
+    internalDetail: string,
+    public readonly merchantMessage: string,
+    public readonly upstreamHttpStatus: number
+  ) {
+    super(internalDetail);
+    this.name = "UpstreamProviderClientError";
+  }
+}
+
+/**
  * Maps errors from pay-in / pay-out creation (merchant API + portal) to safe responses.
  */
 export function merchantPaymentFlowErrorResponse(err: unknown): MerchantFacingResult {
@@ -70,6 +86,18 @@ export function merchantPaymentFlowErrorResponse(err: unknown): MerchantFacingRe
         transactionId: err.transactionId,
         reference: err.transactionId,
         platformOrderId: err.platformOrderId ?? null,
+      },
+      logDetail: err.message,
+    };
+  }
+
+  if (err instanceof UpstreamProviderClientError) {
+    return {
+      status: 400,
+      body: {
+        error: "Bad Request",
+        message: err.merchantMessage,
+        code: "payment_provider_rejected",
       },
       logDetail: err.message,
     };

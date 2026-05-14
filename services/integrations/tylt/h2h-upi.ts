@@ -6,6 +6,7 @@ import { eq } from "drizzle-orm";
 import { db } from "../../../src/db/index.js";
 import { transactions } from "../../../src/db/schema/index.js";
 import { audit } from "../../../src/lib/audit.js";
+import { UpstreamProviderClientError } from "../../../src/lib/merchant-facing-errors.js";
 import { tyltSignedGetJson, tyltSignedPostJson } from "./client.js";
 import type { TyltMerchantEnvironment } from "./config.js";
 import { sortKeysRecursive } from "./sign.js";
@@ -35,18 +36,13 @@ function extractH2hCreateResponse(json: unknown): {
   return { instanceId, paymentDetails: data };
 }
 
-function h2hCreateFailureHint(status: number, json: unknown): string {
-  const parts: string[] = [`upstream_http=${status}`];
+/** First human-readable error line from TL Pay createPayinInstance JSON (4xx bodies). */
+function pickTyltCreatePayinPrimaryMessage(json: unknown): string | undefined {
   const root = json as Record<string, unknown> | null;
-  if (!root || typeof root !== "object") {
-    return parts.join("; ");
-  }
+  if (!root || typeof root !== "object") return undefined;
 
-  // Non-JSON error body from Tylt (client.ts stores as { raw: string })
   if (typeof root.raw === "string" && root.raw.trim()) {
-    const safe = root.raw.trim().replace(/\s+/g, " ").slice(0, 280);
-    parts.push(`upstream_body=${safe}`);
-    return parts.join("; ");
+    return root.raw.trim().replace(/\s+/g, " ").slice(0, 500);
   }
 
   const data = (root.data ?? root.result ?? root) as Record<string, unknown>;
@@ -88,8 +84,27 @@ function h2hCreateFailureHint(status: number, json: unknown): string {
   }
 
   const msg = candidates.find((v) => typeof v === "string" && String(v).trim()) as string | undefined;
-  if (msg?.trim()) {
-    const safe = msg.trim().slice(0, 240).replace(/\s+/g, " ");
+  if (!msg?.trim()) return undefined;
+  return msg.trim().replace(/\s+/g, " ").slice(0, 500);
+}
+
+function h2hCreateFailureHint(status: number, json: unknown): string {
+  const parts: string[] = [`upstream_http=${status}`];
+  const root = json as Record<string, unknown> | null;
+  if (!root || typeof root !== "object") {
+    return parts.join("; ");
+  }
+
+  // Non-JSON error body from Tylt (client.ts stores as { raw: string })
+  if (typeof root.raw === "string" && root.raw.trim()) {
+    const safe = root.raw.trim().replace(/\s+/g, " ").slice(0, 280);
+    parts.push(`upstream_body=${safe}`);
+    return parts.join("; ");
+  }
+
+  const picked = pickTyltCreatePayinPrimaryMessage(json);
+  if (picked) {
+    const safe = picked.slice(0, 240);
     parts.push(`upstream_message=${safe}`);
   } else {
     // Last resort: compact top-level string fields only (no full payload)
@@ -193,7 +208,13 @@ export async function createTyltH2hPayinInstance(params: {
   if (status >= 400 || !instanceId) {
     await db.update(transactions).set({ status: "failed", updatedAt: new Date() }).where(eq(transactions.id, tx.id));
     const hint = h2hCreateFailureHint(status, json);
-    throw new Error(`Tylt H2H create instance failed (${hint})`);
+    const internal = `Tylt H2H create instance failed (${hint})`;
+    if (status >= 400 && status < 500) {
+      const merchantMsg =
+        pickTyltCreatePayinPrimaryMessage(json) ?? "Payment request was declined. Check amounts, currency, and required fields.";
+      throw new UpstreamProviderClientError(internal, merchantMsg, status);
+    }
+    throw new Error(internal);
   }
 
   await db
