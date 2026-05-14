@@ -63,6 +63,7 @@ import {
   parseTransactionMetadata,
   tyltH2hBuyerConfirmsPayment,
   tyltH2hGetCryptoCurrencyListForPrime,
+  tyltH2hGetMerchantRampSpecialRates,
   tyltH2hGetPaymentMethodsP2pOnRamp,
   tyltGetAccountBalance,
   tyltGetMerchantDetails,
@@ -1282,12 +1283,25 @@ export async function buildApp() {
   merchantV1PostPair("/v1/h2h/payin-instances", "/v1/tylt/h2h/payin-instances", (path) =>
     app.post(path, {
       schema: {
-        body: z.object({
-          amount: z.string(),
-          currencySymbol: z.enum(["USDT", "INR"]),
-          returnUrl: z.string().min(1).optional(),
-          userEmail: z.string().email().optional(),
-        }),
+        body: z
+          .object({
+            amount: z.string(),
+            currencySymbol: z.enum(["USDT", "INR"]),
+            returnUrl: z.string().min(1).optional(),
+            /** @deprecated Prefer `userDetails` — Tylt requires a `userDetails` object on create. */
+            userEmail: z.string().email().optional(),
+            userDetails: z
+              .object({
+                email: z.string().email(),
+                name: z.string().min(1).optional(),
+                phone: z.string().optional(),
+              })
+              .optional(),
+          })
+          .refine((b) => b.userDetails != null || b.userEmail != null, {
+            message: "userDetails (preferred) or userEmail is required",
+            path: ["userDetails"],
+          }),
         response: {
           200: z.object({
             transactionId: z.string(),
@@ -1318,6 +1332,7 @@ export async function buildApp() {
         currencySymbol: "USDT" | "INR";
         returnUrl?: string;
         userEmail?: string;
+        userDetails?: { email: string; name?: string; phone?: string };
       };
       let normalizedReturn: string | undefined;
       if (body.returnUrl?.trim()) {
@@ -1339,14 +1354,17 @@ export async function buildApp() {
         const response = await withIdempotency(
           { request, reply, merchantId: m.merchantId, body },
           async () => {
+            const userDetails =
+              body.userDetails ??
+              (body.userEmail != null ? { email: body.userEmail } : { email: "" });
             const result = await createTyltH2hPayinInstance({
               merchantId: m.merchantId,
               environment: m.environment,
               baseUrl,
               amount: body.amount,
               currencySymbol: body.currencySymbol,
+              userDetails,
               returnUrl: normalizedReturn,
-              userEmail: body.userEmail,
               kycBypass: tyltKycBypass,
             });
             const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
@@ -1474,6 +1492,26 @@ export async function buildApp() {
     }
     try {
       const res = await tyltH2hGetCryptoCurrencyListForPrime(m.environment);
+      return replyWithTyltUpstreamJson(reply, res.status, res.json);
+    } catch (err) {
+      app.log.error(err);
+      const mapped = merchantPaymentFlowErrorResponse(err);
+      sendMerchantFacingReply(reply, mapped);
+      return;
+    }
+  })
+  );
+
+  merchantV1GetPair("/v1/h2h/conversion-rates", "/v1/tylt/h2h/conversion-rates", (path) =>
+    app.get(path, { schema: { response: tyltMerchantProxyResponses } },
+    async (request, reply) => {
+    const m = request.merchant;
+    if (!m) return reply.status(401).send({ error: "Unauthorized" });
+    if (!m.scopes.includes("payin:create") && !m.scopes.includes("*")) {
+      return reply.status(403).send({ error: "Forbidden", message: "Missing scope: payin:create" });
+    }
+    try {
+      const res = await tyltH2hGetMerchantRampSpecialRates(m.environment);
       return replyWithTyltUpstreamJson(reply, res.status, res.json);
     } catch (err) {
       app.log.error(err);

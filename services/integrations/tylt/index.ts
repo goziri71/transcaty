@@ -32,6 +32,7 @@ export {
   tyltH2hBuyerConfirmsPayment,
   tyltH2hGetPaymentMethodsP2pOnRamp,
   tyltH2hGetCryptoCurrencyListForPrime,
+  tyltH2hGetMerchantRampSpecialRates,
   isTyltH2hPayinMetadata,
 } from "./h2h-upi.js";
 export {

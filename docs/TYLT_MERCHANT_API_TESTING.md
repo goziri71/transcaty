@@ -242,12 +242,15 @@ The merchant API **does not** expose `POST /v1/crossramp/payin-instances` (no **
 - **Scope:** `payin:create` or `*`  
 - **Idempotency:** recommended
 
-**Body (minimal — no `returnUrl`):**
+**Body (minimal — Tylt requires `userDetails`; `userEmail` alone is still accepted and mapped to `userDetails.email`):**
 
 ```json
 {
   "amount": "200",
-  "currencySymbol": "INR"
+  "currencySymbol": "INR",
+  "userDetails": {
+    "email": "payer@example.com"
+  }
 }
 ```
 
@@ -258,7 +261,11 @@ The merchant API **does not** expose `POST /v1/crossramp/payin-instances` (no **
   "amount": "100",
   "currencySymbol": "USDT",
   "returnUrl": "https://merchant.example.com/h2h/return",
-  "userEmail": "payer@example.com"
+  "userDetails": {
+    "email": "payer@example.com",
+    "name": "Paying Customer",
+    "phone": "+919876543210"
+  }
 }
 ```
 

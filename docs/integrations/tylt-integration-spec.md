@@ -99,6 +99,7 @@ Status tracking:
 Create instance:
 
 - `POST /h2h/in/upi/createPayinInstance`
+- Body includes `merchantOrderId`, `callBackUrl`, amount/currency flags, and **`userDetails`** (required by Tylt validation — email at minimum; optional `name`, `phone`).
 
 Buyer confirm:
 

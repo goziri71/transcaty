@@ -7,6 +7,7 @@ import { transactions } from "../../../src/db/schema/index.js";
 import { audit } from "../../../src/lib/audit.js";
 import { tyltSignedGetJson, tyltSignedPostJson } from "./client.js";
 import type { TyltMerchantEnvironment } from "./config.js";
+import { sortKeysRecursive } from "./sign.js";
 import { TYLT_PRODUCT_H2H_UPI } from "./crossramp-payin.js";
 
 const RAIL = "tylt";
@@ -104,9 +105,10 @@ export async function createTyltH2hPayinInstance(params: {
   baseUrl: string;
   amount: string;
   currencySymbol: "USDT" | "INR";
+  /** Required by Tylt createPayinInstance (see upstream validation). */
+  userDetails: { email: string; name?: string; phone?: string };
   /** Optional redirect when Tylt expects redirectUrl for mobile/browser flows. */
   returnUrl?: string;
-  userEmail?: string;
   kycBypass: boolean;
 }) {
   const callBackUrl = `${params.baseUrl.replace(/\/$/, "")}/webhooks/tylt/h2h/${params.environment}`;
@@ -136,25 +138,43 @@ export async function createTyltH2hPayinInstance(params: {
 
   if (!tx) throw new Error("Failed to create transaction");
 
+  const email = params.userDetails.email.trim();
+  if (!email) {
+    throw new Error("Tylt H2H create requires a non-empty userDetails.email");
+  }
+
+  /** TL Pay validates these fields strictly; keep plain JSON-serializable values only. */
+  const merchantOrderId = String(tx.id);
+  const amountRaw = (() => {
+    const n = parseFloat(params.amount);
+    return Number.isFinite(n) ? n : params.amount;
+  })();
+
   const body: Record<string, unknown> = {
-    merchantOrderId: tx.id,
-    callBackUrl,
-    amount: params.amount,
+    userDetails: {
+      email,
+      ...(params.userDetails.name?.trim() ? { name: params.userDetails.name.trim() } : {}),
+      ...(params.userDetails.phone?.trim() ? { phone: params.userDetails.phone.trim() } : {}),
+    },
+    amount: amountRaw,
     currencySymbol: params.currencySymbol,
-    isUTRNeeded: 1,
+    merchantOrderId,
+    callBackUrl,
+    userEmail: email,
     isKYCNeeded: params.kycBypass ? 0 : 1,
+    isUTRNeeded: 1,
   };
   if (params.returnUrl?.trim()) {
     body.redirectUrl = params.returnUrl.trim();
   }
-  if (params.userEmail?.trim()) {
-    body.userEmail = params.userEmail.trim();
-  }
+
+  /** Stable key order + nested ordering (matches TL Pay signing examples using compact JSON). */
+  const wireBody = sortKeysRecursive(body) as Record<string, unknown>;
 
   const { status, json } = await tyltSignedPostJson<Record<string, unknown>>({
     environment: params.environment,
     path: "/h2h/in/upi/createPayinInstance",
-    body,
+    body: wireBody,
     idempotencyKey: tx.id,
     credentialRole: "payin",
   });
@@ -218,6 +238,16 @@ export async function tyltH2hGetCryptoCurrencyListForPrime(environment: TyltMerc
   return tyltSignedGetJson({
     environment,
     path: "/h2h/in/upi/getCryptoCurrencyListForPrime",
+    queryParams: {},
+    credentialRole: "payin",
+  });
+}
+
+/** Merchant-quoted INR/USDT (and related) rates for pay-in vs pay-out — UI/estimates only; settlement follows the trade. */
+export async function tyltH2hGetMerchantRampSpecialRates(environment: TyltMerchantEnvironment) {
+  return tyltSignedGetJson({
+    environment,
+    path: "/h2h/in/upi/getMerchantRampSpecialRates",
     queryParams: {},
     credentialRole: "payin",
   });
