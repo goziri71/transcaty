@@ -14,7 +14,7 @@ import {
 } from "./crossramp-payin.js";
 import { applyTyltCpgPayinWebhookPayload, extractCpgPayInWebhookFields, TYLT_PRODUCT_CPG_PAYIN } from "./cpg-payin.js";
 import { applyTyltCpgPayoutWebhookPayload, extractCpgPayOutWebhookFields, TYLT_PRODUCT_CPG_PAYOUT } from "./cpg-payout.js";
-import { getTyltConfig, type TyltMerchantEnvironment } from "./config.js";
+import { getTyltCredentials, type TyltCredentialRole, type TyltMerchantEnvironment } from "./config.js";
 import { verifyTyltSignature } from "./sign.js";
 
 /** Prefer structured CrossRamp shape first, then CPG extractors (merchant order id is our transactions.id). */
@@ -40,13 +40,30 @@ export function readTyltWebhookSignatureHeader(headers: {
   return s || undefined;
 }
 
+/**
+ * Verify webhook HMAC using the Tylt secret for the matching **service**
+ * (pay-in vs pay-out). Use `unified` when one URL receives multiple
+ * products: tries pay-in secret then pay-out secret.
+ */
 export function verifyTyltWebhookSignature(
   environment: string,
   rawBody: string,
-  signatureHeader: string | undefined
+  signatureHeader: string | undefined,
+  credentialMode: TyltCredentialRole | "unified" = "payin"
 ): boolean {
   if (environment !== "test" && environment !== "live") return false;
-  const cfg = getTyltConfig(environment as TyltMerchantEnvironment);
+  const env = environment as TyltMerchantEnvironment;
+  if (!signatureHeader?.trim()) return false;
+
+  if (credentialMode === "unified") {
+    const payin = getTyltCredentials(env, "payin");
+    const payout = getTyltCredentials(env, "payout");
+    if (payin && verifyTyltSignature(payin.apiSecret, rawBody, signatureHeader)) return true;
+    if (payout && verifyTyltSignature(payout.apiSecret, rawBody, signatureHeader)) return true;
+    return false;
+  }
+
+  const cfg = getTyltCredentials(env, credentialMode);
   if (!cfg) return false;
   return verifyTyltSignature(cfg.apiSecret, rawBody, signatureHeader);
 }

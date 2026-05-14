@@ -40,7 +40,12 @@ async function signedGet(params: {
   const qp = params.queryParams ?? {};
   const ttl = params.ttlMs;
   if (ttl <= 0) {
-    return tyltSignedGetJson({ environment: params.environment, path: params.path, queryParams: qp });
+    return tyltSignedGetJson({
+      environment: params.environment,
+      path: params.path,
+      queryParams: qp,
+      credentialRole: "payin",
+    });
   }
   const key = cacheKey(params.environment, params.path, qp);
   const hit = cache.get(key);
@@ -49,6 +54,7 @@ async function signedGet(params: {
     environment: params.environment,
     path: params.path,
     queryParams: qp,
+    credentialRole: "payin",
   });
   cache.set(key, { expiresAt: Date.now() + ttl, payload });
   return payload;

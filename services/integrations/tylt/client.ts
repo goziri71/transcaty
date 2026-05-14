@@ -1,5 +1,5 @@
 import { tyltFetch } from "./http.js";
-import { assertTyltConfigured, type TyltMerchantEnvironment } from "./config.js";
+import { assertTyltConfigured, type TyltCredentialRole, type TyltMerchantEnvironment } from "./config.js";
 import { canonicalPayloadForTyltGet, createTyltSignature, sortKeysRecursive } from "./sign.js";
 
 function encodeQueryValue(v: unknown): string {
@@ -33,8 +33,9 @@ export async function tyltSignedGetJson<T = unknown>(params: {
   /** Optional Idempotency-Key header. Tylt dedupes on body identifiers,
    * but propagating one helps any provider-side replay guard. */
   idempotencyKey?: string;
+  credentialRole: TyltCredentialRole;
 }): Promise<{ status: number; json: T }> {
-  const cfg = assertTyltConfigured(params.environment);
+  const cfg = assertTyltConfigured(params.environment, params.credentialRole);
   const qp = params.queryParams ?? {};
   const payloadToSign = canonicalPayloadForTyltGet(qp);
   const signature = createTyltSignature(cfg.apiSecret, payloadToSign);
@@ -69,8 +70,9 @@ export async function tyltSignedPostJson<T = unknown>(params: {
   /** Optional Idempotency-Key header. Strongly recommended for any
    * mutating endpoint that could be retried (create payin/payout). */
   idempotencyKey?: string;
+  credentialRole: TyltCredentialRole;
 }): Promise<{ status: number; json: T }> {
-  const cfg = assertTyltConfigured(params.environment);
+  const cfg = assertTyltConfigured(params.environment, params.credentialRole);
   const raw = JSON.stringify(params.body);
   const signature = createTyltSignature(cfg.apiSecret, raw);
   const url = `${cfg.baseUrl}${params.path.startsWith("/") ? "" : "/"}${params.path}`;

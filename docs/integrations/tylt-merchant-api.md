@@ -1,6 +1,6 @@
 # Cross-border merchant API (Transacty `/v1/*`)
 
-**Public merchant paths** omit the processor name (e.g. `/v1/crossramp`, `/v1/cpg`, `/v1/h2h`). Legacy **`/v1/tylt/...`** URLs register the same handlers for backward compatibility.
+**Public merchant paths** omit the processor name (e.g. `/v1/cpg`, `/v1/h2h`). **India UPI pay-in** on the merchant API is **H2H only** (`/v1/h2h/...`); **`POST /v1/crossramp/payin-instances`** is **not** registered (hosted widget / `rampUrl` create is out of scope for `/v1`). Legacy **`/v1/tylt/...`** URLs remain aliases where handlers exist.
 
 All routes require **merchant HMAC** (`X-Transacty-Key`, `X-Transacty-Timestamp`, `X-Transacty-Signature`) like other `/v1/*` merchant endpoints (`docs/POSTMAN_MERCHANT_API_GUIDE.md`).
 
@@ -20,7 +20,6 @@ These **`POST`** endpoints honor **`Idempotency-Key`** (same collision semantics
 
 | Route |
 |-------|
-| `/v1/crossramp/payin-instances` |
 | `/v1/h2h/payin-instances` |
 | `/v1/cpg/payin-requests` |
 | `/v1/cpg/payout-requests` |
@@ -30,8 +29,7 @@ These **`POST`** endpoints honor **`Idempotency-Key`** (same collision semantics
 
 | Method | Path | Scope(s) | KYC | Notes |
 |--------|------|----------|-----|--------|
-| POST | `/v1/crossramp/payin-instances` | `payin:create` or `*` | If `KYC_REQUIRED=true` | Hosted CrossRamp widget |
-| POST | `/v1/h2h/payin-instances` | `payin:create` or `*` | If required | H2H UPI instance |
+| POST | `/v1/h2h/payin-instances` | `payin:create` or `*` | If required | H2H UPI instance (India pay-in on `/v1`) |
 | POST | `/v1/h2h/buyer-confirms-payment` | `payin:create` or `*` | If required | Body: `transactionId`, optional `utr` |
 | GET | `/v1/h2h/payment-methods` | `payin:create` or `*` | — | Proxies Tylt JSON |
 | GET | `/v1/h2h/crypto-currencies` | `payin:create` or `*` | — | Proxies Tylt JSON |
@@ -61,4 +59,22 @@ Callback URLs are **not** under `/v1/` — see [`tylt-integration-spec.md`](./ty
 
 ## Environment
 
-Merchant key **`environment`** (`test` \| `live`) selects Tylt credentials (`TYLT_*` / `TYLT_TEST_*` / `TYLT_LIVE_*`).
+Merchant key **`environment`** (`test` \| `live`) selects which **Tylt credential set** is used for that request.
+
+Tylt issues **separate API key + secret per enabled service**. Transacty maps that to two roles:
+
+| Role | Tylt usage in this repo |
+|------|-------------------------|
+| **Pay-in** | H2H UPI, CPG pay-in, CrossRamp, supported-currency/network discovery, account balance, internal transfer, merchant details; webhooks **`/webhooks/tylt/h2h`**, **`crossramp`**, **`cpg-payin`**. |
+| **Pay-out** | CPG payout create/history/info; webhook **`/webhooks/tylt/cpg-payout`**. |
+
+**Env vars (plain or `*_ENC`):**
+
+- **Pay-in (test):** `TYLT_TEST_PAYIN_API_KEY`, `TYLT_TEST_PAYIN_API_SECRET`, optional `TYLT_TEST_PAYIN_BASE_URL`
+- **Pay-in (live):** `TYLT_LIVE_PAYIN_*`
+- **Pay-out (test):** `TYLT_TEST_PAYOUT_API_KEY`, `TYLT_TEST_PAYOUT_API_SECRET`, optional `TYLT_TEST_PAYOUT_BASE_URL`
+- **Pay-out (live):** `TYLT_LIVE_PAYOUT_*`
+
+**Fallback (backward compatible):** for each field, if the role-specific var is unset, code uses legacy `TYLT_TEST_*` / `TYLT_LIVE_*`, then shared `TYLT_API_KEY` / `TYLT_API_SECRET` / `TYLT_BASE_URL` (default base `https://api.tylt.money`). So a single Tylt pair still works until you split PAYIN_/PAYOUT_.
+
+**Unified webhook** (`POST /webhooks/tylt/unified/:environment`) verifies the raw body with the **pay-in** secret first, then **pay-out**, so either service can post to one URL.

@@ -16,7 +16,7 @@ The following **do not change** merchant API contracts, signing, or routes:
 
 Your **merchant integration** (server-to-server `/v1/*`) uses these routes and HMAC signing; new API keys use the `transacty_` prefix.
 
-**Cross-border / crypto rails (`/v1/crossramp`, `/v1/h2h`, `/v1/cpg`, `/v1/supported`, etc.):** Uses the **same** HMAC headers and Postman pre-request pattern as this guide. Legacy **`/v1/tylt/...`** paths still work. For a **full ordered regression**, use **`docs/TYLT_MERCHANT_API_TESTING.md`** (see §11).
+**Cross-border / crypto rails (`/v1/h2h`, `/v1/cpg`, `/v1/supported`, etc.):** Uses the **same** HMAC headers and Postman pre-request pattern as this guide. Legacy **`/v1/tylt/...`** paths still work. For a **full ordered regression**, use **`docs/TYLT_MERCHANT_API_TESTING.md`** (see §11).
 
 ---
 

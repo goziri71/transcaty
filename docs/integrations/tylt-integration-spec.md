@@ -220,7 +220,7 @@ Notes:
 
 ### 8.1 Transacty merchant API (`/v1/*`)
 
-Implemented merchant-facing proxies and create endpoints are documented in **[tylt-merchant-api.md](./tylt-merchant-api.md)** (scopes, idempotency, error conventions, Zod schema pointers). **Public paths** are processor-neutral (e.g. `/v1/cpg/...`); **`/v1/tylt/...`** remains as a **legacy alias** in `app.ts`.
+Implemented merchant-facing proxies and create endpoints are documented in **[tylt-merchant-api.md](./tylt-merchant-api.md)** (scopes, idempotency, error conventions, Zod schema pointers). **Public paths** are processor-neutral (e.g. `/v1/cpg/...`); **`/v1/tylt/...`** remains as a **legacy alias** in `app.ts`. **Transacty policy:** India UPI pay-in on the merchant API is **H2H** (`/v1/h2h/...`); hosted CrossRamp **create** is **not** exposed on `/v1` (webhooks may still ingest legacy CrossRamp events).
 
 ## 9) Webhook Lifecycle Mapping (Current)
 

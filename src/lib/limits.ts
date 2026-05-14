@@ -2,7 +2,7 @@
 export const LIMITS = {
   payin: { min: 200, max: 25_000 },
   payout: { min: 100, max: 25_000 },
-  /** CrossRamp UPI (Tylt): quoted amount limits by currency symbol sent to Tylt. */
+  /** Tylt UPI pay-in (merchant H2H): quoted amount limits by currency symbol. */
   tyltCrossRamp: {
     USDT: { min: 1, max: 500_000 },
     INR: { min: 200, max: 500_000 },

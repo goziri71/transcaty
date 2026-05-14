@@ -1,4 +1,11 @@
-export { getTyltConfig, assertTyltConfigured, type TyltConfig, type TyltMerchantEnvironment } from "./config.js";
+export {
+  getTyltConfig,
+  getTyltCredentials,
+  assertTyltConfigured,
+  type TyltConfig,
+  type TyltCredentialRole,
+  type TyltMerchantEnvironment,
+} from "./config.js";
 export { canonicalPayloadForTyltGet, createTyltSignature, verifyTyltSignature } from "./sign.js";
 export { tyltSignedGetJson, tyltSignedPostJson } from "./client.js";
 export { tyltFetch } from "./http.js";

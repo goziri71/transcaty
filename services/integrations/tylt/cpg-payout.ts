@@ -297,6 +297,7 @@ export async function createTyltCpgPayoutRequest(params: {
       path: "/transactions/merchant/createPayoutRequest",
       body,
       idempotencyKey: tx.id,
+      credentialRole: "payout",
     }));
   } catch (err) {
     await refundPayoutDebit({
@@ -356,6 +357,7 @@ export async function cpgGetPayoutTransactionInformation(params: {
     environment: params.environment,
     path: "/transactions/merchant/getPayoutTransactionInformation",
     queryParams: { orderId: params.orderId },
+    credentialRole: "payout",
   });
 }
 
@@ -368,6 +370,7 @@ export async function cpgGetPayoutTransactionHistory(params: {
     environment: params.environment,
     path: "/transactions/merchant/getPayoutTransactionHistory",
     queryParams: { rows: params.rows, page: params.page },
+    credentialRole: "payout",
   });
 }
 

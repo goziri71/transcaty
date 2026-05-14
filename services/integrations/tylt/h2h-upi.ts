@@ -25,6 +25,79 @@ function extractH2hCreateResponse(json: unknown): {
   return { instanceId, paymentDetails: data };
 }
 
+function h2hCreateFailureHint(status: number, json: unknown): string {
+  const parts: string[] = [`upstream_http=${status}`];
+  const root = json as Record<string, unknown> | null;
+  if (!root || typeof root !== "object") {
+    return parts.join("; ");
+  }
+
+  // Non-JSON error body from Tylt (client.ts stores as { raw: string })
+  if (typeof root.raw === "string" && root.raw.trim()) {
+    const safe = root.raw.trim().replace(/\s+/g, " ").slice(0, 280);
+    parts.push(`upstream_body=${safe}`);
+    return parts.join("; ");
+  }
+
+  const data = (root.data ?? root.result ?? root) as Record<string, unknown>;
+  const candidates: unknown[] = [
+    root.message,
+    root.error,
+    root.errorMessage,
+    root.statusMessage,
+    root.msg,
+    root.description,
+    data?.message,
+    data?.error,
+    data?.errorMessage,
+    data?.msg,
+  ];
+
+  const errors = root.errors;
+  if (Array.isArray(errors) && errors.length > 0) {
+    const joined = errors
+      .slice(0, 5)
+      .map((e) => {
+        if (typeof e === "string") return e;
+        if (e && typeof e === "object" && "message" in e && typeof (e as { message: unknown }).message === "string") {
+          return (e as { message: string }).message;
+        }
+        try {
+          return JSON.stringify(e);
+        } catch {
+          return String(e);
+        }
+      })
+      .filter(Boolean)
+      .join("; ");
+    if (joined) candidates.push(joined);
+  }
+
+  if (root.success === false && typeof root.message === "string") {
+    candidates.unshift(root.message);
+  }
+
+  const msg = candidates.find((v) => typeof v === "string" && String(v).trim()) as string | undefined;
+  if (msg?.trim()) {
+    const safe = msg.trim().slice(0, 240).replace(/\s+/g, " ");
+    parts.push(`upstream_message=${safe}`);
+  } else {
+    // Last resort: compact top-level string fields only (no full payload)
+    const keys = Object.keys(root).filter((k) => {
+      const v = root[k];
+      return typeof v === "string" && v.length > 0 && v.length < 500 && !k.toLowerCase().includes("token");
+    });
+    if (keys.length) {
+      const snippet = keys
+        .slice(0, 4)
+        .map((k) => `${k}=${String(root[k]).slice(0, 80)}`)
+        .join("; ");
+      parts.push(`upstream_fields=${snippet}`);
+    }
+  }
+  return parts.join("; ");
+}
+
 export async function createTyltH2hPayinInstance(params: {
   merchantId: string;
   environment: TyltMerchantEnvironment;
@@ -83,13 +156,15 @@ export async function createTyltH2hPayinInstance(params: {
     path: "/h2h/in/upi/createPayinInstance",
     body,
     idempotencyKey: tx.id,
+    credentialRole: "payin",
   });
 
   const { instanceId, paymentDetails } = extractH2hCreateResponse(json);
 
   if (status >= 400 || !instanceId) {
     await db.update(transactions).set({ status: "failed", updatedAt: new Date() }).where(eq(transactions.id, tx.id));
-    throw new Error("Tylt H2H create instance failed");
+    const hint = h2hCreateFailureHint(status, json);
+    throw new Error(`Tylt H2H create instance failed (${hint})`);
   }
 
   await db
@@ -126,6 +201,7 @@ export async function tyltH2hBuyerConfirmsPayment(params: {
     environment: params.environment,
     path: "/h2h/in/upi/buyerConfirmsPayment",
     body,
+    credentialRole: "payin",
   });
 }
 
@@ -134,6 +210,7 @@ export async function tyltH2hGetPaymentMethodsP2pOnRamp(environment: TyltMerchan
     environment,
     path: "/h2h/in/upi/getPaymentMethods_p2pOnRamp",
     queryParams: {},
+    credentialRole: "payin",
   });
 }
 
@@ -142,5 +219,6 @@ export async function tyltH2hGetCryptoCurrencyListForPrime(environment: TyltMerc
     environment,
     path: "/h2h/in/upi/getCryptoCurrencyListForPrime",
     queryParams: {},
+    credentialRole: "payin",
   });
 }

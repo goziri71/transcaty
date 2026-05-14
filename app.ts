@@ -55,7 +55,6 @@ import {
   cpgGetPayoutTransactionInformation,
   createTyltCpgPayinRequest,
   createTyltCpgPayoutRequest,
-  createTyltCrossRampPayinOrder,
   executeTyltInternalTransfer,
   createTyltH2hPayinInstance,
   isTyltCpgPayinMetadata,
@@ -1001,6 +1000,8 @@ export async function buildApp() {
        * cpg-payin / cpg-payout / unified so dedupe works per-product. */
       rail: string;
       rejectLogMessage: string;
+      /** Tylt signs webhooks with the secret for the matching dashboard service. */
+      tyltWebhookCredential: "payin" | "payout" | "unified";
       apply: (body: unknown) => Promise<{ merchantId: string; event: WebhookEvent } | null>;
     }
   ): Promise<void> {
@@ -1010,7 +1011,7 @@ export async function buildApp() {
     }
     const rawBody = (request as FastifyRequest & { rawBody?: string }).rawBody ?? "";
     const sig = readTyltWebhookSignatureHeader(request.headers as Record<string, string | string[] | undefined>);
-    if (!verifyTyltWebhookSignature(environment, rawBody, sig)) {
+    if (!verifyTyltWebhookSignature(environment, rawBody, sig, opts.tyltWebhookCredential)) {
       app.log.warn({ path: opts.pathConstant, hasSig: !!sig, rawBodyLen: rawBody.length }, opts.rejectLogMessage);
       return reply.status(401).type("text/plain").send("Invalid signature");
     }
@@ -1063,6 +1064,7 @@ export async function buildApp() {
       pathConstant: TYLT_CROSSRAMP_WEBHOOK_PATH,
       rail: "tylt-crossramp",
       rejectLogMessage: "tylt webhook rejected: invalid or missing signature",
+      tyltWebhookCredential: "payin",
       apply: (body) => applyTyltWebhookByProductRoute("crossramp_upi", body),
     });
   });
@@ -1074,6 +1076,7 @@ export async function buildApp() {
       pathConstant: TYLT_H2H_WEBHOOK_PATH,
       rail: "tylt-h2h-upi",
       rejectLogMessage: "tylt H2H webhook rejected: invalid or missing signature",
+      tyltWebhookCredential: "payin",
       apply: (body) => applyTyltWebhookByProductRoute("crossramp_upi", body),
     });
   });
@@ -1085,6 +1088,7 @@ export async function buildApp() {
       pathConstant: TYLT_CPG_PAYIN_WEBHOOK_PATH,
       rail: "tylt-cpg-payin",
       rejectLogMessage: "tylt CPG pay-in webhook rejected: invalid or missing signature",
+      tyltWebhookCredential: "payin",
       apply: (body) => applyTyltWebhookByProductRoute("cpg_payin", body),
     });
   });
@@ -1096,6 +1100,7 @@ export async function buildApp() {
       pathConstant: TYLT_CPG_PAYOUT_WEBHOOK_PATH,
       rail: "tylt-cpg-payout",
       rejectLogMessage: "tylt CPG payout webhook rejected: invalid or missing signature",
+      tyltWebhookCredential: "payout",
       apply: (body) => applyTyltWebhookByProductRoute("cpg_payout", body),
     });
   });
@@ -1108,6 +1113,7 @@ export async function buildApp() {
       pathConstant: TYLT_UNIFIED_WEBHOOK_PATH,
       rail: "tylt-unified",
       rejectLogMessage: "tylt unified webhook rejected: invalid or missing signature",
+      tyltWebhookCredential: "unified",
       apply: (body) => applyTyltWebhookByStoredRailProduct(body),
     });
   });
@@ -1272,99 +1278,7 @@ export async function buildApp() {
     register(legacyPath);
   }
 
-  merchantV1PostPair("/v1/crossramp/payin-instances", "/v1/tylt/crossramp/payin-instances", (path) =>
-    app.post(path, {
-      schema: {
-        body: z.object({
-          amount: z.string(),
-          currencySymbol: z.enum(["USDT", "INR"]),
-          /** Hosted-widget redirect after the ramp session (sent to Tylt as redirectUrl). */
-          returnUrl: z.string().min(1),
-          userEmail: z.string().email().optional(),
-        }),
-        response: {
-          200: z.object({
-            transactionId: z.string(),
-            status: z.literal("pending"),
-            amount: z.string(),
-            currency: z.enum(["USDT", "INR"]),
-            instanceId: z.string(),
-            rampUrl: z.string(),
-            expiresAt: z.string().nullable().optional(),
-          }),
-          400: merchantFacingError,
-          401: errorResponse,
-          403: errorResponse,
-          503: merchantFacingError,
-          500: merchantFacingError,
-        },
-      },
-    },
-    async (request, reply) => {
-      const m = request.merchant;
-      if (!m) return reply.status(401).send({ error: "Unauthorized" });
-      if (!m.scopes.includes("payin:create") && !m.scopes.includes("*")) {
-        return reply.status(403).send({ error: "Forbidden", message: "Missing scope: payin:create" });
-      }
-      if (!(await requireKycVerified(m.merchantId, reply))) return;
-      const body = request.body as {
-        amount: string;
-        currencySymbol: "USDT" | "INR";
-        returnUrl: string;
-        userEmail?: string;
-      };
-      const returnCheck = validateMerchantReturnUrl(body.returnUrl);
-      if (!returnCheck.ok) {
-        return reply.status(400).send({ error: "Bad Request", message: returnCheck.message });
-      }
-      const bounds = LIMITS.tyltCrossRamp[body.currencySymbol];
-      const amt = parseFloat(body.amount);
-      if (!Number.isFinite(amt) || amt < bounds.min || amt > bounds.max) {
-        return reply.status(400).send({
-          error: "Bad Request",
-          message: `Amount must be between ${bounds.min} and ${bounds.max} ${body.currencySymbol}`,
-        });
-      }
-      try {
-        const response = await withIdempotency(
-          { request, reply, merchantId: m.merchantId, body },
-          async () => {
-            const result = await createTyltCrossRampPayinOrder({
-              merchantId: m.merchantId,
-              environment: m.environment,
-              baseUrl,
-              amount: body.amount,
-              currencySymbol: body.currencySymbol,
-              returnUrl: returnCheck.normalized,
-              userEmail: body.userEmail,
-              kycBypass: tyltKycBypass,
-            });
-            const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
-            return {
-              transactionId: result.transactionId,
-              status: "pending" as const,
-              amount: result.amount,
-              currency: result.currency,
-              instanceId: result.instanceId,
-              rampUrl: result.rampUrl,
-              expiresAt,
-            };
-          }
-        );
-        if (response === undefined) return; // 409 conflict already sent
-        return response;
-      } catch (err) {
-        app.log.error(err);
-        const mapped = merchantPaymentFlowErrorResponse(err);
-        if (mapped.logDetail) {
-          app.log.warn({ logDetail: mapped.logDetail }, "v1 tylt crossramp payins merchant-facing error detail");
-        }
-        sendMerchantFacingReply(reply, mapped);
-        return;
-      }
-    })
-  );
-
+  /** India UPI on `/v1` is H2H only; hosted CrossRamp pay-in create is intentionally not registered. */
   merchantV1PostPair("/v1/h2h/payin-instances", "/v1/tylt/h2h/payin-instances", (path) =>
     app.post(path, {
       schema: {
