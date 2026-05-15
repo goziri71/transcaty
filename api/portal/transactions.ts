@@ -3,7 +3,7 @@
  */
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { eq, and, count, desc } from "drizzle-orm";
+import { eq, and, count, desc, or, like } from "drizzle-orm";
 import { db } from "../../src/db/index.js";
 import { merchants, transactions } from "../../src/db/schema/index.js";
 import {
@@ -22,6 +22,25 @@ import {
   sendMerchantFacingReply,
   sendPortalOperationReply,
 } from "../../src/lib/merchant-facing-errors.js";
+import { presentTransactionRail } from "../../src/lib/transaction-rail-label.js";
+
+const transactionRailFieldsSchema = z.object({
+  currency: z.string(),
+  rail: z.enum(["bangladesh", "india", "internal", "unknown"]),
+  railLabel: z.string(),
+});
+
+function portalTransactionRailFields(row: {
+  provider: string | null;
+  currency: string;
+  metadata: string | null;
+}) {
+  return presentTransactionRail({
+    provider: row.provider,
+    currency: row.currency,
+    metadata: row.metadata,
+  });
+}
 
 const errorResponse = z.object({
   error: z.string(),
@@ -59,6 +78,7 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
           environment: z.enum(["test", "live"]).default("test"),
           type: z.enum(["payin", "payout", "transfer", "refund"]).optional(),
           status: z.enum(["pending", "success", "failed"]).optional(),
+          rail: z.enum(["bangladesh", "india", "internal"]).optional(),
           customerId: z.string().uuid().optional(),
           limit: z.coerce.number().min(1).max(100).default(20),
           offset: z.coerce.number().min(0).default(0),
@@ -66,18 +86,20 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
         response: {
           200: z.object({
             items: z.array(
-              z.object({
-                id: z.string(),
-                type: z.string(),
-                status: z.string(),
-                amount: z.string(),
-                paidAmount: z.string().nullable(),
-                platformOrderId: z.string().nullable(),
-                customerWalletId: z.string().nullable(),
-                refundOfTransactionId: z.string().nullable(),
-                createdAt: z.string(),
-                completedAt: z.string().nullable(),
-              })
+              z
+                .object({
+                  id: z.string(),
+                  type: z.string(),
+                  status: z.string(),
+                  amount: z.string(),
+                  paidAmount: z.string().nullable(),
+                  platformOrderId: z.string().nullable(),
+                  customerWalletId: z.string().nullable(),
+                  refundOfTransactionId: z.string().nullable(),
+                  createdAt: z.string(),
+                  completedAt: z.string().nullable(),
+                })
+                .merge(transactionRailFieldsSchema)
             ),
             total: z.number(),
             limit: z.number(),
@@ -91,10 +113,11 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
       const user = request.portalUser;
       if (!user) return reply.status(401).send({ error: "Unauthorized" });
 
-      const { environment, type, status, customerId, limit, offset } = request.query as {
+      const { environment, type, status, rail, customerId, limit, offset } = request.query as {
         environment: "test" | "live";
         type?: "payin" | "payout" | "transfer" | "refund";
         status?: "pending" | "success" | "failed";
+        rail?: "bangladesh" | "india" | "internal";
         customerId?: string;
         limit: number;
         offset: number;
@@ -104,6 +127,16 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
       if (type) conditions.push(eq(transactions.type, type));
       if (status) conditions.push(eq(transactions.status, status));
       if (customerId) conditions.push(eq(transactions.walletId, customerId));
+      if (rail === "bangladesh") conditions.push(like(transactions.provider, "payok%"));
+      else if (rail === "india") conditions.push(like(transactions.provider, "tylt%"));
+      else if (rail === "internal") {
+        conditions.push(
+          or(
+            eq(transactions.provider, "internal-transfer"),
+            eq(transactions.provider, "internal-refund")
+          )!
+        );
+      }
 
       const [totalResult] = await db
         .select({ count: count() })
@@ -117,6 +150,8 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
           status: transactions.status,
           amount: transactions.amount,
           paidAmount: transactions.paidAmount,
+          currency: transactions.currency,
+          provider: transactions.provider,
           externalId: transactions.externalId,
           walletId: transactions.walletId,
           metadata: transactions.metadata,
@@ -150,6 +185,7 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
           refundOfTransactionId,
           createdAt: r.createdAt.toISOString(),
           completedAt: r.status === "success" ? r.updatedAt.toISOString() : null,
+          ...portalTransactionRailFields(r),
         };
       });
 
@@ -171,19 +207,21 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
           environment: z.enum(["test", "live"]).default("test"),
         }),
         response: {
-          200: z.object({
-            id: z.string(),
-            type: z.string(),
-            status: z.string(),
-            amount: z.string(),
-            paidAmount: z.string().nullable(),
-            platformOrderId: z.string().nullable(),
-            customerWalletId: z.string().nullable(),
-            refundOfTransactionId: z.string().nullable(),
-            metadata: metadataSchema.nullable(),
-            createdAt: z.string(),
-            completedAt: z.string().nullable(),
-          }),
+          200: z
+            .object({
+              id: z.string(),
+              type: z.string(),
+              status: z.string(),
+              amount: z.string(),
+              paidAmount: z.string().nullable(),
+              platformOrderId: z.string().nullable(),
+              customerWalletId: z.string().nullable(),
+              refundOfTransactionId: z.string().nullable(),
+              metadata: metadataSchema.nullable(),
+              createdAt: z.string(),
+              completedAt: z.string().nullable(),
+            })
+            .merge(transactionRailFieldsSchema),
           401: errorResponse,
           404: errorResponse,
         },
@@ -234,6 +272,11 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
         metadata,
         createdAt: tx.createdAt.toISOString(),
         completedAt: tx.status === "success" ? tx.updatedAt.toISOString() : null,
+        ...portalTransactionRailFields({
+          provider: tx.provider,
+          currency: tx.currency,
+          metadata: tx.metadata,
+        }),
       };
     }
   );

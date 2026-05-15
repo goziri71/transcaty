@@ -74,6 +74,7 @@ import {
   tyltGetSupportedFiatCurrenciesList,
 } from "./services/integrations/tylt/index.js";
 import { LIMITS } from "./src/lib/limits.js";
+import { presentTransactionRail } from "./src/lib/transaction-rail-label.js";
 import { validateMerchantReturnUrl } from "./src/lib/merchant-return-url.js";
 import { queueMerchantWebhook, type WebhookEvent } from "./src/lib/merchant-webhook.js";
 import { encrypt, getSecret } from "./src/lib/encryption.js";
@@ -2374,7 +2375,8 @@ export async function buildApp() {
     amount: z.string(),
     paidAmount: z.string().nullable(),
     currency: z.string(),
-    provider: z.string().nullable(),
+    rail: z.enum(["bangladesh", "india", "internal", "unknown"]),
+    railLabel: z.string(),
     platformOrderId: z.string().nullable(),
     instanceId: z.string().nullable(),
     createdAt: z.string(),
@@ -2389,18 +2391,25 @@ export async function buildApp() {
     paidAmount: string | null;
     currency: string;
     provider: string | null;
+    metadata: string | null;
     externalId: string | null;
     createdAt: Date;
     updatedAt: Date;
   }) {
+    const rail = presentTransactionRail({
+      provider: tx.provider,
+      currency: tx.currency,
+      metadata: tx.metadata,
+    });
     return {
       id: tx.id,
       type: tx.type,
       status: tx.status,
       amount: String(tx.amount),
       paidAmount: tx.paidAmount ? String(tx.paidAmount) : null,
-      currency: tx.currency,
-      provider: tx.provider ?? null,
+      currency: rail.currency,
+      rail: rail.rail,
+      railLabel: rail.railLabel,
       platformOrderId: tx.externalId ?? null,
       instanceId: tx.externalId ?? null,
       createdAt: tx.createdAt.toISOString(),
@@ -2433,6 +2442,7 @@ export async function buildApp() {
           paidAmount: transactions.paidAmount,
           currency: transactions.currency,
           provider: transactions.provider,
+          metadata: transactions.metadata,
           externalId: transactions.externalId,
           createdAt: transactions.createdAt,
           updatedAt: transactions.updatedAt,
@@ -2493,6 +2503,7 @@ export async function buildApp() {
           paidAmount: transactions.paidAmount,
           currency: transactions.currency,
           provider: transactions.provider,
+          metadata: transactions.metadata,
           externalId: transactions.externalId,
           createdAt: transactions.createdAt,
           updatedAt: transactions.updatedAt,
