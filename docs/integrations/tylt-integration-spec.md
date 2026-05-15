@@ -1,8 +1,10 @@
 # Tylt Integration Spec (Working Draft)
 
-Purpose: single source of truth for Tylt integration decisions, endpoints, signing, webhook handling, settlement semantics, and open questions. This document is intentionally implementation-ready and should be updated as new Tylt docs are shared.
+Purpose: single source of truth for **TL Pay (Tylt)** integration decisions, endpoints, signing, webhook handling, settlement semantics, and open questions. This document is intentionally implementation-ready and should be updated as new Tylt docs are shared.
 
-Status: draft, based on shared docs in chat (Apr 29, 2026).
+**Out of scope for this spec:** Payok Bangladesh domestic (`services/domestic/bangladesh/`, `/webhooks/payok/*`). Tylt and Payok share merchant HMAC auth on `/v1/*` but are **separate provider rails** in code and operations.
+
+Status: draft, based on shared docs in chat (Apr 29, 2026) and [docs.tylt.money](https://docs.tylt.money/).
 
 ## 1) Scope and Services
 

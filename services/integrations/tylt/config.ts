@@ -2,7 +2,7 @@
  * Tylt API credentials per merchant key environment (test | live).
  * Tylt issues separate API key + secret per enabled service; we model
  * the common split as **payin** vs **payout** (plus shared fallbacks).
- * Plain or *_ENC via getSecret (same pattern as Payok).
+ * Plain or *_ENC via getSecret (same pattern as other provider configs).
  */
 import { getSecret } from "../../../src/lib/encryption.js";
 

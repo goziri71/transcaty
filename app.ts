@@ -2367,6 +2367,90 @@ export async function buildApp() {
     }
   );
 
+  const merchantTransactionItemSchema = z.object({
+    id: z.string(),
+    type: z.string(),
+    status: z.string(),
+    amount: z.string(),
+    paidAmount: z.string().nullable(),
+    currency: z.string(),
+    provider: z.string().nullable(),
+    platformOrderId: z.string().nullable(),
+    instanceId: z.string().nullable(),
+    createdAt: z.string(),
+    completedAt: z.string().nullable(),
+  });
+
+  function toMerchantTransactionItem(tx: {
+    id: string;
+    type: string;
+    status: string;
+    amount: string;
+    paidAmount: string | null;
+    currency: string;
+    provider: string | null;
+    externalId: string | null;
+    createdAt: Date;
+    updatedAt: Date;
+  }) {
+    return {
+      id: tx.id,
+      type: tx.type,
+      status: tx.status,
+      amount: String(tx.amount),
+      paidAmount: tx.paidAmount ? String(tx.paidAmount) : null,
+      currency: tx.currency,
+      provider: tx.provider ?? null,
+      platformOrderId: tx.externalId ?? null,
+      instanceId: tx.externalId ?? null,
+      createdAt: tx.createdAt.toISOString(),
+      completedAt: tx.status === "success" ? tx.updatedAt.toISOString() : null,
+    };
+  }
+
+  app.get(
+    "/v1/transactions/:transactionId",
+    {
+      schema: {
+        params: z.object({ transactionId: z.string().uuid() }),
+        response: {
+          200: merchantTransactionItemSchema,
+          401: errorResponse,
+          404: errorResponse,
+        },
+      },
+    },
+    async (request, reply) => {
+      const m = request.merchant;
+      if (!m) return reply.status(401).send({ error: "Unauthorized" });
+      const { transactionId } = request.params as { transactionId: string };
+      const [tx] = await db
+        .select({
+          id: transactions.id,
+          type: transactions.type,
+          status: transactions.status,
+          amount: transactions.amount,
+          paidAmount: transactions.paidAmount,
+          currency: transactions.currency,
+          provider: transactions.provider,
+          externalId: transactions.externalId,
+          createdAt: transactions.createdAt,
+          updatedAt: transactions.updatedAt,
+        })
+        .from(transactions)
+        .where(
+          and(
+            eq(transactions.id, transactionId),
+            eq(transactions.merchantId, m.merchantId),
+            eq(transactions.environment, m.environment)
+          )
+        )
+        .limit(1);
+      if (!tx) return reply.status(404).send({ error: "Not found", message: "Transaction not found" });
+      return toMerchantTransactionItem(tx);
+    }
+  );
+
   app.get(
     "/v1/transactions",
     {
@@ -2378,18 +2462,7 @@ export async function buildApp() {
         }),
         response: {
           200: z.object({
-            items: z.array(
-              z.object({
-                id: z.string(),
-                type: z.string(),
-                status: z.string(),
-                amount: z.string(),
-                paidAmount: z.string().nullable(),
-                platformOrderId: z.string().nullable(),
-                createdAt: z.string(),
-                completedAt: z.string().nullable(),
-              })
-            ),
+            items: z.array(merchantTransactionItemSchema),
             total: z.number(),
             limit: z.number(),
             offset: z.number(),
@@ -2418,6 +2491,8 @@ export async function buildApp() {
           status: transactions.status,
           amount: transactions.amount,
           paidAmount: transactions.paidAmount,
+          currency: transactions.currency,
+          provider: transactions.provider,
           externalId: transactions.externalId,
           createdAt: transactions.createdAt,
           updatedAt: transactions.updatedAt,
@@ -2428,16 +2503,7 @@ export async function buildApp() {
         .limit(limit)
         .offset(offset);
 
-      const items = rows.map((tx) => ({
-        id: tx.id,
-        type: tx.type,
-        status: tx.status,
-        amount: String(tx.amount),
-        paidAmount: tx.paidAmount ? String(tx.paidAmount) : null,
-        platformOrderId: tx.externalId ?? null,
-        createdAt: tx.createdAt.toISOString(),
-        completedAt: tx.status === "success" ? tx.updatedAt.toISOString() : null,
-      }));
+      const items = rows.map((tx) => toMerchantTransactionItem(tx));
 
       return {
         items,

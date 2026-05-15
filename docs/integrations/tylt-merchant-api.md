@@ -2,6 +2,8 @@
 
 **Public merchant paths** omit the processor name (e.g. `/v1/cpg`, `/v1/h2h`). **India UPI pay-in** on the merchant API is **H2H only** (`/v1/h2h/...`); **`POST /v1/crossramp/payin-instances`** is **not** registered (hosted widget / `rampUrl` create is out of scope for `/v1`). Legacy **`/v1/tylt/...`** URLs remain aliases where handlers exist.
 
+**Rail boundary:** All routes in this document are implemented under **`services/integrations/tylt/`** and **TL Pay** upstream (`TYLT_*` env, `/webhooks/tylt/...`). They do **not** use Payok (`services/domestic/bangladesh/`, `/webhooks/payok/...`). Bangladesh domestic APIs are documented separately.
+
 All routes require **merchant HMAC** (`X-Transacty-Key`, `X-Transacty-Timestamp`, `X-Transacty-Signature`) like other `/v1/*` merchant endpoints (`docs/POSTMAN_MERCHANT_API_GUIDE.md`).
 
 ## Error shapes
@@ -15,7 +17,7 @@ Responses follow the shared merchant schemas in [`src/lib/merchant-api-zod.ts`](
 
 ## Idempotency
 
-These **`POST`** endpoints honor **`Idempotency-Key`** (same collision semantics as Bangladesh Payok routes: snapshot stored **24h**, scoped per merchant):
+These **`POST`** endpoints honor **`Idempotency-Key`** (snapshot stored **24h**, scoped per merchant; same collision semantics as other `/v1` POST routes):
 
 | Route |
 |-------|
@@ -30,8 +32,10 @@ These **`POST`** endpoints honor **`Idempotency-Key`** (same collision semantics
 |--------|------|----------|-----|--------|
 | POST | `/v1/h2h/payin-instances` | `payin:create` or `*` | If required | H2H UPI instance (India pay-in on `/v1`) |
 | POST | `/v1/h2h/buyer-confirms-payment` | `payin:create` or `*` | If required | Body: `transactionId`, **`utr`** (required; TL Pay `isUTRNeeded: 1` on create) |
-| GET | `/v1/h2h/payment-methods` | `payin:create` or `*` | — | Proxies Tylt JSON |
-| GET | `/v1/h2h/crypto-currencies` | `payin:create` or `*` | — | Proxies Tylt JSON |
+| GET | `/v1/h2h/payment-methods` | `payin:create` or `*` | — | Proxies TL Pay JSON |
+| GET | `/v1/h2h/crypto-currencies` | `payin:create` or `*` | — | Proxies TL Pay JSON |
+| GET | `/v1/h2h/conversion-rates` | `payin:create` or `*` | — | Proxies TL Pay JSON |
+| GET | `/v1/transactions/:transactionId` | Merchant key | — | Transacty row (any provider); use for H2H status polling |
 | GET | `/v1/supported/crypto-currencies` | `balance:read` **or** `payin:create` **or** `payout:create` or `*` | — | Cached lists (`TYLT_DISCOVERY_CACHE_TTL_MS`) |
 | GET | `/v1/supported/fiat-currencies` | same | — | Cached |
 | GET | `/v1/supported/crypto-networks` | same | — | Cached |
