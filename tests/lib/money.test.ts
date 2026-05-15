@@ -7,6 +7,7 @@ import {
   cmpAmount,
   fromCents,
   gteAmount,
+  normalizeMoneyAmountToTwoDecimals,
   subAmount,
   toCents,
 } from "../../src/lib/money.js";
@@ -25,6 +26,12 @@ test("toCents parses common forms", () => {
 test("toCents handles negatives", () => {
   assert.equal(toCents("-0.01"), -1n);
   assert.equal(toCents("-123.45"), -12345n);
+});
+
+test("normalizeMoneyAmountToTwoDecimals rounds provider floats", () => {
+  assert.equal(normalizeMoneyAmountToTwoDecimals("4.81958762886598"), "4.82");
+  assert.equal(normalizeMoneyAmountToTwoDecimals("467.5"), "467.50");
+  assert.equal(normalizeMoneyAmountToTwoDecimals("500.00"), "500.00");
 });
 
 test("toCents rejects malformed amounts", () => {

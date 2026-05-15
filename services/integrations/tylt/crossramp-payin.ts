@@ -6,7 +6,7 @@ import { db } from "../../../src/db/index.js";
 import { transactions, wallets, ledgerEntries } from "../../../src/db/schema/index.js";
 import { audit } from "../../../src/lib/audit.js";
 import { tryApplyTransactionFee } from "../../../src/lib/billing/index.js";
-import { addAmount } from "../../../src/lib/money.js";
+import { addAmount, normalizeMoneyAmountToTwoDecimals } from "../../../src/lib/money.js";
 import type { WebhookEvent } from "../../../src/lib/merchant-webhook.js";
 import { tyltSignedGetJson, tyltSignedPostJson } from "./client.js";
 import type { TyltMerchantEnvironment } from "./config.js";
@@ -234,21 +234,30 @@ export function parseTerminalStatus(payload: unknown): string | undefined {
   return typeof s === "string" ? s : undefined;
 }
 
-export function parseCreditAmount(payload: unknown, fallbackAmount: string): string {
-  const data = (payload as Record<string, unknown>)?.data as Record<string, unknown> | undefined;
-  const transaction = data?.transaction as Record<string, unknown> | undefined;
-  if (!transaction) return fallbackAmount;
-  const candidates = [
-    transaction.settledAmountCredited,
-    transaction.settledAmountReceived,
-    transaction.paidAmount,
-    transaction.amount,
-  ];
+function pickFiniteAmountCandidate(...candidates: unknown[]): string | null {
   for (const c of candidates) {
     if (typeof c === "string" && c.trim() && Number.isFinite(parseFloat(c))) return c.trim();
     if (typeof c === "number" && Number.isFinite(c)) return String(c);
   }
-  return fallbackAmount;
+  return null;
+}
+
+export function parseCreditAmount(payload: unknown, fallbackAmount: string): string {
+  const data = (payload as Record<string, unknown>)?.data as Record<string, unknown> | undefined;
+  const transaction = data?.transaction as Record<string, unknown> | undefined;
+  const accounts = data?.accounts as Record<string, unknown> | undefined;
+
+  const raw =
+    pickFiniteAmountCandidate(
+      accounts?.merchantAccountCredited,
+      accounts?.amountPaidInCryptoCurrency,
+      transaction?.settledAmountCredited,
+      transaction?.settledAmountReceived,
+      transaction?.paidAmount,
+      transaction?.amount
+    ) ?? fallbackAmount;
+
+  return normalizeMoneyAmountToTwoDecimals(raw);
 }
 
 export function mergeTransactionMetadata(existing: string | null, patch: Record<string, unknown>): string {

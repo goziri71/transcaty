@@ -15,6 +15,26 @@
 
 const AMOUNT_REGEX = /^-?\d+(?:\.\d{1,2})?$/;
 
+/**
+ * Coerce upstream/provider amounts to a ledger-safe `decimal(18,2)` string.
+ * Rounds half away from zero at cent precision when more than two decimals are present.
+ */
+export function normalizeMoneyAmountToTwoDecimals(amount: string): string {
+  const trimmed = amount.trim();
+  if (!trimmed) {
+    throw new Error("Invalid money amount: empty string");
+  }
+  if (AMOUNT_REGEX.test(trimmed)) {
+    return fromCents(toCents(trimmed));
+  }
+  const n = Number(trimmed);
+  if (!Number.isFinite(n)) {
+    throw new Error(`Invalid money amount: ${amount}`);
+  }
+  const cents = BigInt(Math.round(n * 100));
+  return fromCents(cents);
+}
+
 export function toCents(amount: string): bigint {
   if (typeof amount !== "string") {
     throw new TypeError(`Invalid money amount: expected string, got ${typeof amount}`);
