@@ -57,6 +57,7 @@ import {
   createTyltCpgPayoutRequest,
   executeTyltInternalTransfer,
   createTyltH2hPayinInstance,
+  getMerchantH2hPayinStatus,
   isTyltCpgPayinMetadata,
   isTyltCpgPayoutMetadata,
   isTyltH2hPayinMetadata,
@@ -1309,7 +1310,10 @@ export async function buildApp() {
             amount: z.string(),
             currency: z.enum(["USDT", "INR"]),
             instanceId: z.string(),
+            tradeEventId: z.number().nullable().optional(),
             paymentDetails: z.record(z.unknown()),
+            paymentInstructions: z.record(z.unknown()).nullable().optional(),
+            detailsSource: z.literal("create").optional(),
             expiresAt: z.string().nullable().optional(),
           }),
           400: merchantFacingError,
@@ -1373,7 +1377,10 @@ export async function buildApp() {
               amount: result.amount,
               currency: result.currency,
               instanceId: result.instanceId,
+              tradeEventId: result.tradeEventId ?? null,
               paymentDetails: result.paymentDetails,
+              paymentInstructions: result.paymentInstructions ?? null,
+              detailsSource: "create" as const,
               expiresAt,
             };
           }
@@ -1390,6 +1397,53 @@ export async function buildApp() {
         return;
       }
     })
+  );
+
+  const h2hPayinStatusResponseSchema = z.object({
+    transactionId: z.string(),
+    status: z.string(),
+    amount: z.string(),
+    currency: z.string(),
+    instanceId: z.string().nullable(),
+    tradeEventId: z.number().nullable(),
+    paymentDetails: z.record(z.unknown()),
+    paymentInstructions: z.record(z.unknown()).nullable(),
+    detailsSource: z.enum(["live", "webhook", "create"]),
+    expiresAt: z.string().nullable(),
+  });
+
+  merchantV1GetPair(
+    "/v1/h2h/payin-instances/:transactionId",
+    "/v1/tylt/h2h/payin-instances/:transactionId",
+    (path) =>
+      app.get(path, {
+        schema: {
+          params: z.object({ transactionId: z.string().uuid() }),
+          response: {
+            200: h2hPayinStatusResponseSchema,
+            401: errorResponse,
+            403: errorResponse,
+            404: errorResponse,
+          },
+        },
+      },
+      async (request, reply) => {
+        const m = request.merchant;
+        if (!m) return reply.status(401).send({ error: "Unauthorized" });
+        if (!m.scopes.includes("payin:create") && !m.scopes.includes("*")) {
+          return reply.status(403).send({ error: "Forbidden", message: "Missing scope: payin:create" });
+        }
+        const { transactionId } = request.params as { transactionId: string };
+        const view = await getMerchantH2hPayinStatus({
+          merchantId: m.merchantId,
+          environment: m.environment,
+          transactionId,
+        });
+        if (!view) {
+          return reply.status(404).send({ error: "Not found", message: "H2H pay-in not found" });
+        }
+        return view;
+      })
   );
 
   merchantV1PostPair("/v1/h2h/buyer-confirms-payment", "/v1/tylt/h2h/buyer-confirms-payment", (path) =>

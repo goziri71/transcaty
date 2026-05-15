@@ -251,9 +251,103 @@ export function parseCreditAmount(payload: unknown, fallbackAmount: string): str
   return fallbackAmount;
 }
 
-function mergeMeta(existing: string | null, patch: Record<string, unknown>): string {
+export function mergeTransactionMetadata(existing: string | null, patch: Record<string, unknown>): string {
   const prev = existing ? (readMetadata({ metadata: existing }) as Record<string, unknown>) : {};
   return JSON.stringify({ ...prev, ...patch });
+}
+
+function mergeMeta(existing: string | null, patch: Record<string, unknown>): string {
+  return mergeTransactionMetadata(existing, patch);
+}
+
+/** TL Pay pay-in webhook/create envelope (`data` block). */
+export function extractTyltPayinDataEnvelope(payload: unknown): Record<string, unknown> | null {
+  if (!payload || typeof payload !== "object") return null;
+  const root = payload as Record<string, unknown>;
+  const data = (root.data ?? root.result ?? root.payload ?? root) as Record<string, unknown>;
+  if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+  return data;
+}
+
+/** UPI ID / QR / bank fields for merchant checkout UI when present upstream. */
+export function extractPaymentInstructionsFromTyltData(
+  data: Record<string, unknown>
+): Record<string, unknown> | null {
+  const pm = data.paymentMethod ?? data.payment_method;
+  if (pm && typeof pm === "object") {
+    const details =
+      (pm as Record<string, unknown>).details ??
+      (pm as Record<string, unknown>).paymentDetails ??
+      pm;
+    if (details && typeof details === "object" && !Array.isArray(details) && Object.keys(details).length > 0) {
+      return details as Record<string, unknown>;
+    }
+  }
+
+  const trade = data.trade as Record<string, unknown> | undefined;
+  if (trade) {
+    for (const key of ["paymentMethod", "paymentMethodDetails", "paymentDetails", "upiDetails"]) {
+      const v = trade[key];
+      if (!v || typeof v !== "object") continue;
+      const inner = (v as Record<string, unknown>).details ?? v;
+      if (inner && typeof inner === "object" && !Array.isArray(inner) && Object.keys(inner as object).length > 0) {
+        return inner as Record<string, unknown>;
+      }
+    }
+  }
+
+  return null;
+}
+
+export async function fetchTyltPayinInstanceDetails(params: {
+  environment: TyltMerchantEnvironment;
+  merchantOrderId: string;
+  instanceId?: string | null;
+}): Promise<{ status: number; json: unknown; source: string } | null> {
+  const call1 = await tyltSignedGetJson({
+    environment: params.environment,
+    path: "/p2pRampsMerchant/getInstanceDetails",
+    queryParams: { merchantOrderId: params.merchantOrderId },
+    credentialRole: "payin",
+  });
+  if (call1.status < 500) {
+    return { status: call1.status, json: call1.json, source: "getInstanceDetails:merchantOrderId" };
+  }
+  if (params.instanceId?.trim()) {
+    const call2 = await tyltSignedGetJson({
+      environment: params.environment,
+      path: "/p2pRampsMerchant/getInstanceDetails",
+      queryParams: { instanceId: params.instanceId.trim() },
+      credentialRole: "payin",
+    });
+    if (call2.status < 500) {
+      return { status: call2.status, json: call2.json, source: "getInstanceDetails:instanceId" };
+    }
+  }
+  return null;
+}
+
+async function persistH2hPayinProgressSnapshot(
+  tx: { id: string; metadata: string | null },
+  parsed: unknown,
+  eventId: number
+): Promise<void> {
+  const data = extractTyltPayinDataEnvelope(parsed);
+  if (!data) return;
+  await db
+    .update(transactions)
+    .set({
+      metadata: mergeMeta(tx.metadata, {
+        payinSnapshot: {
+          updatedAt: new Date().toISOString(),
+          tradeEventId: eventId,
+          paymentDetails: data,
+          source: "webhook",
+        },
+      }),
+      updatedAt: new Date(),
+    })
+    .where(eq(transactions.id, tx.id));
 }
 
 function inferCrossRampEventIdFromAnyShape(payload: unknown): number | undefined {
@@ -303,33 +397,13 @@ async function fetchRemoteCrossRampDecision(params: {
   merchantOrderId: string;
   instanceId?: string | null;
 }): Promise<{ decision: CrossRampTerminalDecision; source: string }> {
-  const call1 = await tyltSignedGetJson({
-    environment: params.environment,
-    path: "/p2pRampsMerchant/getInstanceDetails",
-    queryParams: { merchantOrderId: params.merchantOrderId },
-    credentialRole: "payin",
-  });
-  if (call1.status < 500) {
+  const pull = await fetchTyltPayinInstanceDetails(params);
+  if (pull) {
     const decision = classifyCrossRampDecision(
-      inferCrossRampEventIdFromAnyShape(call1.json),
-      inferCrossRampStatusFromAnyShape(call1.json)
+      inferCrossRampEventIdFromAnyShape(pull.json),
+      inferCrossRampStatusFromAnyShape(pull.json)
     );
-    return { decision, source: "getInstanceDetails:merchantOrderId" };
-  }
-  if (params.instanceId?.trim()) {
-    const call2 = await tyltSignedGetJson({
-      environment: params.environment,
-      path: "/p2pRampsMerchant/getInstanceDetails",
-      queryParams: { instanceId: params.instanceId.trim() },
-      credentialRole: "payin",
-    });
-    if (call2.status < 500) {
-      const decision = classifyCrossRampDecision(
-        inferCrossRampEventIdFromAnyShape(call2.json),
-        inferCrossRampStatusFromAnyShape(call2.json)
-      );
-      return { decision, source: "getInstanceDetails:instanceId" };
-    }
+    return { decision, source: pull.source };
   }
   const call3 = await tyltSignedGetJson({
     environment: params.environment,
@@ -396,20 +470,22 @@ export async function applyTyltCrossRampWebhookPayload(
     return null;
   }
 
-  /** Progress-only UPI events (docs): ignore until terminal. */
-  const callbackDecision = classifyCrossRampDecision(eventId);
-  if (callbackDecision === "non_terminal" || callbackDecision === "unknown") {
-    return null;
-  }
-
   const tx = await selectPayinTxByMerchantOrderRef(merchantOrderId);
-
   if (!tx) {
     return null;
   }
 
   const meta = readMetadata(tx);
   if (!isTyltUpiPayinMetadata(meta)) {
+    return null;
+  }
+
+  /** Progress-only UPI events (docs): no merchant webhook, but persist snapshot for H2H polling. */
+  const callbackDecision = classifyCrossRampDecision(eventId);
+  if (callbackDecision === "non_terminal" || callbackDecision === "unknown") {
+    if (String(meta.tyltProduct) === TYLT_PRODUCT_H2H_UPI) {
+      await persistH2hPayinProgressSnapshot(tx, parsed, eventId);
+    }
     return null;
   }
 

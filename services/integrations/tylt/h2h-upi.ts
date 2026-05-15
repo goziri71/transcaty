@@ -2,7 +2,7 @@
  * Tylt H2H UPI pay-in (§4.2): API-led flow; credits use same signed webhook + ledger path as CrossRamp UPI.
  */
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db } from "../../../src/db/index.js";
 import { transactions } from "../../../src/db/schema/index.js";
 import { audit } from "../../../src/lib/audit.js";
@@ -10,7 +10,16 @@ import { UpstreamProviderClientError } from "../../../src/lib/merchant-facing-er
 import { tyltSignedGetJson, tyltSignedPostJson } from "./client.js";
 import type { TyltMerchantEnvironment } from "./config.js";
 import { sortKeysRecursive } from "./sign.js";
-import { TYLT_PRODUCT_H2H_UPI } from "./crossramp-payin.js";
+import {
+  TYLT_PRODUCT_H2H_UPI,
+  extractPaymentInstructionsFromTyltData,
+  extractTyltPayinDataEnvelope,
+  fetchTyltPayinInstanceDetails,
+  mergeTransactionMetadata,
+  parseCrossRampEventId,
+  parseTransactionMetadata,
+  resolveTyltPayinMerchantOrderIdForRemote,
+} from "./crossramp-payin.js";
 
 const RAIL = "tylt";
 
@@ -217,9 +226,22 @@ export async function createTyltH2hPayinInstance(params: {
     throw new Error(internal);
   }
 
+  const tradeEventId = parseCrossRampEventId(json) ?? null;
   await db
     .update(transactions)
-    .set({ externalId: instanceId, updatedAt: new Date() })
+    .set({
+      externalId: instanceId,
+      metadata: mergeTransactionMetadata(tx.metadata, {
+        payinSnapshot: {
+          updatedAt: new Date().toISOString(),
+          tradeEventId,
+          paymentDetails,
+          source: "create",
+        },
+        expiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+      }),
+      updatedAt: new Date(),
+    })
     .where(eq(transactions.id, tx.id));
 
   audit({
@@ -235,6 +257,8 @@ export async function createTyltH2hPayinInstance(params: {
     amount: params.amount,
     currency: settlementCurrency,
     paymentDetails,
+    tradeEventId,
+    paymentInstructions: extractPaymentInstructionsFromTyltData(paymentDetails),
   };
 }
 
@@ -281,4 +305,88 @@ export async function tyltH2hGetMerchantRampSpecialRates(environment: TyltMercha
     queryParams: {},
     credentialRole: "payin",
   });
+}
+
+type PayinSnapshotStored = {
+  updatedAt?: string;
+  tradeEventId?: number | null;
+  paymentDetails?: Record<string, unknown>;
+  source?: string;
+};
+
+function readPayinSnapshot(meta: Record<string, unknown>): PayinSnapshotStored | null {
+  const raw = meta.payinSnapshot;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  return raw as PayinSnapshotStored;
+}
+
+/**
+ * Merchant-facing H2H pay-in status: merges DB snapshot (create/webhook) with live instance pull.
+ */
+export async function getMerchantH2hPayinStatus(params: {
+  merchantId: string;
+  environment: TyltMerchantEnvironment;
+  transactionId: string;
+}) {
+  const [tx] = await db
+    .select()
+    .from(transactions)
+    .where(
+      and(
+        eq(transactions.id, params.transactionId),
+        eq(transactions.merchantId, params.merchantId),
+        eq(transactions.environment, params.environment)
+      )
+    )
+    .limit(1);
+
+  if (!tx || tx.type !== "payin") {
+    return null;
+  }
+
+  const meta = parseTransactionMetadata(tx);
+  if (!isTyltH2hPayinMetadata(meta)) {
+    return null;
+  }
+
+  const cached = readPayinSnapshot(meta);
+  let paymentDetails: Record<string, unknown> = cached?.paymentDetails ?? {};
+  let tradeEventId: number | null =
+    typeof cached?.tradeEventId === "number" ? cached.tradeEventId : null;
+  let detailsSource: "live" | "webhook" | "create" =
+    cached?.source === "webhook" ? "webhook" : cached?.source === "create" ? "create" : "create";
+
+  const remoteOrderId = resolveTyltPayinMerchantOrderIdForRemote(meta, tx.id);
+  const live = await fetchTyltPayinInstanceDetails({
+    environment: params.environment,
+    merchantOrderId: remoteOrderId,
+    instanceId: tx.externalId,
+  });
+
+  if (live && live.status < 500) {
+    const liveData = extractTyltPayinDataEnvelope(live.json);
+    if (liveData) {
+      paymentDetails = liveData;
+      detailsSource = "live";
+      const liveEvent = parseCrossRampEventId(live.json);
+      if (liveEvent != null) tradeEventId = liveEvent;
+    }
+  }
+
+  const paymentInstructions = extractPaymentInstructionsFromTyltData(paymentDetails);
+  const expiresAt =
+    typeof meta.expiresAt === "string" && meta.expiresAt.trim() ? meta.expiresAt.trim() : null;
+
+  return {
+    transactionId: tx.id,
+    status: tx.status,
+    amount: String(tx.amount),
+    currency: tx.currency,
+    instanceId: tx.externalId ?? null,
+    tradeEventId,
+    paymentDetails,
+    paymentInstructions,
+    detailsSource,
+    expiresAt,
+  };
 }

@@ -29,6 +29,7 @@ export {
 export { createTyltCrossRampPayinOrder, applyTyltCrossRampWebhookPayload, parseTransactionMetadata, TYLT_PRODUCT_CROSSRAMP, TYLT_PRODUCT_H2H_UPI } from "./crossramp-payin.js";
 export {
   createTyltH2hPayinInstance,
+  getMerchantH2hPayinStatus,
   tyltH2hBuyerConfirmsPayment,
   tyltH2hGetPaymentMethodsP2pOnRamp,
   tyltH2hGetCryptoCurrencyListForPrime,

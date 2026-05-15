@@ -16,19 +16,9 @@ This document assumes **you** expose Transacty as **API-as-a-service**: merchant
 - **Merchant → Transacty:** HMAC-signed HTTP (this guide). **Public paths omit the liquidity provider name** (merchants integrate with Transacty only). **Legacy** `POST|GET /v1/tylt/...` URLs remain **aliases** of the same handlers for backward compatibility.
 - **TL Pay → Transacty (server-only):** Signed webhooks to **`/webhooks/tylt/...`** — never part of the merchant integration surface; only your infrastructure needs a public URL here.
 
-### Tylt vs Payok — separate rails (read this first)
+**This guide is Tylt / India cross-border only** (`/v1/h2h`, `/v1/cpg`, discovery, internal transfer). **Bangladesh domestic** (BDT pay-in/payout) is documented in **`docs/POSTMAN_MERCHANT_API_GUIDE.md`** — not covered here.
 
-| | **Tylt (this guide)** | **Payok (Bangladesh domestic)** |
-|--|------------------------|----------------------------------|
-| **What** | Cross-border: UPI H2H, CPG crypto, discovery, internal transfer | BDT domestic pay-in / pay-out |
-| **Merchant paths** | `/v1/h2h/*`, `/v1/cpg/*`, `/v1/supported/*`, `/v1/account-balance`, … | `/v1/payins`, `/v1/payouts`, `/v1/balance` (BDT), … |
-| **Transacty → provider** | `services/integrations/tylt/*`, env `TYLT_*` | `services/domestic/bangladesh/*`, Payok env |
-| **Provider → Transacty webhooks** | `/webhooks/tylt/h2h/...`, `/webhooks/tylt/cpg-payin/...`, etc. | `/webhooks/payok/payin`, `/webhooks/payok/payout` |
-| **DB `provider` label** | e.g. `tylt-h2h-upi`, `tylt-cpg-payin` | e.g. `payok-bd` |
-
-**Everything in this file is Tylt-only.** Payok credentials, callbacks, and limits are **not** used for `/v1/h2h` or `/v1/cpg`. Merchants may use **one** Transacty API key for both rails, but each product calls **different `/v1` paths** and Transacty routes each to the correct provider internally.
-
-**HMAC auth** is shared (same headers as `docs/POSTMAN_MERCHANT_API_GUIDE.md`). Use **separate Postman folders**: “Tylt cross-border” vs “Payok BD” so tests do not mix bodies or expectations.
+**HMAC auth** uses the same headers as `docs/POSTMAN_MERCHANT_API_GUIDE.md`.
 
 **India UPI pay-in (merchant API):** Transacty exposes **H2H UPI only** (`POST /v1/h2h/payin-instances`, `POST /v1/h2h/buyer-confirms-payment`). **Hosted CrossRamp** widget create (`rampUrl`) is **not** registered on the merchant API so checkout stays **in your UI**. Webhooks under `/webhooks/tylt/crossramp/...` may still be used for **legacy** hosted-widget traffic; new integrations should use **H2H** + `/webhooks/tylt/h2h/...`.
 
@@ -55,11 +45,10 @@ TL Pay is **crypto settlement infrastructure** (stablecoins, conversion rails, t
 
 **Who pays whom:** The **customer (payer)** sends **INR via UPI** toward this pay-in. The **merchant** integrates via Transacty APIs and receives **success/failed** on their Transacty transaction — not a payout to the customer.
 
-**Three webhook directions (do not confuse):**
+**Webhook directions (Tylt flows):**
 
 1. **TL Pay → Transacty** — `POST {APP_BASE_URL}/webhooks/tylt/h2h/{test|live}` (operators; drives trade lifecycle).
 2. **Transacty → merchant** — `PATCH /v1/me/webhook` registers **your** URL; events like `payin.completed` when Transacty finalizes.
-3. **Payok → Transacty** — `/webhooks/payok/*` only for **Bangladesh**; **not** used for Tylt flows.
 
 **IDs merchants should store:**
 
@@ -73,7 +62,7 @@ TL Pay is **crypto settlement infrastructure** (stablecoins, conversion rails, t
 
 `payin:create,payout:create,balance:read,internal_transfer:create` — or `*` only in sandboxes. (`tylt:internal_transfer` is still accepted as a legacy scope name.)
 
-Related: environment variables for Tylt are listed in `.env.example`: **pay-in** vs **pay-out** service keys (`TYLT_{TEST|LIVE}_{PAYIN|PAYOUT}_*`), with legacy fallbacks (`TYLT_*`, `TYLT_TEST_*`, `TYLT_LIVE_*`), plus `TYLT_ALLOW_KYC_BYPASS`, caches, internal-transfer allowlist.
+Related: environment variables for Tylt are listed in `.env.example`: **pay-in** vs **pay-out** service keys (`TYLT_{TEST|LIVE}_{PAYIN|PAYOUT}_*`), with legacy fallbacks (`TYLT_*`, `TYLT_TEST_*`, `TYLT_LIVE_*`), optional `TYLT_H2H_REQUIRE_END_USER_KYC`, caches, internal-transfer allowlist.
 
 **Schemas in code:** Request bodies match `app.ts` (Zod) for each route; shared query helpers live in `src/lib/tylt-merchant-api-schemas.ts`.
 
@@ -87,7 +76,7 @@ Use this as the **default onboarding flow** for backend engineers building again
 |------|--------|---------------|--------------|
 | **0** | Configure Postman | — | Set `baseUrl`, `merchantKey`, `merchantSecret`. Add the **Pre-request script** from [§3.2](#32-pre-request-script-hmac). |
 | **1** | **Create** pay-in | `POST /v1/h2h/payin-instances` | JSON: `amount` (string, e.g. `"500"`), `currencySymbol` (`INR` or `USDT`), `userDetails`: `{ "email": "payer@example.com" }`. Optional header: `Idempotency-Key: <uuid>`. **Save** `transactionId` and `instanceId` from the response. Expect **200**, `status: "pending"`. |
-| **2** | **Get** transaction (optional) | `GET /v1/transactions/:transactionId` | Use `transactionId` from step 1. Expect `status: pending`, `provider: tylt-h2h-upi`, `instanceId` set after create. |
+| **2** | **Get** transaction (optional) | `GET /v1/transactions/:transactionId` | Use `transactionId` from step 1. Expect `status: pending`, `rail: india`, `railLabel: India UPI (H2H)`, `currency: INR` (or `USDT`), `instanceId` set after create. |
 | **3** | **Wait** until the trade can accept payment | — | TL Pay moves the trade forward **asynchronously**. UPI details and lifecycle updates usually arrive on **your** Transacty’s webhook URL — not in Postman. If you call confirm too soon, TL Pay returns **400** (e.g. `Invalid trade state.`). Use TL Pay dashboard / logs / their test checklist to know when the payer can pay. |
 | **4** | **Payer pays** (real or sandbox per TL Pay) | — | Customer completes UPI. **UTR** appears in the payer’s bank/UPI app (not in the create response). |
 | **5** | **Confirm** payment | `POST /v1/h2h/buyer-confirms-payment` | JSON: `transactionId` (step 1), `utr` (step 4). **No** `Idempotency-Key`. Expect **200** + `acknowledged: true` if TL Pay accepts it. |
@@ -549,13 +538,9 @@ Use the response to obtain **`fromUUID` / `toUUID`** (or other IDs) that Tylt ac
 
 `comments` may be omitted.
 
-### 6.14 Domestic sanity check (optional, same collection)
+### 6.14 List transactions (GET)
 
-- **GET** `{{baseUrl}}/v1/balance?environment=test` — requires `balance:read` or `*`; confirms BD wallet path still works with the same key as in [§11](#11-full-postman-regression-order-all-tylt-endpoints).
-
-### 6.15 List transactions (GET)
-
-- **GET** `{{baseUrl}}/v1/transactions` — same HMAC key; use to see rows created from the flows above (filter client-side if your client exposes provider metadata).
+- **GET** `{{baseUrl}}/v1/transactions` — same HMAC key; filter by `rail: india` / `railLabel` on each item (no vendor names in the response).
 
 ---
 
@@ -587,7 +572,7 @@ Use the response to obtain **`fromUUID` / `toUUID`** (or other IDs) that Tylt ac
 
 ## 8. `returnUrl` rules (merchant `returnUrl`)
 
-Applies to **Tylt H2H** (`returnUrl` on create) and any other merchant route that accepts `returnUrl`. **Not** Payok-specific.
+Applies to **Tylt H2H** (`returnUrl` on create) and any other Tylt merchant route that accepts `returnUrl`.
 
 - Must be a valid **absolute** URL.
 - **HTTPS** required except **http** allowed for `localhost`, `127.0.0.1`, `[::1]`.
@@ -629,38 +614,38 @@ Use this sequence to prove the **entire** Tylt merchant surface is healthy after
 |---|--------|------|--------|--------|
 | **0** | GET | `/health` | — | No HMAC. |
 | **1** | GET | `/v1/me` | any | Confirms key, scopes, `environment` (`test` \| `live`). |
-| **2** | GET | `/v1/balance?environment=test` | `balance:read` or `*` | **Payok BD only** (sanity check with same key — not a Tylt endpoint). |
-| **3** | GET | `/v1/supported/crypto-currencies` | discovery | Empty body signing. |
-| **4** | GET | `/v1/supported/fiat-currencies` | discovery | |
-| **5** | GET | `/v1/supported/crypto-networks` | discovery | |
-| **6** | GET | `/v1/supported/base-currencies` | discovery | |
-| **7** | GET | `/v1/account-balance` | `balance:read` | Add query params per Tylt if needed ([§6.2](#62-account-balance-get-query-passthrough)). |
-| **8** | GET | `/v1/h2h/payment-methods` | `payin:create` | |
-| **9** | GET | `/v1/h2h/crypto-currencies` | `payin:create` | |
-| **10** | POST | `/v1/h2h/payin-instances` | `payin:create` | `Idempotency-Key` recommended. Example: [§6.4](#64-h2h-upi-pay-in--create-post). |
-| **11** | POST | `/v1/h2h/buyer-confirms-payment` | `payin:create` | Example: [§6.5](#65-h2h--buyer-confirms-payment-post). No idempotency header. |
-| **12** | POST | `/v1/cpg/payin-requests` | `payin:create` | Example body: [§6.6](#66-cpg-pay-in--create-post). |
-| **13** | GET | `/v1/cpg/payin-information/:transactionId` | `payin:create` | Use `transactionId` from **12**. |
-| **14** | GET | `/v1/cpg/payin-history?rows=20&page=1` | `payin:create` | |
-| **15** | POST | `/v1/cpg/payout-requests` | `payout:create` | Needs **sufficient balance**. Example body: [§6.9](#69-cpg-payout--create-post). |
-| **16** | GET | `/v1/cpg/payout-information/:transactionId` | `payout:create` | From **15**. |
-| **17** | GET | `/v1/cpg/payout-history?rows=20&page=1` | `payout:create` | |
-| **18** | GET | `/v1/merchant-details` | `internal_transfer:create` | Discover UUIDs for **19**. |
-| **19** | POST | `/v1/internal-transfer` | `internal_transfer:create` | Example body: [§6.13](#613-internal-transfer-post). |
-| **20** | GET | `/v1/transactions/:transactionId` | (same key) | `transactionId` from step **10** or **12**. |
-| **21** | GET | `/v1/transactions?type=payin` | (same key) | List; `provider` is `tylt-h2h-upi`, `tylt-cpg-payin`, etc. — not Payok. |
+| **2** | GET | `/v1/supported/crypto-currencies` | discovery | Empty body signing. |
+| **3** | GET | `/v1/supported/fiat-currencies` | discovery | |
+| **4** | GET | `/v1/supported/crypto-networks` | discovery | |
+| **5** | GET | `/v1/supported/base-currencies` | discovery | |
+| **6** | GET | `/v1/account-balance` | `balance:read` | Add query params per Tylt if needed ([§6.2](#62-account-balance-get-query-passthrough)). |
+| **7** | GET | `/v1/h2h/payment-methods` | `payin:create` | |
+| **8** | GET | `/v1/h2h/crypto-currencies` | `payin:create` | |
+| **9** | POST | `/v1/h2h/payin-instances` | `payin:create` | `Idempotency-Key` recommended. Example: [§6.4](#64-h2h-upi-pay-in--create-post). |
+| **10** | POST | `/v1/h2h/buyer-confirms-payment` | `payin:create` | Example: [§6.5](#65-h2h--buyer-confirms-payment-post). No idempotency header. |
+| **11** | POST | `/v1/cpg/payin-requests` | `payin:create` | Example body: [§6.6](#66-cpg-pay-in--create-post). |
+| **12** | GET | `/v1/cpg/payin-information/:transactionId` | `payin:create` | Use `transactionId` from **11**. |
+| **13** | GET | `/v1/cpg/payin-history?rows=20&page=1` | `payin:create` | |
+| **14** | POST | `/v1/cpg/payout-requests` | `payout:create` | Needs **sufficient balance**. Example body: [§6.9](#69-cpg-payout--create-post). |
+| **15** | GET | `/v1/cpg/payout-information/:transactionId` | `payout:create` | From **14**. |
+| **16** | GET | `/v1/cpg/payout-history?rows=20&page=1` | `payout:create` | |
+| **17** | GET | `/v1/merchant-details` | `internal_transfer:create` | Discover UUIDs for **18**. |
+| **18** | POST | `/v1/internal-transfer` | `internal_transfer:create` | Example body: [§6.13](#613-internal-transfer-post). |
+| **19** | GET | `/v1/transactions/:transactionId` | (same key) | `transactionId` from step **9** or **11**. |
+| **20** | GET | `/v1/transactions?type=payin` | (same key) | India rows: `rail: india`, `railLabel` e.g. `India UPI (H2H)`. |
 
 **Practical notes**
 
-- Steps **10–11** (UPI H2H) or **12** (CPG pay-in) may create **real** upstream state; use **test** keys and small amounts.
-- **15** debits the **merchant wallet** in **settled** currency — fund that pocket first (e.g. prior pay-in) or expect `Insufficient balance`.
-- Steps you cannot complete without UPI app / chain (**10–11**) or full CPG flow (**12**) still validate **HTTP + auth + validation** if Tylt returns an error — capture status and body.
+- Steps **9–10** (UPI H2H) or **11** (CPG pay-in) may create **real** upstream state; use **test** keys and small amounts.
+- **14** debits the **merchant wallet** in **settled** currency — fund that pocket first (e.g. prior pay-in) or expect `Insufficient balance`.
+- Steps you cannot complete without UPI app / chain (**9–10**) or full CPG flow (**11**) still validate **HTTP + auth + validation** if Tylt returns an error — capture status and body.
 - **Webhook E2E** remains outside Postman unless you tunnel; see [§9](#9-webhooks--what-postman-does-not-cover).
 
 ---
 
 ## 12. Related docs
 
+- `docs/POSTMAN_MERCHANT_API_GUIDE.md` — **Bangladesh domestic** pay-in/payout (`/v1/payins`, `/v1/payouts`, `/v1/balance`).
 - `docs/PORTAL_FRONTEND_SPEC.md` — **Merchant dashboard UI** (`/portal/*`, JWT). Not a substitute for this Postman guide.
 - `docs/MONEY_INVARIANTS.md` — wallet / ledger / payout debit semantics.
 - `docs/WEBHOOK_DEDUPE_AND_IDEMPOTENCY.md` — provider callback dedupe and merchant `Idempotency-Key` behavior.
@@ -670,7 +655,7 @@ Use this sequence to prove the **entire** Tylt merchant surface is healthy after
 
 ## Changelog
 
-- **Tylt vs Payok:** Rail boundary table, TL Pay concepts (instance/trade/webhooks), **`GET /v1/transactions/:transactionId`**, conversion-rates in discovery table.
+- **Scope:** Tylt-only; Bangladesh moved to `POSTMAN_MERCHANT_API_GUIDE.md`. TL Pay concepts, **`GET /v1/transactions/:transactionId`**, merchant-safe `rail` / `railLabel` on transaction list.
 - **India UPI:** Merchant API is **H2H only** — `POST /v1/crossramp/payin-instances` is **not** registered. **`/v1/h2h/...`** + webhooks **`/webhooks/tylt/h2h/...`** for new flows.
 - **Merchant paths:** **`/v1/h2h`**, **`/v1/cpg`**, **`/v1/supported`**, **`/v1/account-balance`**, **`/v1/merchant-details`**, **`/v1/internal-transfer`** (no processor segment). **`/v1/tylt/...`** remains a **legacy alias** where routes exist. Scope **`internal_transfer:create`** preferred; **`tylt:internal_transfer`** still accepted.
 - **Postman cookbook (§6):** Copy-paste URLs, JSON bodies, query rules (`account-balance` passthrough, `rows`/`page`), idempotency table (`buyer-confirms` excluded), `Content-Type` / GET body note, path to Zod in repo.
