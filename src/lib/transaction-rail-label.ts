@@ -3,13 +3,25 @@
  * Maps internal `provider` DB values to region/product copy only — no vendor names.
  */
 
-export type MerchantTransactionRail = "bangladesh" | "india" | "internal" | "unknown";
+export type MerchantTransactionRail = "bangladesh" | "india" | "europe" | "internal" | "unknown";
 
 export type MerchantTransactionRailPresentation = {
   currency: string;
   rail: MerchantTransactionRail;
   railLabel: string;
 };
+
+/** Persisted `metadata.tyltProduct` values that belong to the India TL Pay lane (not EUR). */
+const INDIA_TYLT_PRODUCTS = new Set([
+  "h2h_upi",
+  "crossramp_upi",
+  "cpg_payin",
+  "cpg_payout",
+  "internal_transfer",
+]);
+
+/** Reserved for the EUR lane when implemented (`tylt-eur-*` providers + metadata). */
+const EUROPE_TYLT_PRODUCTS = new Set(["eur_payin", "eur_payout"]);
 
 function labelFromProvider(provider: string): Pick<MerchantTransactionRailPresentation, "rail" | "railLabel"> | null {
   switch (provider) {
@@ -32,8 +44,11 @@ function labelFromProvider(provider: string): Pick<MerchantTransactionRailPresen
     case "internal-refund":
       return { rail: "internal", railLabel: "Customer refund" };
     default:
+      if (provider.startsWith("tylt-eur")) {
+        return { rail: "europe", railLabel: "Europe pay-in" };
+      }
       if (provider.startsWith("tylt-")) {
-        return { rail: "india", railLabel: "India" };
+        return { rail: "unknown", railLabel: "Cross-border" };
       }
       if (provider.startsWith("payok")) {
         return { rail: "bangladesh", railLabel: "Bangladesh" };
@@ -46,8 +61,21 @@ function inferIndiaFromMetadata(metadata: string | null): boolean {
   if (!metadata?.trim()) return false;
   try {
     const meta = JSON.parse(metadata) as { rail?: unknown; tyltProduct?: unknown };
-    if (meta.rail === "tylt") return true;
-    return typeof meta.tyltProduct === "string" && meta.tyltProduct.trim().length > 0;
+    if (meta.rail !== "tylt") return false;
+    const product = typeof meta.tyltProduct === "string" ? meta.tyltProduct.trim() : "";
+    return INDIA_TYLT_PRODUCTS.has(product);
+  } catch {
+    return false;
+  }
+}
+
+function inferEuropeFromMetadata(metadata: string | null): boolean {
+  if (!metadata?.trim()) return false;
+  try {
+    const meta = JSON.parse(metadata) as { rail?: unknown; tyltProduct?: unknown };
+    if (meta.rail !== "tylt") return false;
+    const product = typeof meta.tyltProduct === "string" ? meta.tyltProduct.trim() : "";
+    return EUROPE_TYLT_PRODUCTS.has(product);
   } catch {
     return false;
   }
@@ -68,12 +96,20 @@ export function presentTransactionRail(params: {
     }
   }
 
+  if (inferEuropeFromMetadata(params.metadata ?? null)) {
+    return { currency, rail: "europe", railLabel: "Europe" };
+  }
+
   if (inferIndiaFromMetadata(params.metadata ?? null)) {
     return { currency, rail: "india", railLabel: "India" };
   }
 
   if (currency === "BDT") {
     return { currency, rail: "bangladesh", railLabel: "Bangladesh" };
+  }
+
+  if (currency === "EUR") {
+    return { currency, rail: "europe", railLabel: "Europe" };
   }
 
   if (currency === "INR" || currency === "USDT") {

@@ -26,4 +26,25 @@ describe("presentTransactionRail", () => {
     assert.equal(p.rail, "india");
     assert.equal(p.railLabel, "India UPI");
   });
+
+  it("does not label unknown tylt providers as India", () => {
+    const p = presentTransactionRail({ provider: "tylt-eur-payin", currency: "EUR" });
+    assert.equal(p.rail, "europe");
+    assert.equal(p.railLabel, "Europe pay-in");
+  });
+
+  it("does not infer India from generic tylt metadata without a known product", () => {
+    const p = presentTransactionRail({
+      provider: null,
+      currency: "EUR",
+      metadata: JSON.stringify({ rail: "tylt", tyltProduct: "eur_payin" }),
+    });
+    assert.equal(p.rail, "europe");
+  });
+
+  it("labels unrecognized tylt provider as cross-border unknown", () => {
+    const p = presentTransactionRail({ provider: "tylt-future-lane", currency: "GBP" });
+    assert.equal(p.rail, "unknown");
+    assert.equal(p.railLabel, "Cross-border");
+  });
 });

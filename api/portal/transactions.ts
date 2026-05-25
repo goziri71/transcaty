@@ -3,7 +3,7 @@
  */
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { eq, and, count, desc, or, like } from "drizzle-orm";
+import { eq, and, count, desc, or, like, not } from "drizzle-orm";
 import { db } from "../../src/db/index.js";
 import { merchants, transactions } from "../../src/db/schema/index.js";
 import {
@@ -26,7 +26,7 @@ import { presentTransactionRail } from "../../src/lib/transaction-rail-label.js"
 
 const transactionRailFieldsSchema = z.object({
   currency: z.string(),
-  rail: z.enum(["bangladesh", "india", "internal", "unknown"]),
+  rail: z.enum(["bangladesh", "india", "europe", "internal", "unknown"]),
   railLabel: z.string(),
 });
 
@@ -78,7 +78,7 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
           environment: z.enum(["test", "live"]).default("test"),
           type: z.enum(["payin", "payout", "transfer", "refund"]).optional(),
           status: z.enum(["pending", "success", "failed"]).optional(),
-          rail: z.enum(["bangladesh", "india", "internal"]).optional(),
+          rail: z.enum(["bangladesh", "india", "europe", "internal"]).optional(),
           customerId: z.string().uuid().optional(),
           limit: z.coerce.number().min(1).max(100).default(20),
           offset: z.coerce.number().min(0).default(0),
@@ -117,7 +117,7 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
         environment: "test" | "live";
         type?: "payin" | "payout" | "transfer" | "refund";
         status?: "pending" | "success" | "failed";
-        rail?: "bangladesh" | "india" | "internal";
+        rail?: "bangladesh" | "india" | "europe" | "internal";
         customerId?: string;
         limit: number;
         offset: number;
@@ -128,7 +128,11 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
       if (status) conditions.push(eq(transactions.status, status));
       if (customerId) conditions.push(eq(transactions.walletId, customerId));
       if (rail === "bangladesh") conditions.push(like(transactions.provider, "payok%"));
-      else if (rail === "india") conditions.push(like(transactions.provider, "tylt%"));
+      else if (rail === "india") {
+        conditions.push(
+          and(like(transactions.provider, "tylt%"), not(like(transactions.provider, "tylt-eur%")))!
+        );
+      } else if (rail === "europe") conditions.push(like(transactions.provider, "tylt-eur%"));
       else if (rail === "internal") {
         conditions.push(
           or(

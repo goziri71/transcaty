@@ -1069,7 +1069,7 @@ export async function buildApp() {
       rail: "tylt-crossramp",
       rejectLogMessage: "tylt webhook rejected: invalid or missing signature",
       tyltWebhookCredential: "payin",
-      apply: (body) => applyTyltWebhookByProductRoute("crossramp_upi", body),
+      apply: (body) => applyTyltWebhookByStoredRailProduct(body),
     });
   });
 
@@ -1081,7 +1081,7 @@ export async function buildApp() {
       rail: "tylt-h2h-upi",
       rejectLogMessage: "tylt H2H webhook rejected: invalid or missing signature",
       tyltWebhookCredential: "payin",
-      apply: (body) => applyTyltWebhookByProductRoute("crossramp_upi", body),
+      apply: (body) => applyTyltWebhookByStoredRailProduct(body),
     });
   });
 
@@ -2429,7 +2429,7 @@ export async function buildApp() {
     amount: z.string(),
     paidAmount: z.string().nullable(),
     currency: z.string(),
-    rail: z.enum(["bangladesh", "india", "internal", "unknown"]),
+    rail: z.enum(["bangladesh", "india", "europe", "internal", "unknown"]),
     railLabel: z.string(),
     platformOrderId: z.string().nullable(),
     instanceId: z.string().nullable(),

@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import {
   extractPaymentInstructionsFromTyltData,
   extractTyltPayinDataEnvelope,
+  hasMeaningfulPaymentInstructions,
 } from "../../services/integrations/tylt/crossramp-payin.js";
 
 describe("tylt pay-in envelope", () => {
@@ -18,5 +19,13 @@ describe("tylt pay-in envelope", () => {
     assert.equal(data.instanceId, "abc");
     const instr = extractPaymentInstructionsFromTyltData(data);
     assert.equal(instr?.upiId, "pay@bank");
+  });
+
+  it("returns null when payment method only has empty details", () => {
+    assert.equal(hasMeaningfulPaymentInstructions({ details: null }), false);
+    const instr = extractPaymentInstructionsFromTyltData({
+      paymentMethod: { details: null },
+    });
+    assert.equal(instr, null);
   });
 });

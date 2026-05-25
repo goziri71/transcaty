@@ -278,6 +278,19 @@ export function extractTyltPayinDataEnvelope(payload: unknown): Record<string, u
   return data;
 }
 
+/** True when the object carries at least one non-empty payment field (not `{ details: null }`). */
+export function hasMeaningfulPaymentInstructions(candidate: Record<string, unknown>): boolean {
+  for (const value of Object.values(candidate)) {
+    if (value == null) continue;
+    if (typeof value === "string" && value.trim().length > 0) return true;
+    if (typeof value === "number" && Number.isFinite(value)) return true;
+    if (typeof value === "object" && !Array.isArray(value)) {
+      if (hasMeaningfulPaymentInstructions(value as Record<string, unknown>)) return true;
+    }
+  }
+  return false;
+}
+
 /** UPI ID / QR / bank fields for merchant checkout UI when present upstream. */
 export function extractPaymentInstructionsFromTyltData(
   data: Record<string, unknown>
@@ -288,7 +301,12 @@ export function extractPaymentInstructionsFromTyltData(
       (pm as Record<string, unknown>).details ??
       (pm as Record<string, unknown>).paymentDetails ??
       pm;
-    if (details && typeof details === "object" && !Array.isArray(details) && Object.keys(details).length > 0) {
+    if (
+      details &&
+      typeof details === "object" &&
+      !Array.isArray(details) &&
+      hasMeaningfulPaymentInstructions(details as Record<string, unknown>)
+    ) {
       return details as Record<string, unknown>;
     }
   }
@@ -299,7 +317,12 @@ export function extractPaymentInstructionsFromTyltData(
       const v = trade[key];
       if (!v || typeof v !== "object") continue;
       const inner = (v as Record<string, unknown>).details ?? v;
-      if (inner && typeof inner === "object" && !Array.isArray(inner) && Object.keys(inner as object).length > 0) {
+      if (
+        inner &&
+        typeof inner === "object" &&
+        !Array.isArray(inner) &&
+        hasMeaningfulPaymentInstructions(inner as Record<string, unknown>)
+      ) {
         return inner as Record<string, unknown>;
       }
     }

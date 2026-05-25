@@ -6,7 +6,7 @@ import { db } from "../../../src/db/index.js";
 import { transactions, wallets, ledgerEntries } from "../../../src/db/schema/index.js";
 import { audit } from "../../../src/lib/audit.js";
 import { tryApplyTransactionFee } from "../../../src/lib/billing/index.js";
-import { addAmount } from "../../../src/lib/money.js";
+import { addAmount, normalizeMoneyAmountToTwoDecimals } from "../../../src/lib/money.js";
 import type { WebhookEvent } from "../../../src/lib/merchant-webhook.js";
 import { getOrCreateMerchantWallet, parseTransactionMetadata } from "./crossramp-payin.js";
 import { tyltSignedGetJson, tyltSignedPostJson } from "./client.js";
@@ -78,9 +78,9 @@ export function extractCpgPayInWebhookFields(parsed: unknown): {
 function pickCreditAmount(fields: ReturnType<typeof extractCpgPayInWebhookFields>, fallback: string): string {
   const candidates = [fields.settledAmountCredited, fields.settledAmountReceived, fields.baseAmountReceived];
   for (const c of candidates) {
-    if (c && Number.isFinite(parseFloat(c))) return c;
+    if (c && Number.isFinite(parseFloat(c))) return normalizeMoneyAmountToTwoDecimals(c);
   }
-  return fallback;
+  return normalizeMoneyAmountToTwoDecimals(fallback);
 }
 
 function isPayInEnvelope(fields: ReturnType<typeof extractCpgPayInWebhookFields>): boolean {
