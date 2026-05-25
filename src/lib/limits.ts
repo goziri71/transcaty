@@ -22,4 +22,9 @@ export const LIMITS = {
     amountMin: 1e-8,
     amountMax: 1e15,
   },
+  /** EU Open Banking: fiat amount on create (EUR / GBP pay-in, EUR payout). */
+  tyltEurOpenBanking: {
+    EUR: { min: 1, max: 50_000 },
+    GBP: { min: 1, max: 50_000 },
+  },
 } as const;

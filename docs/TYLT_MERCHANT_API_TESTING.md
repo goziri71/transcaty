@@ -16,9 +16,17 @@ This document assumes **you** expose Transacty as **API-as-a-service**: merchant
 - **Merchant → Transacty:** HMAC-signed HTTP (this guide). **Public paths omit the liquidity provider name** (merchants integrate with Transacty only). **Legacy** `POST|GET /v1/tylt/...` URLs remain **aliases** of the same handlers for backward compatibility.
 - **TL Pay → Transacty (server-only):** Signed webhooks to **`/webhooks/tylt/...`** — never part of the merchant integration surface; only your infrastructure needs a public URL here.
 
-**This guide is Tylt / India cross-border only** (`/v1/h2h`, `/v1/cpg`, discovery, internal transfer). **Bangladesh domestic** (BDT pay-in/payout) is documented in **`docs/POSTMAN_MERCHANT_API_GUIDE.md`** — not covered here.
+**This guide is Tylt / India cross-border only** (`/v1/h2h`, `/v1/cpg`, discovery, internal transfer). **Do not use this file for EUR/GBP Open Banking.**
 
-**HMAC auth** uses the same headers as `docs/POSTMAN_MERCHANT_API_GUIDE.md`.
+| Region / product | Postman doc | Merchant paths |
+|------------------|-------------|----------------|
+| **India** (this file) | Below | `/v1/h2h/*`, `/v1/cpg/*` |
+| **EU Open Banking** | **`docs/TYLT_EUR_OPEN_BANKING.md`** | `/v1/eur/*` — widget `checkoutUrl`, USDC settlement |
+| **Bangladesh** | `docs/POSTMAN_MERCHANT_API_GUIDE.md` | `/v1/payins`, `/v1/payouts` |
+
+Use a **separate Postman collection** (or folder) for EU vs India so you do not mix H2H UTR steps with EU widget redirects.
+
+**HMAC auth** uses the same headers as `docs/POSTMAN_MERCHANT_API_GUIDE.md` (EU doc §2–3 repeats the pre-request script for a standalone EU collection).
 
 **India UPI pay-in (merchant API):** Transacty exposes **H2H UPI only** (`POST /v1/h2h/payin-instances`, `POST /v1/h2h/buyer-confirms-payment`). **Hosted CrossRamp** widget create (`rampUrl`) is **not** registered on the merchant API so checkout stays **in your UI**. Webhooks under `/webhooks/tylt/crossramp/...` may still be used for **legacy** hosted-widget traffic; new integrations should use **H2H** + `/webhooks/tylt/h2h/...`.
 
@@ -645,6 +653,7 @@ Use this sequence to prove the **entire** Tylt merchant surface is healthy after
 
 ## 12. Related docs
 
+- `docs/TYLT_EUR_OPEN_BANKING.md` — **EU Open Banking only** (Postman §1–12, `/v1/eur/*`). Not duplicated here.
 - `docs/POSTMAN_MERCHANT_API_GUIDE.md` — **Bangladesh domestic** pay-in/payout (`/v1/payins`, `/v1/payouts`, `/v1/balance`).
 - `docs/PORTAL_FRONTEND_SPEC.md` — **Merchant dashboard UI** (`/portal/*`, JWT). Not a substitute for this Postman guide.
 - `docs/MONEY_INVARIANTS.md` — wallet / ledger / payout debit semantics.
@@ -655,6 +664,7 @@ Use this sequence to prove the **entire** Tylt merchant surface is healthy after
 
 ## Changelog
 
+- **EU:** Full Postman flow moved to `docs/TYLT_EUR_OPEN_BANKING.md` (§1–12); this file remains India-only.
 - **Scope:** Tylt-only; Bangladesh moved to `POSTMAN_MERCHANT_API_GUIDE.md`. TL Pay concepts, **`GET /v1/transactions/:transactionId`**, merchant-safe `rail` / `railLabel` on transaction list.
 - **India UPI:** Merchant API is **H2H only** — `POST /v1/crossramp/payin-instances` is **not** registered. **`/v1/h2h/...`** + webhooks **`/webhooks/tylt/h2h/...`** for new flows.
 - **Merchant paths:** **`/v1/h2h`**, **`/v1/cpg`**, **`/v1/supported`**, **`/v1/account-balance`**, **`/v1/merchant-details`**, **`/v1/internal-transfer`** (no processor segment). **`/v1/tylt/...`** remains a **legacy alias** where routes exist. Scope **`internal_transfer:create`** preferred; **`tylt:internal_transfer`** still accepted.

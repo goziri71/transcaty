@@ -73,6 +73,12 @@ import {
   tyltGetSupportedCryptoCurrenciesList,
   tyltGetSupportedCryptoNetworksList,
   tyltGetSupportedFiatCurrenciesList,
+  createTyltEurPayinInstance,
+  createTyltEurPayoutInstance,
+  approveTyltEurPayout,
+  getMerchantEurPayinStatus,
+  getMerchantEurPayoutStatus,
+  isTyltEurPayoutMetadata,
 } from "./services/integrations/tylt/index.js";
 import { LIMITS } from "./src/lib/limits.js";
 import { presentTransactionRail } from "./src/lib/transaction-rail-label.js";
@@ -1109,6 +1115,30 @@ export async function buildApp() {
     });
   });
 
+  const TYLT_EUR_PAYIN_WEBHOOK_PATH = "/webhooks/tylt/eur-payin/:environment";
+
+  app.post(TYLT_EUR_PAYIN_WEBHOOK_PATH, async (request, reply) => {
+    await handleTyltWebhookPost(request, reply, {
+      pathConstant: TYLT_EUR_PAYIN_WEBHOOK_PATH,
+      rail: "tylt-eur-payin",
+      rejectLogMessage: "tylt EU pay-in webhook rejected: invalid or missing signature",
+      tyltWebhookCredential: "payin",
+      apply: (body) => applyTyltWebhookByStoredRailProduct(body),
+    });
+  });
+
+  const TYLT_EUR_PAYOUT_WEBHOOK_PATH = "/webhooks/tylt/eur-payout/:environment";
+
+  app.post(TYLT_EUR_PAYOUT_WEBHOOK_PATH, async (request, reply) => {
+    await handleTyltWebhookPost(request, reply, {
+      pathConstant: TYLT_EUR_PAYOUT_WEBHOOK_PATH,
+      rail: "tylt-eur-payout",
+      rejectLogMessage: "tylt EU payout webhook rejected: invalid or missing signature",
+      tyltWebhookCredential: "payout",
+      apply: (body) => applyTyltWebhookByStoredRailProduct(body),
+    });
+  });
+
   /** Optional single callback URL: routes by `transactions.metadata` (`rail` + `tyltProduct`). Legacy paths remain preferred. */
   const TYLT_UNIFIED_WEBHOOK_PATH = "/webhooks/tylt/unified/:environment";
 
@@ -2041,6 +2071,365 @@ export async function buildApp() {
         return;
       }
     })
+  );
+
+  const tyltEurMerchantDetailsBodySchema = z
+    .object({
+      merchantName: z.string().min(1),
+      merchantUrl: z.string().url(),
+      merchantInternalId: z.string().min(1),
+    })
+    .optional();
+
+  const eurPayinCreateResponseSchema = z.object({
+    transactionId: z.string(),
+    status: z.literal("pending"),
+    amount: z.string(),
+    fiatCurrency: z.string(),
+    settlementCurrency: z.literal("USDC"),
+    instanceId: z.string(),
+    checkoutUrl: z.string().url(),
+    cryptoAmount: z.string().nullable(),
+    rate: z.number().nullable(),
+  });
+
+  merchantV1PostPair("/v1/eur/payin-instances", "/v1/tylt/eur/payin-instances", (path) =>
+    app.post(path, {
+      schema: {
+        body: z.object({
+          amount: z.string(),
+          currencySymbol: z.enum(["EUR", "GBP"]),
+          returnUrl: z.string().min(1),
+          merchantUrl: z.string().url().optional(),
+          merchantDetails: tyltEurMerchantDetailsBodySchema,
+          userDetails: z.record(z.string(), z.unknown()).default({}),
+          cryptoUi: z.union([z.literal(0), z.literal(1)]).optional(),
+        }),
+        response: {
+          200: eurPayinCreateResponseSchema,
+          400: merchantFacingError,
+          401: errorResponse,
+          403: errorResponse,
+          503: merchantFacingError,
+          500: merchantFacingError,
+        },
+      },
+    },
+    async (request, reply) => {
+      const m = request.merchant;
+      if (!m) return reply.status(401).send({ error: "Unauthorized" });
+      if (!m.scopes.includes("payin:create") && !m.scopes.includes("*")) {
+        return reply.status(403).send({ error: "Forbidden", message: "Missing scope: payin:create" });
+      }
+      if (!(await requireKycVerified(m.merchantId, reply))) return;
+      const body = request.body as {
+        amount: string;
+        currencySymbol: "EUR" | "GBP";
+        returnUrl: string;
+        merchantUrl?: string;
+        merchantDetails?: { merchantName: string; merchantUrl: string; merchantInternalId: string };
+        userDetails: Record<string, unknown>;
+        cryptoUi?: 0 | 1;
+      };
+      const returnCheck = validateMerchantReturnUrl(body.returnUrl);
+      if (!returnCheck.ok) {
+        return reply.status(400).send({ error: "Bad Request", message: returnCheck.message });
+      }
+      const bounds = LIMITS.tyltEurOpenBanking[body.currencySymbol];
+      const amt = parseFloat(body.amount);
+      if (!Number.isFinite(amt) || amt < bounds.min || amt > bounds.max) {
+        return reply.status(400).send({
+          error: "Bad Request",
+          message: `Amount must be between ${bounds.min} and ${bounds.max} ${body.currencySymbol}`,
+        });
+      }
+      try {
+        const response = await withIdempotency(
+          { request, reply, merchantId: m.merchantId, body },
+          async () => {
+            const result = await createTyltEurPayinInstance({
+              merchantId: m.merchantId,
+              environment: m.environment,
+              baseUrl,
+              amount: body.amount,
+              currencySymbol: body.currencySymbol,
+              returnUrl: returnCheck.normalized!,
+              userDetails: body.userDetails ?? {},
+              merchantUrl: body.merchantUrl,
+              merchantDetails: body.merchantDetails,
+              cryptoUi: body.cryptoUi,
+            });
+            return {
+              transactionId: result.transactionId,
+              status: "pending" as const,
+              amount: result.amount,
+              fiatCurrency: result.fiatCurrency,
+              settlementCurrency: "USDC" as const,
+              instanceId: result.instanceId,
+              checkoutUrl: result.checkoutUrl,
+              cryptoAmount: result.cryptoAmount,
+              rate: result.rate,
+            };
+          }
+        );
+        if (response === undefined) return;
+        return response;
+      } catch (err) {
+        app.log.error(err);
+        const mapped = merchantPaymentFlowErrorResponse(err);
+        if (mapped.logDetail) {
+          app.log.warn({ logDetail: mapped.logDetail }, "v1 eur payin merchant-facing error detail");
+        }
+        sendMerchantFacingReply(reply, mapped);
+        return;
+      }
+    })
+  );
+
+  merchantV1GetPair(
+    "/v1/eur/payin-instances/:transactionId",
+    "/v1/tylt/eur/payin-instances/:transactionId",
+    (path) =>
+      app.get(path, {
+        schema: {
+          params: z.object({ transactionId: z.string().uuid() }),
+          response: {
+            200: z.object({
+              transactionId: z.string(),
+              status: z.string(),
+              amount: z.string(),
+              fiatCurrency: z.string(),
+              settlementCurrency: z.string(),
+              instanceId: z.string().nullable(),
+              checkoutUrl: z.string().nullable(),
+              eventId: z.number().nullable(),
+              detailsSource: z.enum(["live", "local"]),
+              upstream: z.record(z.unknown()).nullable().optional(),
+            }),
+            401: errorResponse,
+            403: errorResponse,
+            404: errorResponse,
+          },
+        },
+      },
+      async (request, reply) => {
+        const m = request.merchant;
+        if (!m) return reply.status(401).send({ error: "Unauthorized" });
+        if (!m.scopes.includes("payin:create") && !m.scopes.includes("*")) {
+          return reply.status(403).send({ error: "Forbidden", message: "Missing scope: payin:create" });
+        }
+        const { transactionId } = request.params as { transactionId: string };
+        const view = await getMerchantEurPayinStatus({
+          merchantId: m.merchantId,
+          environment: m.environment,
+          transactionId,
+        });
+        if (!view) {
+          return reply.status(404).send({ error: "Not found", message: "EU pay-in not found" });
+        }
+        return view;
+      })
+  );
+
+  merchantV1PostPair("/v1/eur/payout-instances", "/v1/tylt/eur/payout-instances", (path) =>
+    app.post(path, {
+      schema: {
+        body: z.object({
+          amount: z.string(),
+          currencySymbol: z.literal("EUR"),
+          returnUrl: z.string().min(1),
+          merchantUrl: z.string().url().optional(),
+          merchantDetails: tyltEurMerchantDetailsBodySchema,
+          userDetails: z.record(z.string(), z.unknown()).default({}),
+          payeeDetails: z.record(z.string(), z.unknown()),
+          autoMerchantApproval: z.union([z.literal(0), z.literal(1)]).optional(),
+          cryptoUi: z.union([z.literal(0), z.literal(1)]).optional(),
+        }),
+        response: {
+          200: eurPayinCreateResponseSchema,
+          400: merchantFacingError,
+          401: errorResponse,
+          403: errorResponse,
+          503: merchantFacingError,
+          500: merchantFacingError,
+        },
+      },
+    },
+    async (request, reply) => {
+      const m = request.merchant;
+      if (!m) return reply.status(401).send({ error: "Unauthorized" });
+      if (!m.scopes.includes("payout:create") && !m.scopes.includes("*")) {
+        return reply.status(403).send({ error: "Forbidden", message: "Missing scope: payout:create" });
+      }
+      if (!(await requireKycVerified(m.merchantId, reply))) return;
+      const body = request.body as {
+        amount: string;
+        currencySymbol: "EUR";
+        returnUrl: string;
+        merchantUrl?: string;
+        merchantDetails?: { merchantName: string; merchantUrl: string; merchantInternalId: string };
+        userDetails: Record<string, unknown>;
+        payeeDetails: Record<string, unknown>;
+        autoMerchantApproval?: 0 | 1;
+        cryptoUi?: 0 | 1;
+      };
+      const returnCheck = validateMerchantReturnUrl(body.returnUrl);
+      if (!returnCheck.ok) {
+        return reply.status(400).send({ error: "Bad Request", message: returnCheck.message });
+      }
+      const bounds = LIMITS.tyltEurOpenBanking.EUR;
+      const amt = parseFloat(body.amount);
+      if (!Number.isFinite(amt) || amt < bounds.min || amt > bounds.max) {
+        return reply.status(400).send({
+          error: "Bad Request",
+          message: `Amount must be between ${bounds.min} and ${bounds.max} EUR`,
+        });
+      }
+      try {
+        const response = await withIdempotency(
+          { request, reply, merchantId: m.merchantId, body },
+          async () => {
+            const result = await createTyltEurPayoutInstance({
+              merchantId: m.merchantId,
+              environment: m.environment,
+              baseUrl,
+              amount: body.amount,
+              currencySymbol: "EUR",
+              returnUrl: returnCheck.normalized!,
+              userDetails: body.userDetails ?? {},
+              payeeDetails: body.payeeDetails,
+              autoMerchantApproval: body.autoMerchantApproval,
+              merchantUrl: body.merchantUrl,
+              merchantDetails: body.merchantDetails,
+              cryptoUi: body.cryptoUi,
+            });
+            return {
+              transactionId: result.transactionId,
+              status: "pending" as const,
+              amount: result.amount,
+              fiatCurrency: result.fiatCurrency,
+              settlementCurrency: "USDC" as const,
+              instanceId: result.instanceId,
+              checkoutUrl: result.checkoutUrl,
+              cryptoAmount: result.cryptoAmount,
+              rate: result.rate,
+            };
+          }
+        );
+        if (response === undefined) return;
+        return response;
+      } catch (err) {
+        app.log.error(err);
+        const mapped = merchantPaymentFlowErrorResponse(err);
+        sendMerchantFacingReply(reply, mapped);
+        return;
+      }
+    })
+  );
+
+  merchantV1PostPair(
+    "/v1/eur/payout-instances/:transactionId/approve",
+    "/v1/tylt/eur/payout-instances/:transactionId/approve",
+    (path) =>
+      app.post(path, {
+        schema: {
+          params: z.object({ transactionId: z.string().uuid() }),
+          response: {
+            200: z.object({ transactionId: z.string(), acknowledged: z.boolean() }),
+            400: merchantFacingError,
+            401: errorResponse,
+            403: errorResponse,
+            404: errorResponse,
+            503: merchantFacingError,
+          },
+        },
+      },
+      async (request, reply) => {
+        const m = request.merchant;
+        if (!m) return reply.status(401).send({ error: "Unauthorized" });
+        if (!m.scopes.includes("payout:create") && !m.scopes.includes("*")) {
+          return reply.status(403).send({ error: "Forbidden", message: "Missing scope: payout:create" });
+        }
+        const { transactionId } = request.params as { transactionId: string };
+        const [txRow] = await db
+          .select()
+          .from(transactions)
+          .where(and(eq(transactions.id, transactionId), eq(transactions.merchantId, m.merchantId)))
+          .limit(1);
+        if (!txRow || txRow.type !== "payout") {
+          return reply.status(404).send({ error: "Not found", message: "Payout not found" });
+        }
+        const meta = parseTransactionMetadata(txRow);
+        if (!isTyltEurPayoutMetadata(meta)) {
+          return reply.status(404).send({ error: "Not found", message: "EU payout not found" });
+        }
+        try {
+          const res = await approveTyltEurPayout({
+            environment: m.environment,
+            transactionId,
+            merchantId: m.merchantId,
+          });
+          if (res.status >= 400) {
+            return reply.status(400).send({
+              error: "Bad Request",
+              message: pickTyltJsonPrimaryMessage(res.json) ?? "Payout approval rejected",
+              code: "payment_provider_rejected",
+            });
+          }
+          return { transactionId, acknowledged: true };
+        } catch (err) {
+          app.log.error(err);
+          const mapped = merchantPaymentFlowErrorResponse(err);
+          sendMerchantFacingReply(reply, mapped);
+          return;
+        }
+      })
+  );
+
+  merchantV1GetPair(
+    "/v1/eur/payout-instances/:transactionId",
+    "/v1/tylt/eur/payout-instances/:transactionId",
+    (path) =>
+      app.get(path, {
+        schema: {
+          params: z.object({ transactionId: z.string().uuid() }),
+          response: {
+            200: z.object({
+              transactionId: z.string(),
+              status: z.string(),
+              amount: z.string(),
+              fiatCurrency: z.string(),
+              settlementCurrency: z.string(),
+              debitAmount: z.string(),
+              instanceId: z.string().nullable(),
+              checkoutUrl: z.string().nullable(),
+              eventId: z.number().nullable(),
+              detailsSource: z.enum(["live", "local"]),
+              upstream: z.record(z.unknown()).nullable().optional(),
+            }),
+            401: errorResponse,
+            403: errorResponse,
+            404: errorResponse,
+          },
+        },
+      },
+      async (request, reply) => {
+        const m = request.merchant;
+        if (!m) return reply.status(401).send({ error: "Unauthorized" });
+        if (!m.scopes.includes("payout:create") && !m.scopes.includes("*")) {
+          return reply.status(403).send({ error: "Forbidden", message: "Missing scope: payout:create" });
+        }
+        const { transactionId } = request.params as { transactionId: string };
+        const view = await getMerchantEurPayoutStatus({
+          merchantId: m.merchantId,
+          environment: m.environment,
+          transactionId,
+        });
+        if (!view) {
+          return reply.status(404).send({ error: "Not found", message: "EU payout not found" });
+        }
+        return view;
+      })
   );
 
   merchantV1GetPair("/v1/merchant-details", "/v1/tylt/merchant-details", (path) =>

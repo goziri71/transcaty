@@ -15,6 +15,9 @@ import {
 } from "./crossramp-payin.js";
 import { applyTyltCpgPayinWebhookPayload, extractCpgPayInWebhookFields, TYLT_PRODUCT_CPG_PAYIN } from "./cpg-payin.js";
 import { applyTyltCpgPayoutWebhookPayload, extractCpgPayOutWebhookFields, TYLT_PRODUCT_CPG_PAYOUT } from "./cpg-payout.js";
+import { applyTyltEurPayinWebhookPayload, TYLT_PRODUCT_EUR_PAYIN } from "./eur-payin.js";
+import { applyTyltEurPayoutWebhookPayload, TYLT_PRODUCT_EUR_PAYOUT } from "./eur-payout.js";
+import { parseEurMerchantOrderId } from "./eur-open-banking.js";
 import { getTyltCredentials, type TyltCredentialRole, type TyltMerchantEnvironment } from "./config.js";
 import { verifyTyltSignature } from "./sign.js";
 
@@ -26,6 +29,8 @@ export function extractTyltWebhookMerchantOrderId(parsed: unknown): string | und
   if (payinId) return payinId;
   const payoutId = extractCpgPayOutWebhookFields(parsed).merchantOrderId?.trim();
   if (payoutId) return payoutId;
+  const eurId = parseEurMerchantOrderId(parsed)?.trim();
+  if (eurId) return eurId;
   return undefined;
 }
 
@@ -111,6 +116,8 @@ export async function applyTyltWebhookByStoredRailProduct(
   if (product === TYLT_PRODUCT_CROSSRAMP || product === TYLT_PRODUCT_H2H_UPI) {
     return applyTyltCrossRampWebhookPayload(parsed);
   }
+  if (product === TYLT_PRODUCT_EUR_PAYIN) return applyTyltEurPayinWebhookPayload(parsed);
+  if (product === TYLT_PRODUCT_EUR_PAYOUT) return applyTyltEurPayoutWebhookPayload(parsed);
 
   return null;
 }

@@ -39,6 +39,10 @@ function labelFromProvider(provider: string): Pick<MerchantTransactionRailPresen
       return { rail: "india", railLabel: "India UPI" };
     case "tylt-internal":
       return { rail: "india", railLabel: "India internal transfer" };
+    case "tylt-eur-payin":
+      return { rail: "europe", railLabel: "Europe pay-in" };
+    case "tylt-eur-payout":
+      return { rail: "europe", railLabel: "Europe payout" };
     case "internal-transfer":
       return { rail: "internal", railLabel: "Customer transfer" };
     case "internal-refund":

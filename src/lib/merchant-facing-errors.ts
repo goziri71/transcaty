@@ -76,6 +76,18 @@ export function merchantPaymentFlowErrorResponse(err: unknown): MerchantFacingRe
     };
   }
 
+  if (err instanceof Error && err.name === "EurMerchantDetailsError") {
+    return {
+      status: 400,
+      body: {
+        error: "Bad Request",
+        message: err.message,
+        code: "invalid_merchant_details",
+      },
+      logDetail: err.message,
+    };
+  }
+
   if (isPayoutCreationError(err)) {
     return {
       status: 400,
