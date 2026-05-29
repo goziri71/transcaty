@@ -89,15 +89,19 @@ Response includes `mfaEnabled`, `mfaPendingSetup` (among other profile fields).
 
 ## 3a. Balance and merchant wallets
 
-**Primary balance (single row — BDT preferred when multiple wallets exist)**  
+**Balance (primary row + all pockets in `items[]`)**  
 GET `{{baseUrl}}/portal/me/balance?environment=test`  
 Headers: `Authorization: Bearer {{portalToken}}`
 
-**All active merchant pockets (per currency — for dashboard cards)**  
+Response: legacy top-level fields (BDT-first headline) plus **`items`**: full card per wallet (`balance`, `availableBalance`, `region`, `displayLabel`, `limits`, …).
+
+**All pockets (same `items[]` shape, no headline duplication)**  
 GET `{{baseUrl}}/portal/me/wallets?environment=test`  
 Headers: `Authorization: Bearer {{portalToken}}`
 
-Use `environment=live` for production pockets. The wallets list is safe to call on every shell load; it returns only `type=merchant` rows for that merchant.
+**Dashboard:** Render one card per `items[]` entry (BDT, USDT, USDC, …). Either endpoint works; `/balance` is enough if you need headline + cards in one call.
+
+Use `environment=live` for production pockets. Only `type=merchant` rows for that merchant.
 
 ---
 

@@ -14,12 +14,54 @@ import {
   merchantUsers,
   wallets,
 } from "../../src/db/schema/index.js";
-import { LIMITS } from "../../src/lib/limits.js";
+import {
+  limitsForMerchantWalletCurrency,
+  pickPrimaryPortalWalletItem,
+  portalWalletBalanceItemSchema,
+  portalWalletLimitsSchema,
+  presentPortalWalletBalanceItem,
+} from "../../src/lib/portal-wallet-balance.js";
 
 const errorResponse = z.object({
   error: z.string(),
   message: z.string().optional(),
 });
+
+const portalBalanceTopLevelSchema = z.object({
+  balance: z.string(),
+  availableBalance: z.string(),
+  pendingBalance: z.string(),
+  currency: z.string(),
+  lastUpdated: z.string().nullable(),
+  limits: portalWalletLimitsSchema,
+});
+
+async function listActiveMerchantWalletsForPortal(merchantId: string, environment: "test" | "live") {
+  return db
+    .select({
+      id: wallets.id,
+      currency: wallets.currency,
+      balance: wallets.balance,
+      status: wallets.status,
+      label: wallets.label,
+      updatedAt: wallets.updatedAt,
+      createdAt: wallets.createdAt,
+    })
+    .from(wallets)
+    .where(
+      and(
+        eq(wallets.merchantId, merchantId),
+        eq(wallets.environment, environment),
+        eq(wallets.type, "merchant"),
+        eq(wallets.status, "active")
+      )
+    )
+    .orderBy(
+      sql`(case when ${wallets.currency} = 'BDT' then 0 else 1 end)`,
+      asc(wallets.currency),
+      asc(wallets.id)
+    );
+}
 
 export async function registerPortalMeRoutes(app: FastifyInstance) {
   app.get(
@@ -172,16 +214,9 @@ export async function registerPortalMeRoutes(app: FastifyInstance) {
           environment: z.enum(["test", "live"]).default("test"),
         }),
         response: {
-          200: z.object({
-            balance: z.string(),
-            availableBalance: z.string(),
-            pendingBalance: z.string(),
-            currency: z.string(),
-            lastUpdated: z.string().nullable(),
-            limits: z.object({
-              payin: z.object({ min: z.number(), max: z.number() }),
-              payout: z.object({ min: z.number(), max: z.number() }),
-            }),
+          200: portalBalanceTopLevelSchema.extend({
+            environment: z.enum(["test", "live"]),
+            items: z.array(portalWalletBalanceItemSchema),
           }),
           401: errorResponse,
         },
@@ -192,48 +227,32 @@ export async function registerPortalMeRoutes(app: FastifyInstance) {
       if (!user) return reply.status(401).send({ error: "Unauthorized" });
       const { environment } = request.query as { environment: "test" | "live" };
 
-      // Prefer BDT when multiple active merchant wallets exist (e.g. BDT + USDT for
-      // Tylt). Single-wallet merchants behave exactly as before. Deterministic tie-break.
-      const [w] = await db
-        .select({
-          balance: wallets.balance,
-          currency: wallets.currency,
-          updatedAt: wallets.updatedAt,
-        })
-        .from(wallets)
-        .where(
-          and(
-            eq(wallets.merchantId, user.merchantId),
-            eq(wallets.environment, environment),
-            eq(wallets.type, "merchant"),
-            eq(wallets.status, "active")
-          )
-        )
-        .orderBy(
-          sql`(case when ${wallets.currency} = 'BDT' then 0 else 1 end)`,
-          asc(wallets.currency),
-          asc(wallets.id)
-        )
-        .limit(1);
+      const rows = await listActiveMerchantWalletsForPortal(user.merchantId, environment);
+      const items = rows.map((r) => presentPortalWalletBalanceItem(r));
+      const primary = pickPrimaryPortalWalletItem(items);
 
-      if (!w) {
+      if (!primary) {
         return reply.send({
+          environment,
           balance: "0",
           availableBalance: "0",
           pendingBalance: "0",
           currency: "BDT",
           lastUpdated: null,
-          limits: LIMITS,
+          limits: limitsForMerchantWalletCurrency("BDT"),
+          items: [],
         });
       }
 
       return reply.send({
-        balance: String(w.balance),
-        availableBalance: String(w.balance),
-        pendingBalance: "0",
-        currency: w.currency,
-        lastUpdated: w.updatedAt?.toISOString() ?? null,
-        limits: LIMITS,
+        environment,
+        balance: primary.balance,
+        availableBalance: primary.availableBalance,
+        pendingBalance: primary.pendingBalance,
+        currency: primary.currency,
+        lastUpdated: primary.lastUpdated,
+        limits: primary.limits,
+        items,
       });
     }
   );
@@ -248,17 +267,7 @@ export async function registerPortalMeRoutes(app: FastifyInstance) {
         response: {
           200: z.object({
             environment: z.enum(["test", "live"]),
-            items: z.array(
-              z.object({
-                id: z.string(),
-                currency: z.string(),
-                balance: z.string(),
-                status: z.string(),
-                label: z.string().nullable(),
-                updatedAt: z.string().nullable(),
-                createdAt: z.string(),
-              })
-            ),
+            items: z.array(portalWalletBalanceItemSchema),
           }),
           401: errorResponse,
         },
@@ -269,42 +278,11 @@ export async function registerPortalMeRoutes(app: FastifyInstance) {
       if (!user) return reply.status(401).send({ error: "Unauthorized" });
       const { environment } = request.query as { environment: "test" | "live" };
 
-      const rows = await db
-        .select({
-          id: wallets.id,
-          currency: wallets.currency,
-          balance: wallets.balance,
-          status: wallets.status,
-          label: wallets.label,
-          updatedAt: wallets.updatedAt,
-          createdAt: wallets.createdAt,
-        })
-        .from(wallets)
-        .where(
-          and(
-            eq(wallets.merchantId, user.merchantId),
-            eq(wallets.environment, environment),
-            eq(wallets.type, "merchant"),
-            eq(wallets.status, "active")
-          )
-        )
-        .orderBy(
-          sql`(case when ${wallets.currency} = 'BDT' then 0 else 1 end)`,
-          asc(wallets.currency),
-          asc(wallets.id)
-        );
+      const rows = await listActiveMerchantWalletsForPortal(user.merchantId, environment);
 
       return reply.send({
         environment,
-        items: rows.map((r) => ({
-          id: r.id,
-          currency: r.currency,
-          balance: String(r.balance),
-          status: r.status,
-          label: r.label ?? null,
-          updatedAt: r.updatedAt?.toISOString() ?? null,
-          createdAt: r.createdAt.toISOString(),
-        })),
+        items: rows.map((r) => presentPortalWalletBalanceItem(r)),
       });
     }
   );

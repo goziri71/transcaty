@@ -368,8 +368,11 @@ Requires **session JWT** (`Authorization: Bearer <token>`). Backend needs **`ENC
 
 **Success (200)**
 
+Top-level fields remain the **primary** pocket (BDT-first when multiple wallets exist). **`items`** lists **every** active merchant wallet with the same card shape (India USDT, Europe USDC, etc.).
+
 ```json
 {
+  "environment": "test",
   "balance": "1000.00",
   "availableBalance": "1000.00",
   "pendingBalance": "0",
@@ -378,11 +381,45 @@ Requires **session JWT** (`Authorization: Bearer <token>`). Backend needs **`ENC
   "limits": {
     "payin": { "min": 200, "max": 25000 },
     "payout": { "min": 100, "max": 25000 }
-  }
+  },
+  "items": [
+    {
+      "id": "uuid-bdt",
+      "currency": "BDT",
+      "balance": "1000.00",
+      "availableBalance": "1000.00",
+      "pendingBalance": "0",
+      "status": "active",
+      "label": null,
+      "displayLabel": "Bangladesh",
+      "region": "bangladesh",
+      "regionLabel": "Bangladesh",
+      "lastUpdated": "2025-03-09T12:00:00.000Z",
+      "updatedAt": "2025-03-09T12:00:00.000Z",
+      "createdAt": "2025-01-01T10:00:00.000Z",
+      "limits": { "payin": { "min": 200, "max": 25000 }, "payout": { "min": 100, "max": 25000 } }
+    },
+    {
+      "id": "uuid-usdt",
+      "currency": "USDT",
+      "balance": "50.00",
+      "availableBalance": "50.00",
+      "pendingBalance": "0",
+      "status": "active",
+      "label": null,
+      "displayLabel": "India (USDT)",
+      "region": "india",
+      "regionLabel": "India (USDT)",
+      "lastUpdated": "2025-03-10T08:00:00.000Z",
+      "updatedAt": "2025-03-10T08:00:00.000Z",
+      "createdAt": "2025-02-01T10:00:00.000Z",
+      "limits": { "payin": { "min": 1, "max": 500000 }, "payout": { "min": 1, "max": 500000 } }
+    }
+  ]
 }
 ```
 
-To show **every** currency “pocket” (e.g. Bangladesh BDT vs Tylt settled balance) in the dashboard, use **`GET /portal/me/wallets`** below instead of inferring from this endpoint alone.
+**Dashboard:** Prefer **`items`** for balance cards. Top-level fields are backward-compatible for a single headline (BDT-first).
 
 ---
 
@@ -390,28 +427,11 @@ To show **every** currency “pocket” (e.g. Bangladesh BDT vs Tylt settled bal
 
 **GET** `/portal/me/wallets?environment=test|live` (default: `test`)
 
-Returns all **active** **merchant** wallets for this merchant and environment—one entry per `currency` pocket. **Customer** wallets are not included (use customers APIs). Use this to render separate balance cards (e.g. “Bangladesh” vs “Cross-border”) without merging amounts.
+Returns all **active** **merchant** wallets for this merchant and environment—one entry per `currency` pocket. **Customer** wallets are not included (use customers APIs). Each item uses the **same balance-card shape** as `GET /portal/me/balance` → `items[]` (including `region`, `displayLabel`, `limits`).
 
-**Success (200)**
+**Success (200)** — same `items[]` element shape as `/portal/me/balance` (see §5).
 
-```json
-{
-  "environment": "live",
-  "items": [
-    {
-      "id": "uuid",
-      "currency": "BDT",
-      "balance": "1000.00",
-      "status": "active",
-      "label": null,
-      "updatedAt": "2025-03-09T12:00:00.000Z",
-      "createdAt": "2025-01-01T10:00:00.000Z"
-    }
-  ]
-}
-```
-
-`label` is reserved for future use on merchant wallets (usually `null`). Ordering matches the balance endpoint: **BDT first**, then alphabetical currency, then `id`.
+Ordering: **BDT first**, then alphabetical currency, then `id`. `label` is optional DB override; **`displayLabel`** is what the UI should show when `label` is null (e.g. “India (USDT)”).
 
 ---
 
