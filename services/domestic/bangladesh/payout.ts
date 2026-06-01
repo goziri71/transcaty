@@ -17,6 +17,7 @@ import { audit } from "../../../src/lib/audit.js";
 import { tryApplyTransactionFee } from "../../../src/lib/billing/index.js";
 import { addAmount, assertPositive, cmpAmount, subAmount } from "../../../src/lib/money.js";
 import type { PayokEnvironment } from "./provider/config.js";
+import { assertPayoutAllowed } from "../../../src/lib/fraud-policy.js";
 
 export class PayoutCreationError extends Error {
   transactionId: string;
@@ -127,6 +128,15 @@ export async function createPayoutOrder(params: {
 }) {
   assertPositive(params.amount);
 
+  await assertPayoutAllowed({
+    merchantId: params.merchantId,
+    environment: params.environment,
+    amount: params.amount,
+    beneficiaryAccountNumber: params.benificiaryAccountInfo.number,
+    payerPhone: params.cardHolderInfo.phone,
+    payerEmail: params.cardHolderInfo.email,
+  });
+
   // tx1: lock the merchant wallet, validate balance, debit upfront.
   // The Payok HTTP call must happen OUTSIDE this transaction so we never
   // hold a row lock across the network.
@@ -139,6 +149,7 @@ export async function createPayoutOrder(params: {
           eq(wallets.merchantId, params.merchantId),
           eq(wallets.environment, params.environment),
           eq(wallets.type, "merchant"),
+          eq(wallets.currency, "BDT"),
           eq(wallets.status, "active")
         )
       )
@@ -146,7 +157,7 @@ export async function createPayoutOrder(params: {
       .limit(1);
 
     if (!wallet) {
-      throw new Error("Merchant wallet not found");
+      throw new Error("Merchant BDT wallet not found");
     }
     if (cmpAmount(wallet.balance, params.amount) < 0) {
       throw new Error("Insufficient balance");

@@ -24,8 +24,18 @@ export function isTyltUpiPayinMetadata(meta: Record<string, unknown>): boolean {
 }
 
 const SUCCESS_EVENT_IDS = new Set([4, 6]);
-const FAILURE_EVENT_IDS = new Set([5, 9]);
+/** Terminal failure (expired). Event 5 = disputed — non-terminal per integration spec. */
+const FAILURE_EVENT_IDS = new Set([9]);
+const DISPUTE_EVENT_IDS = new Set([5]);
 type CrossRampTerminalDecision = "success" | "failed" | "non_terminal" | "unknown";
+
+export { SUCCESS_EVENT_IDS, FAILURE_EVENT_IDS, DISPUTE_EVENT_IDS };
+export function classifyCrossRampDecision(
+  eventId: number | undefined,
+  terminalStatus?: string
+): CrossRampTerminalDecision {
+  return classifyCrossRampDecisionImpl(eventId, terminalStatus);
+}
 
 type CreateInstanceBody = {
   merchantOrderId: string;
@@ -382,6 +392,37 @@ async function persistH2hPayinProgressSnapshot(
     .where(eq(transactions.id, tx.id));
 }
 
+async function persistPayinDisputeSnapshot(
+  tx: { id: string; metadata: string | null },
+  parsed: unknown,
+  eventId: number
+): Promise<void> {
+  const data = extractTyltPayinDataEnvelope(parsed);
+  const patch: Record<string, unknown> = {
+    disputeState: {
+      status: "open",
+      tradeEventId: eventId,
+      openedAt: new Date().toISOString(),
+      source: "webhook",
+    },
+  };
+  if (data) {
+    patch.payinSnapshot = {
+      updatedAt: new Date().toISOString(),
+      tradeEventId: eventId,
+      paymentDetails: data,
+      source: "webhook",
+    };
+  }
+  await db
+    .update(transactions)
+    .set({
+      metadata: mergeMeta(tx.metadata, patch),
+      updatedAt: new Date(),
+    })
+    .where(eq(transactions.id, tx.id));
+}
+
 function inferCrossRampEventIdFromAnyShape(payload: unknown): number | undefined {
   const direct = parseCrossRampEventId(payload);
   if (direct != null) return direct;
@@ -413,8 +454,12 @@ function inferCrossRampStatusFromAnyShape(payload: unknown): string | undefined 
   return s || undefined;
 }
 
-function classifyCrossRampDecision(eventId: number | undefined, terminalStatus?: string): CrossRampTerminalDecision {
+function classifyCrossRampDecisionImpl(
+  eventId: number | undefined,
+  terminalStatus?: string
+): CrossRampTerminalDecision {
   if (eventId == null) return "unknown";
+  if (DISPUTE_EVENT_IDS.has(eventId)) return "non_terminal";
   if (eventId <= 3 || eventId === 7 || eventId === 8 || eventId > 9) return "non_terminal";
   if (SUCCESS_EVENT_IDS.has(eventId)) {
     if (terminalStatus && !/^completed$/i.test(terminalStatus.trim())) return "failed";
@@ -431,7 +476,7 @@ async function fetchRemoteCrossRampDecision(params: {
 }): Promise<{ decision: CrossRampTerminalDecision; source: string }> {
   const pull = await fetchTyltPayinInstanceDetails(params);
   if (pull) {
-    const decision = classifyCrossRampDecision(
+    const decision = classifyCrossRampDecisionImpl(
       inferCrossRampEventIdFromAnyShape(pull.json),
       inferCrossRampStatusFromAnyShape(pull.json)
     );
@@ -513,9 +558,17 @@ export async function applyTyltCrossRampWebhookPayload(
   }
 
   /** Progress-only UPI events (docs): no merchant webhook, but persist snapshot for H2H polling. */
-  const callbackDecision = classifyCrossRampDecision(eventId);
+  const callbackDecision = classifyCrossRampDecisionImpl(eventId);
   if (callbackDecision === "non_terminal" || callbackDecision === "unknown") {
-    if (String(meta.tyltProduct) === TYLT_PRODUCT_H2H_UPI) {
+    if (DISPUTE_EVENT_IDS.has(eventId)) {
+      await persistPayinDisputeSnapshot(tx, parsed, eventId);
+      audit({
+        action: "payment.disputed",
+        resource: tx.id,
+        merchantId: tx.merchantId,
+        meta: { eventId, product: meta.tyltProduct },
+      });
+    } else if (String(meta.tyltProduct) === TYLT_PRODUCT_H2H_UPI) {
       await persistH2hPayinProgressSnapshot(tx, parsed, eventId);
     }
     return null;
@@ -531,7 +584,7 @@ export async function applyTyltCrossRampWebhookPayload(
   }
 
   const terminalStatus = parseTerminalStatus(parsed);
-  const callbackDecisionWithStatus = classifyCrossRampDecision(eventId, terminalStatus);
+  const callbackDecisionWithStatus = classifyCrossRampDecisionImpl(eventId, terminalStatus);
   const tyltMerchantOrderIdForRemote = resolveTyltPayinMerchantOrderIdForRemote(meta, tx.id);
   const remote = await fetchRemoteCrossRampDecision({
     environment: tx.environment as TyltMerchantEnvironment,
@@ -614,6 +667,9 @@ export async function applyTyltCrossRampWebhookPayload(
         .set({
           status: "success",
           paidAmount,
+          metadata: mergeMeta(tx.metadata, {
+            disputeState: { status: "resolved", resolvedAt: new Date().toISOString(), resolution: "success" },
+          }),
           updatedAt: new Date(),
         })
         .where(and(eq(transactions.id, tx.id), eq(transactions.status, "pending")))
@@ -696,7 +752,13 @@ export async function applyTyltCrossRampWebhookPayload(
   if (FAILURE_EVENT_IDS.has(eventId)) {
     const [failed] = await db
       .update(transactions)
-      .set({ status: "failed", updatedAt: new Date() })
+      .set({
+        status: "failed",
+        metadata: mergeMeta(tx.metadata, {
+          disputeState: { status: "resolved", resolvedAt: new Date().toISOString(), resolution: "expired" },
+        }),
+        updatedAt: new Date(),
+      })
       .where(and(eq(transactions.id, tx.id), eq(transactions.status, "pending")))
       .returning({ id: transactions.id });
 

@@ -133,11 +133,11 @@ See **[ARCHITECTURE.md](./ARCHITECTURE.md)** for separation plan: Bangladesh iso
 
 ## Phase 4: Customer wallets
 
-- [ ] `POST /v1/wallets` – merchant creates customer wallet
-- [ ] `POST /v1/transfers` – merchant → customer wallet
+- [x] `POST /v1/wallets` – merchant creates customer wallet (BDT; scope `wallets:create`)
+- [x] `POST /v1/transfers` – merchant → customer wallet (scope `transfer:create`)
 - [ ] Customer wallet limits (max balance, per merchant config)
-- [ ] `GET /v1/wallets/:id` – balance, status
-- [ ] Freeze/unfreeze (merchant control)
+- [x] `GET /v1/wallets/:id` – balance, status
+- [x] Freeze/unfreeze (merchant control) — portal `PATCH /portal/me/customers/:id/status`
 
 ---
 
@@ -145,20 +145,20 @@ See **[ARCHITECTURE.md](./ARCHITECTURE.md)** for separation plan: Bangladesh iso
 
 ### 5.1 Limits & velocity
 
-- [ ] Per-merchant rate limits
-- [ ] Per-transaction amount limits (tier-based)
-- [ ] Velocity: max payouts per recipient per day
-- [ ] Velocity: max payins per merchant per hour
+- [x] Per-merchant rate limits — global HTTP `@fastify/rate-limit` (+ Redis when configured)
+- [x] Per-transaction amount limits — `LIMITS` (BDT / India / EU) on create routes
+- [x] Velocity: max payouts per recipient per day — `FRAUD_MAX_PAYOUTS_PER_RECIPIENT_PER_DAY`
+- [x] Velocity: max payins per merchant per hour — `FRAUD_MAX_PAYINS_PER_HOUR`
 
 ### 5.2 Operational controls
 
 - [x] KYC schema (business profiles, documents, persons, users)
 - [x] Merchant KYC API (GET/PUT business, persons, documents, submit)
 - [x] KYC gate (KYC_REQUIRED env – block pay-in/payout until verified)
-- [ ] Cooling period (hold funds X hours after pay-in before withdrawal)
-- [ ] Withdrawal limits (daily/weekly per merchant)
-- [ ] Blacklist (phone, account, merchant)
-- [ ] Manual approval for large payouts (optional)
+- [x] Cooling period — `FRAUD_COOLING_PERIOD_HOURS` blocks BDT payout after recent pay-in success
+- [x] Withdrawal limits — `FRAUD_MAX_PAYOUT_AMOUNT_PER_DAY_BDT` (daily BDT payout volume)
+- [x] Blacklist (phone, account, email) — `merchant_blacklist` + provider admin API
+- [ ] Manual approval for large payouts (optional) — use provider maker-checker for status changes
 
 ### 5.3 Idempotency
 

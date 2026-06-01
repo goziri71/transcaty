@@ -9,6 +9,7 @@ import { audit } from "../../../src/lib/audit.js";
 import { tryApplyTransactionFee } from "../../../src/lib/billing/index.js";
 import { addAmount } from "../../../src/lib/money.js";
 import type { PayokEnvironment } from "./provider/config.js";
+import { assertPayinAllowed } from "../../../src/lib/fraud-policy.js";
 
 export async function createPayinOrder(params: {
   merchantId: string;
@@ -23,6 +24,13 @@ export async function createPayinOrder(params: {
   /** When set, audit log includes portal user (dashboard-initiated pay-in). */
   portalActor?: { merchantUserId: string; email: string };
 }) {
+  await assertPayinAllowed({
+    merchantId: params.merchantId,
+    environment: params.environment,
+    customerPhone: params.customer.phone,
+    customerEmail: params.customer.email,
+  });
+
   const [tx] = await db
     .insert(transactions)
     .values({

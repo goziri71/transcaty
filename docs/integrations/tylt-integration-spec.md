@@ -241,7 +241,8 @@ UPI webhook event IDs seen:
 Backend finality guidance:
 
 - Treat `4` and `6` as successful final states (subject to signature validation and field checks)
-- Treat `5` and `9` as terminal non-success states
+- Treat `5` as **disputed** (non-final): keep transaction `pending`, persist snapshot/dispute metadata; may resolve to `4`, `6`, or `9`
+- Treat `9` as terminal non-success (expired)
 - `0-3` are non-final progress states
 
 ### 9.1 UPI CrossRamp event IDs

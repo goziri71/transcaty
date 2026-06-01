@@ -7,6 +7,7 @@
 import type { FastifyReply } from "fastify";
 
 import { ProviderCircuitOpenError } from "./provider-circuit-breaker.js";
+import { FraudPolicyRejectedError } from "./fraud-policy.js";
 
 const GENERIC_INTERNAL =
   "Something went wrong. Please try again or contact support if this persists.";
@@ -195,6 +196,7 @@ export function merchantPaymentFlowErrorResponse(err: unknown): MerchantFacingRe
 }
 
 const SAFE_PORTAL_OPERATION_MESSAGES = new Set([
+  "Merchant BDT wallet not found",
   "Merchant wallet not found",
   "Failed to create customer wallet",
   "Invalid amount",
@@ -209,6 +211,18 @@ const SAFE_PORTAL_OPERATION_MESSAGES = new Set([
  * Portal transfer/refund and similar operations — only pass through known-safe internal messages.
  */
 export function merchantPortalOperationErrorResponse(err: unknown): MerchantFacingResult {
+  if (err instanceof FraudPolicyRejectedError) {
+    return {
+      status: 403,
+      body: {
+        error: "Forbidden",
+        message: err.message,
+        code: err.code,
+      },
+      logDetail: err.message,
+    };
+  }
+
   if (err instanceof ProviderCircuitOpenError) {
     return {
       status: 503,

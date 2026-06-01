@@ -3,6 +3,7 @@
  */
 import { z } from "zod";
 import { LIMITS } from "./limits.js";
+import { normalizeMoneyAmountToTwoDecimals } from "./money.js";
 
 export const portalWalletLimitsSchema = z.object({
   payin: z.object({ min: z.number(), max: z.number() }),
@@ -81,16 +82,21 @@ export function limitsForMerchantWalletCurrency(currency: string): PayinPayoutLi
   return { payin: { ...LIMITS.payin }, payout: { ...LIMITS.payout } };
 }
 
-export function presentPortalWalletBalanceItem(row: {
-  id: string;
-  currency: string;
-  balance: string;
-  status: string;
-  label: string | null;
-  updatedAt: Date | null;
-  createdAt: Date;
-}): PortalWalletBalanceItem {
+export function presentPortalWalletBalanceItem(
+  row: {
+    id: string;
+    currency: string;
+    balance: string;
+    status: string;
+    label: string | null;
+    updatedAt: Date | null;
+    createdAt: Date;
+  },
+  pendingByCurrency?: Map<string, string>
+): PortalWalletBalanceItem {
   const balance = String(row.balance);
+  const pendingRaw = pendingByCurrency?.get(row.currency.trim().toUpperCase()) ?? "0";
+  const pendingBalance = normalizeMoneyAmountToTwoDecimals(pendingRaw);
   const region = merchantWalletRegionForCurrency(row.currency);
   const displayLabel = row.label?.trim() || merchantWalletRegionLabel(region, row.currency);
   const lastUpdated = row.updatedAt?.toISOString() ?? null;
@@ -100,7 +106,7 @@ export function presentPortalWalletBalanceItem(row: {
     currency: row.currency,
     balance,
     availableBalance: balance,
-    pendingBalance: "0",
+    pendingBalance,
     status: row.status,
     label: row.label ?? null,
     displayLabel,

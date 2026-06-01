@@ -26,13 +26,14 @@ export async function createCustomerWallet(params: {
         eq(wallets.merchantId, params.merchantId),
         eq(wallets.environment, environment),
         eq(wallets.type, "merchant"),
+        eq(wallets.currency, "BDT"),
         eq(wallets.status, "active")
       )
     )
     .limit(1);
 
   if (!merchantWallet) {
-    throw new Error("Merchant wallet not found");
+    throw new Error("Merchant BDT wallet not found");
   }
 
   const [customer] = await db
@@ -74,6 +75,7 @@ export async function transferToCustomer(params: {
           eq(wallets.merchantId, params.merchantId),
           eq(wallets.environment, environment),
           eq(wallets.type, "merchant"),
+          eq(wallets.currency, "BDT"),
           eq(wallets.status, "active")
         )
       )
@@ -87,7 +89,8 @@ export async function transferToCustomer(params: {
           eq(wallets.id, params.customerWalletId),
           eq(wallets.merchantId, params.merchantId),
           eq(wallets.environment, environment),
-          eq(wallets.type, "customer")
+          eq(wallets.type, "customer"),
+          eq(wallets.currency, "BDT")
         )
       )
       .limit(1);
@@ -197,6 +200,7 @@ export async function refundToCustomer(params: {
           eq(wallets.merchantId, params.merchantId),
           eq(wallets.environment, environment),
           eq(wallets.type, "merchant"),
+          eq(wallets.currency, "BDT"),
           eq(wallets.status, "active")
         )
       )
@@ -210,7 +214,8 @@ export async function refundToCustomer(params: {
           eq(wallets.id, params.customerWalletId),
           eq(wallets.merchantId, params.merchantId),
           eq(wallets.environment, environment),
-          eq(wallets.type, "customer")
+          eq(wallets.type, "customer"),
+          eq(wallets.currency, "BDT")
         )
       )
       .limit(1);

@@ -103,6 +103,12 @@ export const billingModeEnum = pgEnum("billing_mode", [
   "both",
 ]);
 
+export const merchantBlacklistEntryTypeEnum = pgEnum("merchant_blacklist_entry_type", [
+  "phone",
+  "account",
+  "email",
+]);
+
 export const merchants = pgTable("merchants", {
   id: uuid("id").primaryKey().defaultRandom(),
   name: text("name").notNull(),
@@ -516,6 +522,30 @@ export const passwordResetTokens = pgTable(
   (t) => [
     index("password_reset_tokens_user_realm_idx").on(t.realm, t.userId),
     index("password_reset_tokens_expires_at_idx").on(t.expiresAt),
+  ]
+);
+
+export const merchantBlacklist = pgTable(
+  "merchant_blacklist",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    merchantId: uuid("merchant_id")
+      .notNull()
+      .references(() => merchants.id, { onDelete: "cascade" }),
+    environment: payokEnvironmentEnum("environment").notNull(),
+    entryType: merchantBlacklistEntryTypeEnum("entry_type").notNull(),
+    valueNormalized: text("value_normalized").notNull(),
+    reason: text("reason"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique("merchant_blacklist_uniq").on(
+      t.merchantId,
+      t.environment,
+      t.entryType,
+      t.valueNormalized
+    ),
+    index("merchant_blacklist_merchant_env_idx").on(t.merchantId, t.environment),
   ]
 );
 

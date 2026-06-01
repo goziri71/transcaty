@@ -30,6 +30,7 @@ import { getDefaultPayokEnvironment, type PayokEnvironment } from "../../service
 import { reconcileCrossRampPayinByTransactionId } from "../../services/integrations/tylt/index.js";
 import { ProviderCircuitOpenError } from "../../src/lib/provider-circuit-breaker.js";
 import { queueMerchantWebhook } from "../../src/lib/merchant-webhook.js";
+import { registerProviderMerchantRiskRoutes } from "./merchant-risk.js";
 
 const errorResponse = z.object({
   error: z.string(),
@@ -153,6 +154,7 @@ function getTransactionPayokEnvironment(metadata: string | null): PayokEnvironme
 }
 
 export async function registerProviderRoutes(app: FastifyInstance) {
+  await registerProviderMerchantRiskRoutes(app);
   app.get(
     "/provider/me",
     {

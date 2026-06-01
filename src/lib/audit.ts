@@ -10,6 +10,7 @@ export type AuditAction =
   | "payment.created"
   | "payment.completed"
   | "payment.failed"
+  | "payment.disputed"
   | "payout.created"
   | "payout.completed"
   | "payout.failed"

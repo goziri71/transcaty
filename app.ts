@@ -81,6 +81,16 @@ import {
   isTyltEurPayoutMetadata,
 } from "./services/integrations/tylt/index.js";
 import { LIMITS } from "./src/lib/limits.js";
+import {
+  createCustomerWallet,
+  transferToCustomer,
+} from "./services/operations/transfers.js";
+import { sumPendingPayinAmountsByCurrency } from "./src/lib/merchant-pending-balance.js";
+import {
+  limitsForMerchantWalletCurrency,
+  portalWalletBalanceItemSchema,
+  presentPortalWalletBalanceItem,
+} from "./src/lib/portal-wallet-balance.js";
 import { presentTransactionRail } from "./src/lib/transaction-rail-label.js";
 import { validateMerchantReturnUrl } from "./src/lib/merchant-return-url.js";
 import { queueMerchantWebhook, type WebhookEvent } from "./src/lib/merchant-webhook.js";
@@ -2625,6 +2635,177 @@ export async function buildApp() {
     }
   );
 
+  app.post(
+    "/v1/wallets",
+    {
+      schema: {
+        body: z.object({
+          label: z.string().max(200).optional(),
+        }),
+        response: {
+          201: z.object({
+            id: z.string(),
+            currency: z.string(),
+            balance: z.string(),
+            status: z.string(),
+            label: z.string().nullable(),
+            createdAt: z.string(),
+          }),
+          400: merchantFacingError,
+          401: errorResponse,
+          403: errorResponse,
+        },
+      },
+    },
+    async (request, reply) => {
+      const m = request.merchant;
+      if (!m) return reply.status(401).send({ error: "Unauthorized" });
+      if (!m.scopes.includes("wallets:create") && !m.scopes.includes("*")) {
+        return reply.status(403).send({
+          error: "Forbidden",
+          message: "Missing scope: wallets:create",
+        });
+      }
+      if (!(await requireKycVerified(m.merchantId, reply))) return;
+      const body = request.body as { label?: string };
+      try {
+        const customer = await createCustomerWallet({
+          merchantId: m.merchantId,
+          environment: m.environment,
+          label: body.label,
+        });
+        return reply.status(201).send({
+          id: customer.id,
+          currency: customer.currency,
+          balance: String(customer.balance),
+          status: customer.status,
+          label: customer.label ?? null,
+          createdAt: customer.createdAt.toISOString(),
+        });
+      } catch (err) {
+        const mapped = merchantPaymentFlowErrorResponse(err);
+        sendMerchantFacingReply(reply, mapped);
+      }
+    }
+  );
+
+  app.get(
+    "/v1/wallets/:walletId",
+    {
+      schema: {
+        params: z.object({ walletId: z.string().uuid() }),
+        response: {
+          200: portalWalletBalanceItemSchema,
+          401: errorResponse,
+          403: errorResponse,
+          404: errorResponse,
+        },
+      },
+    },
+    async (request, reply) => {
+      const m = request.merchant;
+      if (!m) return reply.status(401).send({ error: "Unauthorized" });
+      if (!m.scopes.includes("wallets:read") && !m.scopes.includes("balance:read") && !m.scopes.includes("*")) {
+        return reply.status(403).send({
+          error: "Forbidden",
+          message: "Missing scope: wallets:read or balance:read",
+        });
+      }
+      const { walletId } = request.params as { walletId: string };
+      const [w] = await db
+        .select()
+        .from(wallets)
+        .where(
+          and(
+            eq(wallets.id, walletId),
+            eq(wallets.merchantId, m.merchantId),
+            eq(wallets.environment, m.environment),
+            eq(wallets.type, "customer")
+          )
+        )
+        .limit(1);
+      if (!w) {
+        return reply.status(404).send({ error: "Not found", message: "Customer wallet not found" });
+      }
+      const pendingByCurrency = await sumPendingPayinAmountsByCurrency({
+        merchantId: m.merchantId,
+        environment: m.environment,
+      });
+      return presentPortalWalletBalanceItem(
+        {
+          id: w.id,
+          currency: w.currency,
+          balance: String(w.balance),
+          status: w.status,
+          label: w.label,
+          updatedAt: w.updatedAt,
+          createdAt: w.createdAt,
+        },
+        pendingByCurrency
+      );
+    }
+  );
+
+  app.post(
+    "/v1/transfers",
+    {
+      schema: {
+        body: z.object({
+          customerWalletId: z.string().uuid(),
+          amount: z.string(),
+          reason: z.string().max(500).optional(),
+        }),
+        response: {
+          201: z.object({
+            transactionId: z.string(),
+            status: z.string(),
+            amount: z.string(),
+            customerWalletId: z.string(),
+            createdAt: z.string(),
+          }),
+          400: merchantFacingError,
+          401: errorResponse,
+          403: errorResponse,
+        },
+      },
+    },
+    async (request, reply) => {
+      const m = request.merchant;
+      if (!m) return reply.status(401).send({ error: "Unauthorized" });
+      if (!m.scopes.includes("transfer:create") && !m.scopes.includes("*")) {
+        return reply.status(403).send({
+          error: "Forbidden",
+          message: "Missing scope: transfer:create",
+        });
+      }
+      if (!(await requireKycVerified(m.merchantId, reply))) return;
+      const body = request.body as {
+        customerWalletId: string;
+        amount: string;
+        reason?: string;
+      };
+      try {
+        const tx = await transferToCustomer({
+          merchantId: m.merchantId,
+          environment: m.environment,
+          customerWalletId: body.customerWalletId,
+          amount: body.amount,
+          reason: body.reason,
+        });
+        return reply.status(201).send({
+          transactionId: tx.id,
+          status: tx.status,
+          amount: String(tx.amount),
+          customerWalletId: body.customerWalletId,
+          createdAt: tx.createdAt.toISOString(),
+        });
+      } catch (err) {
+        const mapped = merchantPaymentFlowErrorResponse(err);
+        sendMerchantFacingReply(reply, mapped);
+      }
+    }
+  );
+
   app.get(
     "/v1/balance",
     {
@@ -2663,6 +2844,7 @@ export async function buildApp() {
             eq(wallets.status, "active")
           )
         )
+        .orderBy(sql`(case when ${wallets.currency} = 'BDT' then 0 else 1 end)`)
         .limit(1);
       if (!wallet) {
         return reply.status(200).send({
@@ -2671,17 +2853,22 @@ export async function buildApp() {
           pendingBalance: "0",
           currency: "BDT",
           lastUpdated: null,
-          limits: LIMITS,
+          limits: limitsForMerchantWalletCurrency("BDT"),
         });
       }
+      const pendingByCurrency = await sumPendingPayinAmountsByCurrency({
+        merchantId: m.merchantId,
+        environment: m.environment,
+      });
       const bal = String(wallet.balance);
+      const pendingBalance = pendingByCurrency.get(wallet.currency) ?? "0";
       return {
         balance: bal,
         availableBalance: bal,
-        pendingBalance: "0",
+        pendingBalance,
         currency: wallet.currency,
         lastUpdated: wallet.updatedAt?.toISOString() ?? null,
-        limits: LIMITS,
+        limits: limitsForMerchantWalletCurrency(wallet.currency),
       };
     }
   );

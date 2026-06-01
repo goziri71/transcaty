@@ -21,6 +21,7 @@ import {
   portalWalletLimitsSchema,
   presentPortalWalletBalanceItem,
 } from "../../src/lib/portal-wallet-balance.js";
+import { sumPendingPayinAmountsByCurrency } from "../../src/lib/merchant-pending-balance.js";
 
 const errorResponse = z.object({
   error: z.string(),
@@ -228,7 +229,11 @@ export async function registerPortalMeRoutes(app: FastifyInstance) {
       const { environment } = request.query as { environment: "test" | "live" };
 
       const rows = await listActiveMerchantWalletsForPortal(user.merchantId, environment);
-      const items = rows.map((r) => presentPortalWalletBalanceItem(r));
+      const pendingByCurrency = await sumPendingPayinAmountsByCurrency({
+        merchantId: user.merchantId,
+        environment,
+      });
+      const items = rows.map((r) => presentPortalWalletBalanceItem(r, pendingByCurrency));
       const primary = pickPrimaryPortalWalletItem(items);
 
       if (!primary) {
@@ -279,10 +284,14 @@ export async function registerPortalMeRoutes(app: FastifyInstance) {
       const { environment } = request.query as { environment: "test" | "live" };
 
       const rows = await listActiveMerchantWalletsForPortal(user.merchantId, environment);
+      const pendingByCurrency = await sumPendingPayinAmountsByCurrency({
+        merchantId: user.merchantId,
+        environment,
+      });
 
       return reply.send({
         environment,
-        items: rows.map((r) => presentPortalWalletBalanceItem(r)),
+        items: rows.map((r) => presentPortalWalletBalanceItem(r, pendingByCurrency)),
       });
     }
   );
