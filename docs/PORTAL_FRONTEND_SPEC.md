@@ -1035,7 +1035,11 @@ All errors follow:
 
 ## Tylt and cross-border — merchant portal flows
 
-This section is the **implementation guide** for showing **Tylt / India (cross-border)** alongside **Bangladesh (domestic)** in the merchant dashboard. For **Postman / `v1` HMAC** testing of the API you give merchants, use **`docs/TYLT_MERCHANT_API_TESTING.md`**—that file is **not** for frontend dashboard implementation.
+This section is the **implementation guide** for showing **Tylt / India (cross-border)** alongside **Bangladesh (domestic)** in the merchant dashboard.
+
+**Primary reference for India + Europe (dashboard UI + merchant help content):** **`docs/MERCHANT_INDIA_EUR_INTEGRATION.md`**
+
+For **Postman / `v1` HMAC** testing: **`docs/TYLT_MERCHANT_API_TESTING.md`** (India), **`docs/TYLT_EUR_OPEN_BANKING.md`** (EU).
 
 ### Product model (what the merchant understands)
 

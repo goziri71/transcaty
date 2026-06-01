@@ -33,7 +33,7 @@
 - **Transacty operators** — What to build, configure, and verify before merchants get EU Open Banking.
 - **Merchant backend engineers** — How EU will appear on **`/v1/eur/*`** (HMAC), once shipped. Merchants never call TL Pay directly.
 
-**Not for:** Merchant portal UI (`/portal/*`) — see `docs/PORTAL_FRONTEND_SPEC.md` when EU balances/history are exposed there.
+**Not for:** Merchant portal UI (`/portal/*`) — see **`docs/MERCHANT_INDIA_EUR_INTEGRATION.md`** (dashboard + merchant docs for India & EU) and `docs/PORTAL_FRONTEND_SPEC.md`.
 
 ---
 

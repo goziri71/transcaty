@@ -7,7 +7,7 @@
 
 ## Who this guide is **not** for
 
-- **Merchant portal / dashboard frontend** — That UI uses **`/portal/*`** and JWT, not HMAC. Spec: **`docs/PORTAL_FRONTEND_SPEC.md`**. Do not point storefront or SPA devs here as their primary doc.
+- **Merchant portal / dashboard frontend** — That UI uses **`/portal/*`** and JWT. Use **`docs/MERCHANT_INDIA_EUR_INTEGRATION.md`** (India + EU product + dashboard) and **`docs/PORTAL_FRONTEND_SPEC.md`** (all portal routes). This file is **Postman / HMAC** for India only.
 
 ---
 
