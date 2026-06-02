@@ -57,7 +57,6 @@ export function readTyltWebhookSignatureHeader(headers: {
 export type TyltWebhookCredentialMode = TyltCredentialProfile | TyltCredentialRole | "unified";
 
 function verifyWithConfiguredSecrets(
-  env: TyltMerchantEnvironment,
   rawBody: string,
   signatureHeader: string,
   configs: Array<ReturnType<typeof getTyltCredentialsForProfile>>
@@ -88,8 +87,8 @@ export function verifyTyltWebhookSignature(
       ...TYLT_PAYIN_PROFILE_VERIFY_ORDER,
       ...TYLT_PAYOUT_PROFILE_VERIFY_ORDER,
     ].map((p) => getTyltCredentialsForProfile(env, p));
-    if (verifyWithConfiguredSecrets(env, rawBody, signatureHeader, profileConfigs)) return true;
-    return verifyWithConfiguredSecrets(env, rawBody, signatureHeader, [
+    if (verifyWithConfiguredSecrets(rawBody, signatureHeader, profileConfigs)) return true;
+    return verifyWithConfiguredSecrets(rawBody, signatureHeader, [
       getTyltCredentials(env, "payin"),
       getTyltCredentials(env, "payout"),
     ]);
