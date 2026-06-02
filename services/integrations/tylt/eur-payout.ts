@@ -165,7 +165,7 @@ export async function createTyltEurPayoutInstance(params: {
     path: "/v2/prime-fiat/instance/payout",
     body,
     idempotencyKey: tx.id,
-    credentialRole: "payout",
+    credentialProfile: "eur_payout",
   });
 
   const parsed = extractEurCreateInstanceResponse(json);
@@ -286,7 +286,7 @@ export async function approveTyltEurPayout(params: {
     path: "/v2/prime-fiat/instance/payout/approve",
     body: { merchantOrderId: tx.id },
     idempotencyKey: `approve:${tx.id}`,
-    credentialRole: "payout",
+    credentialProfile: "eur_payout",
   });
 }
 

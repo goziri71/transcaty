@@ -28,7 +28,7 @@ export async function crossRampGetInstanceDetails(params: {
     environment: params.environment,
     path: "/p2pRampsMerchant/getInstanceDetails",
     queryParams: qp,
-    credentialRole: "payin",
+    credentialProfile: "india_payin",
   });
 }
 
@@ -40,7 +40,7 @@ export async function crossRampGetPayinTransactionInformation(params: {
     environment: params.environment,
     path: "/transactions/merchant/getPayinTransactionInformation",
     queryParams: { orderId: params.orderId },
-    credentialRole: "payin",
+    credentialProfile: "india_payin",
   });
 }
 

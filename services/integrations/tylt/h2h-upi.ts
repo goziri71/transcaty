@@ -209,7 +209,7 @@ export async function createTyltH2hPayinInstance(params: {
     path: "/h2h/in/upi/createPayinInstance",
     body: wireBody,
     idempotencyKey: tx.id,
-    credentialRole: "payin",
+    credentialProfile: "india_payin",
   });
 
   const { instanceId, paymentDetails } = extractH2hCreateResponse(json);
@@ -275,7 +275,7 @@ export async function tyltH2hBuyerConfirmsPayment(params: {
     environment: params.environment,
     path: "/h2h/in/upi/buyerConfirmsPayment",
     body,
-    credentialRole: "payin",
+    credentialProfile: "india_payin",
   });
 }
 
@@ -284,7 +284,7 @@ export async function tyltH2hGetPaymentMethodsP2pOnRamp(environment: TyltMerchan
     environment,
     path: "/h2h/in/upi/getPaymentMethods_p2pOnRamp",
     queryParams: {},
-    credentialRole: "payin",
+    credentialProfile: "india_payin",
   });
 }
 
@@ -293,7 +293,7 @@ export async function tyltH2hGetCryptoCurrencyListForPrime(environment: TyltMerc
     environment,
     path: "/h2h/in/upi/getCryptoCurrencyListForPrime",
     queryParams: {},
-    credentialRole: "payin",
+    credentialProfile: "india_payin",
   });
 }
 
@@ -303,7 +303,7 @@ export async function tyltH2hGetMerchantRampSpecialRates(environment: TyltMercha
     environment,
     path: "/h2h/in/upi/getMerchantRampSpecialRates",
     queryParams: {},
-    credentialRole: "payin",
+    credentialProfile: "india_payin",
   });
 }
 

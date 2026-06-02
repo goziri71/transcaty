@@ -11,6 +11,131 @@
 
 **Implemented.** Merchant API: `/v1/eur/*` (legacy alias `/v1/tylt/eur/*`). Webhooks: `/webhooks/tylt/eur-payin|eur-payout/:environment`. Settlement wallet currency: **USDC**. Requires TL Pay **Prime Fiat** on your account plus **`merchantUrl`** (HTTPS) or full **`merchantDetails`** on create.
 
+---
+
+## Start here (simple Postman flow)
+
+If you only want to test quickly, use this section only.
+
+### What you need first
+
+1. `baseUrl` (your API URL), example: `https://api.transacty.ai`
+2. Merchant API key + secret (HMAC)
+3. Scope on key: `payin:create,payout:create,balance:read` (or `*` in test)
+4. Merchant KYC verified if `KYC_REQUIRED=true`
+5. TL Pay Prime Fiat enabled on your account
+6. For payout testing: enough **USDC** in merchant wallet
+
+### Collection variables (Postman)
+
+- `baseUrl`
+- `merchantKey`
+- `merchantSecret`
+- `transactionId` (empty at start)
+- `payoutTransactionId` (empty at start)
+
+### Pre-request script (HMAC) — add once to collection
+
+```javascript
+const ts = Math.floor(Date.now() / 1000).toString();
+let rawBody = "";
+if (["POST", "PUT", "PATCH", "DELETE"].includes(pm.request.method)) {
+  rawBody = pm.request.body && pm.request.body.raw ? pm.request.body.raw : "";
+}
+const payload = ts + "." + rawBody;
+const secret = pm.collectionVariables.get("merchantSecret");
+const sig = CryptoJS.HmacSHA256(payload, secret).toString(CryptoJS.enc.Hex);
+pm.request.headers.upsert({ key: "X-Transacty-Key", value: pm.collectionVariables.get("merchantKey") });
+pm.request.headers.upsert({ key: "X-Transacty-Timestamp", value: ts });
+pm.request.headers.upsert({ key: "X-Transacty-Signature", value: sig });
+pm.request.headers.upsert({ key: "Content-Type", value: "application/json" });
+```
+
+### Simple test order (6 steps)
+
+1. **Create EU pay-in**  
+   `POST {{baseUrl}}/v1/eur/payin-instances`
+2. **Open checkoutUrl** from response in browser and complete bank flow
+3. **Check pay-in status**  
+   `GET {{baseUrl}}/v1/eur/payin-instances/{{transactionId}}`
+4. **Create EU payout**  
+   `POST {{baseUrl}}/v1/eur/payout-instances`
+5. **Approve payout** (if required)  
+   `POST {{baseUrl}}/v1/eur/payout-instances/{{payoutTransactionId}}/approve`
+6. **Check payout status**  
+   `GET {{baseUrl}}/v1/eur/payout-instances/{{payoutTransactionId}}`
+
+### Copy-paste bodies
+
+#### 1) Create EU pay-in (EUR)
+
+`POST {{baseUrl}}/v1/eur/payin-instances`
+
+```json
+{
+  "amount": "100",
+  "currencySymbol": "EUR",
+  "returnUrl": "https://merchant.example.com/eur-return",
+  "merchantUrl": "https://merchant.example.com",
+  "userDetails": {
+    "email": "payer@example.com"
+  }
+}
+```
+
+Expected: `transactionId`, `instanceId`, `checkoutUrl`, `settlementCurrency: "USDC"`.
+
+#### 2) Create EU pay-in (GBP)
+
+Same body, only change:
+
+```json
+{
+  "amount": "100",
+  "currencySymbol": "GBP",
+  "returnUrl": "https://merchant.example.com/eur-return",
+  "merchantUrl": "https://merchant.example.com",
+  "userDetails": {
+    "email": "payer@example.com"
+  }
+}
+```
+
+#### 3) Create EU payout
+
+`POST {{baseUrl}}/v1/eur/payout-instances`
+
+```json
+{
+  "amount": "50",
+  "currencySymbol": "EUR",
+  "returnUrl": "https://merchant.example.com/eur-payout-return",
+  "merchantUrl": "https://merchant.example.com",
+  "userDetails": {
+    "email": "merchant-ops@example.com"
+  },
+  "payeeDetails": {
+    "name": "Jane Doe",
+    "iban": "DE89370400440532013000",
+    "country": "DE"
+  },
+  "autoMerchantApproval": 0
+}
+```
+
+Expected: `transactionId`, `status` (often pending/awaiting approval), quote fields.
+
+#### 4) Approve payout (if required)
+
+`POST {{baseUrl}}/v1/eur/payout-instances/{{payoutTransactionId}}/approve`
+
+Body: empty
+
+---
+
+**If this quick flow works, stop here.**  
+Use sections below only for advanced mapping, webhook details, and implementation checklist.
+
 **Official TL Pay references:**
 
 - [EU Open Banking overview](https://docs.tylt.money/introduction/tylt-crossramp-fiat-crypto-solutions/eu-open-banking)
@@ -61,7 +186,7 @@ Use this as the engineering backlog. Check items off in PR order; each phase sho
 ### A.0 — Prerequisites (before code)
 
 - [ ] TL Pay enables **Prime Fiat / EU Open Banking** on your merchant account (test + live).
-- [ ] Confirm whether EU uses the same **`TYLT_*_PAYIN_*` / `PAYOUT_*`** secrets as India or separate keys (ask TL Pay; document in `.env.example`).
+- [ ] Set **EU-specific** keys: `TYLT_{TEST|LIVE}_EUR_PAYIN_*` and `TYLT_{TEST|LIVE}_EUR_PAYOUT_*` (see `.env.example`). India uses `TYLT_*_INDIA_PAYIN_*` / `INDIA_PAYOUT_*`.
 - [ ] **`APP_BASE_URL`** is the public origin that will receive **`/webhooks/tylt/eur-payin/{test|live}`** and **`/webhooks/tylt/eur-payout/{test|live}`** (same discipline as India — see India doc § deploy check).
 - [ ] Merchant profile can supply **`merchantDetails`** (name, HTTPS website, stable internal id) for TL Pay create calls — from DB or onboarding, not free-text per request in production unless required.
 - [ ] **USDC** wallet pocket exists per merchant + environment (limits, billing fees, portal display).
@@ -187,7 +312,7 @@ Legacy aliases: `/v1/tylt/eur/...` mirror the same handlers.
 |-------------|--------|
 | Transacty base URL | e.g. `https://api.example.com` or ngrok URL for local dev. |
 | **`APP_BASE_URL`** on server | Must be the **same public origin** that receives `POST /webhooks/tylt/eur-payin/test` (and payout). Sent to TL Pay as `callBackUrl` prefix. |
-| TL Pay credentials | `TYLT_TEST_PAYIN_*` / `TYLT_TEST_PAYOUT_*` (or legacy `TYLT_TEST_*`). See `.env.example`. |
+| TL Pay credentials | `TYLT_TEST_EUR_PAYIN_*` / `TYLT_TEST_EUR_PAYOUT_*` (falls back to `TYLT_TEST_PAYIN_*` / `PAYOUT_*` then legacy). See `.env.example`. |
 | Prime Fiat / EU enabled | Ask TL Pay if `POST /v2/prime-fiat/instance/payin` returns 403/404 on your keys. |
 | Merchant API key | Portal → API keys; environment **`test`** until you intend live. |
 | Scopes | `payin:create`, `payout:create`, `balance:read` — or `*` in sandbox only. |
@@ -573,15 +698,14 @@ Steps **3–5** need browser + webhooks for true `success`; without ngrok, **3**
 
 ---
 
-## Part C — Environment variables (draft)
-
-Add to `.env.example` when implementing (confirm names with TL Pay):
+## Part C — Environment variables
 
 | Variable | Purpose |
 |----------|---------|
-| `TYLT_TEST_PAYIN_API_KEY` / `SECRET` | Signed create + pay-in webhooks (may be shared with India) |
-| `TYLT_TEST_PAYOUT_API_KEY` / `SECRET` | Payout + pay-out webhooks |
-| `TYLT_*_BASE_URL` | Default `https://api.tylt.money` |
+| `TYLT_TEST_EUR_PAYIN_API_KEY` / `SECRET` | EU pay-in create + `/webhooks/tylt/eur-payin/*` HMAC |
+| `TYLT_TEST_EUR_PAYOUT_API_KEY` / `SECRET` | EU payout + `/webhooks/tylt/eur-payout/*` HMAC |
+| Optional `TYLT_*_EUR_*_BASE_URL` | Default `https://api.tylt.money` |
+| `TYLT_TEST_PAYIN_*` / `PAYOUT_*` | Fallback if EUR_* unset (shared with India lane) |
 | `APP_BASE_URL` | Webhook + `callBackUrl` host |
 
 Optional: `TYLT_EUR_DEFAULT_CRYPTO_UI=1`, feature flag `TYLT_EUR_ENABLED=true` for staged rollout.

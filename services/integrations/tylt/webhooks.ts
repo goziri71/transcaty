@@ -18,7 +18,15 @@ import { applyTyltCpgPayoutWebhookPayload, extractCpgPayOutWebhookFields, TYLT_P
 import { applyTyltEurPayinWebhookPayload, TYLT_PRODUCT_EUR_PAYIN } from "./eur-payin.js";
 import { applyTyltEurPayoutWebhookPayload, TYLT_PRODUCT_EUR_PAYOUT } from "./eur-payout.js";
 import { parseEurMerchantOrderId } from "./eur-open-banking.js";
-import { getTyltCredentials, type TyltCredentialRole, type TyltMerchantEnvironment } from "./config.js";
+import {
+  getTyltCredentials,
+  getTyltCredentialsForProfile,
+  TYLT_PAYIN_PROFILE_VERIFY_ORDER,
+  TYLT_PAYOUT_PROFILE_VERIFY_ORDER,
+  type TyltCredentialProfile,
+  type TyltCredentialRole,
+  type TyltMerchantEnvironment,
+} from "./config.js";
 import { verifyTyltSignature } from "./sign.js";
 
 /** Prefer structured CrossRamp shape first, then CPG extractors. Ref may be `transactions.id` or H2H `metadata.tyltMerchantOrderId`. */
@@ -46,30 +54,54 @@ export function readTyltWebhookSignatureHeader(headers: {
   return s || undefined;
 }
 
+export type TyltWebhookCredentialMode = TyltCredentialProfile | TyltCredentialRole | "unified";
+
+function verifyWithConfiguredSecrets(
+  env: TyltMerchantEnvironment,
+  rawBody: string,
+  signatureHeader: string,
+  configs: Array<ReturnType<typeof getTyltCredentialsForProfile>>
+): boolean {
+  for (const cfg of configs) {
+    if (cfg && verifyTyltSignature(cfg.apiSecret, rawBody, signatureHeader)) return true;
+  }
+  return false;
+}
+
 /**
- * Verify webhook HMAC using the Tylt secret for the matching **service**
- * (pay-in vs pay-out). Use `unified` when one URL receives multiple
- * products: tries pay-in secret then pay-out secret.
+ * Verify webhook HMAC using the Tylt secret for the matching product lane.
+ * Use `unified` when one URL receives multiple products: tries EU then India
+ * pay-in secrets, then pay-out secrets, then generic PAYIN_/PAYOUT_ fallbacks.
  */
 export function verifyTyltWebhookSignature(
   environment: string,
   rawBody: string,
   signatureHeader: string | undefined,
-  credentialMode: TyltCredentialRole | "unified" = "payin"
+  credentialMode: TyltWebhookCredentialMode = "india_payin"
 ): boolean {
   if (environment !== "test" && environment !== "live") return false;
   const env = environment as TyltMerchantEnvironment;
   if (!signatureHeader?.trim()) return false;
 
   if (credentialMode === "unified") {
-    const payin = getTyltCredentials(env, "payin");
-    const payout = getTyltCredentials(env, "payout");
-    if (payin && verifyTyltSignature(payin.apiSecret, rawBody, signatureHeader)) return true;
-    if (payout && verifyTyltSignature(payout.apiSecret, rawBody, signatureHeader)) return true;
-    return false;
+    const profileConfigs = [
+      ...TYLT_PAYIN_PROFILE_VERIFY_ORDER,
+      ...TYLT_PAYOUT_PROFILE_VERIFY_ORDER,
+    ].map((p) => getTyltCredentialsForProfile(env, p));
+    if (verifyWithConfiguredSecrets(env, rawBody, signatureHeader, profileConfigs)) return true;
+    return verifyWithConfiguredSecrets(env, rawBody, signatureHeader, [
+      getTyltCredentials(env, "payin"),
+      getTyltCredentials(env, "payout"),
+    ]);
   }
 
-  const cfg = getTyltCredentials(env, credentialMode);
+  if (credentialMode === "payin" || credentialMode === "payout") {
+    const cfg = getTyltCredentials(env, credentialMode);
+    if (!cfg) return false;
+    return verifyTyltSignature(cfg.apiSecret, rawBody, signatureHeader);
+  }
+
+  const cfg = getTyltCredentialsForProfile(env, credentialMode);
   if (!cfg) return false;
   return verifyTyltSignature(cfg.apiSecret, rawBody, signatureHeader);
 }

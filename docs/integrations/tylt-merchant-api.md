@@ -71,13 +71,14 @@ Tylt issues **separate API key + secret per enabled service**. Transacty maps th
 | **Pay-in** | H2H UPI, CPG pay-in, CrossRamp, supported-currency/network discovery, account balance, internal transfer, merchant details; webhooks **`/webhooks/tylt/h2h`**, **`crossramp`**, **`cpg-payin`**. |
 | **Pay-out** | CPG payout create/history/info; webhook **`/webhooks/tylt/cpg-payout`**. |
 
-**Env vars (plain or `*_ENC`):**
+**Env vars (plain or `*_ENC`) — recommended lane split:**
 
-- **Pay-in (test):** `TYLT_TEST_PAYIN_API_KEY`, `TYLT_TEST_PAYIN_API_SECRET`, optional `TYLT_TEST_PAYIN_BASE_URL`
-- **Pay-in (live):** `TYLT_LIVE_PAYIN_*`
-- **Pay-out (test):** `TYLT_TEST_PAYOUT_API_KEY`, `TYLT_TEST_PAYOUT_API_SECRET`, optional `TYLT_TEST_PAYOUT_BASE_URL`
-- **Pay-out (live):** `TYLT_LIVE_PAYOUT_*`
+- **India pay-in (test):** `TYLT_TEST_INDIA_PAYIN_API_KEY`, `TYLT_TEST_INDIA_PAYIN_API_SECRET`, optional `TYLT_TEST_INDIA_PAYIN_BASE_URL`
+- **India pay-out (test):** `TYLT_TEST_INDIA_PAYOUT_*` — CPG payout, India payout webhooks
+- **EU pay-in (test):** `TYLT_TEST_EUR_PAYIN_*` — Prime Fiat pay-in, `/webhooks/tylt/eur-payin/*`
+- **EU pay-out (test):** `TYLT_TEST_EUR_PAYOUT_*` — EUR bank payout, `/webhooks/tylt/eur-payout/*`
+- **Live:** same pattern with `TYLT_LIVE_INDIA_*` / `TYLT_LIVE_EUR_*`
 
-**Fallback (backward compatible):** for each field, if the role-specific var is unset, code uses legacy `TYLT_TEST_*` / `TYLT_LIVE_*`, then shared `TYLT_API_KEY` / `TYLT_API_SECRET` / `TYLT_BASE_URL` (default base `https://api.tylt.money`). So a single Tylt pair still works until you split PAYIN_/PAYOUT_.
+**Fallback (backward compatible):** per profile, `TYLT_{TEST|LIVE}_{EUR|INDIA}_{PAYIN|PAYOUT}_*` → `TYLT_{TEST|LIVE}_{PAYIN|PAYOUT}_*` → `TYLT_{TEST|LIVE}_*` → `TYLT_*` (default base `https://api.tylt.money`).
 
-**Unified webhook** (`POST /webhooks/tylt/unified/:environment`) verifies the raw body with the **pay-in** secret first, then **pay-out**, so either service can post to one URL.
+**Unified webhook** (`POST /webhooks/tylt/unified/:environment`) tries EU then India pay-in secrets, then pay-out secrets, then generic `PAYIN_` / `PAYOUT_` fallbacks.

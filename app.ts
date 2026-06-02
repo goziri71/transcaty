@@ -49,6 +49,7 @@ import {
   applyTyltWebhookByStoredRailProduct,
   readTyltWebhookSignatureHeader,
   verifyTyltWebhookSignature,
+  type TyltWebhookCredentialMode,
   cpgGetPayinTransactionHistory,
   cpgGetPayinTransactionInformation,
   cpgGetPayoutTransactionHistory,
@@ -1021,7 +1022,7 @@ export async function buildApp() {
       rail: string;
       rejectLogMessage: string;
       /** Tylt signs webhooks with the secret for the matching dashboard service. */
-      tyltWebhookCredential: "payin" | "payout" | "unified";
+      tyltWebhookCredential: TyltWebhookCredentialMode;
       apply: (body: unknown) => Promise<{ merchantId: string; event: WebhookEvent } | null>;
     }
   ): Promise<void> {
@@ -1084,7 +1085,7 @@ export async function buildApp() {
       pathConstant: TYLT_CROSSRAMP_WEBHOOK_PATH,
       rail: "tylt-crossramp",
       rejectLogMessage: "tylt webhook rejected: invalid or missing signature",
-      tyltWebhookCredential: "payin",
+      tyltWebhookCredential: "india_payin",
       apply: (body) => applyTyltWebhookByStoredRailProduct(body),
     });
   });
@@ -1096,7 +1097,7 @@ export async function buildApp() {
       pathConstant: TYLT_H2H_WEBHOOK_PATH,
       rail: "tylt-h2h-upi",
       rejectLogMessage: "tylt H2H webhook rejected: invalid or missing signature",
-      tyltWebhookCredential: "payin",
+      tyltWebhookCredential: "india_payin",
       apply: (body) => applyTyltWebhookByStoredRailProduct(body),
     });
   });
@@ -1108,7 +1109,7 @@ export async function buildApp() {
       pathConstant: TYLT_CPG_PAYIN_WEBHOOK_PATH,
       rail: "tylt-cpg-payin",
       rejectLogMessage: "tylt CPG pay-in webhook rejected: invalid or missing signature",
-      tyltWebhookCredential: "payin",
+      tyltWebhookCredential: "india_payin",
       apply: (body) => applyTyltWebhookByProductRoute("cpg_payin", body),
     });
   });
@@ -1120,7 +1121,7 @@ export async function buildApp() {
       pathConstant: TYLT_CPG_PAYOUT_WEBHOOK_PATH,
       rail: "tylt-cpg-payout",
       rejectLogMessage: "tylt CPG payout webhook rejected: invalid or missing signature",
-      tyltWebhookCredential: "payout",
+      tyltWebhookCredential: "india_payout",
       apply: (body) => applyTyltWebhookByProductRoute("cpg_payout", body),
     });
   });
@@ -1132,7 +1133,7 @@ export async function buildApp() {
       pathConstant: TYLT_EUR_PAYIN_WEBHOOK_PATH,
       rail: "tylt-eur-payin",
       rejectLogMessage: "tylt EU pay-in webhook rejected: invalid or missing signature",
-      tyltWebhookCredential: "payin",
+      tyltWebhookCredential: "eur_payin",
       apply: (body) => applyTyltWebhookByStoredRailProduct(body),
     });
   });
@@ -1144,7 +1145,7 @@ export async function buildApp() {
       pathConstant: TYLT_EUR_PAYOUT_WEBHOOK_PATH,
       rail: "tylt-eur-payout",
       rejectLogMessage: "tylt EU payout webhook rejected: invalid or missing signature",
-      tyltWebhookCredential: "payout",
+      tyltWebhookCredential: "eur_payout",
       apply: (body) => applyTyltWebhookByStoredRailProduct(body),
     });
   });

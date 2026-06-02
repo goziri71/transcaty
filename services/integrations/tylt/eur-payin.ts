@@ -114,7 +114,7 @@ export async function createTyltEurPayinInstance(params: {
     path: "/v2/prime-fiat/instance/payin",
     body,
     idempotencyKey: tx.id,
-    credentialRole: "payin",
+    credentialProfile: "eur_payin",
   });
 
   const parsed = extractEurCreateInstanceResponse(json);

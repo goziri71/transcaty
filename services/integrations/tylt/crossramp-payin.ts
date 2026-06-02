@@ -106,7 +106,7 @@ export async function createTyltCrossRampPayinOrder(params: {
     path: "/p2pRampsMerchant/createInstance",
     body: body as unknown as Record<string, unknown>,
     idempotencyKey: tx.id,
-    credentialRole: "payin",
+    credentialProfile: "india_payin",
   });
 
   const { instanceId, rampUrl } = extractCreateInstanceResponse(json);
@@ -350,7 +350,7 @@ export async function fetchTyltPayinInstanceDetails(params: {
     environment: params.environment,
     path: "/p2pRampsMerchant/getInstanceDetails",
     queryParams: { merchantOrderId: params.merchantOrderId },
-    credentialRole: "payin",
+    credentialProfile: "india_payin",
   });
   if (call1.status < 500) {
     return { status: call1.status, json: call1.json, source: "getInstanceDetails:merchantOrderId" };
@@ -360,7 +360,7 @@ export async function fetchTyltPayinInstanceDetails(params: {
       environment: params.environment,
       path: "/p2pRampsMerchant/getInstanceDetails",
       queryParams: { instanceId: params.instanceId.trim() },
-      credentialRole: "payin",
+      credentialProfile: "india_payin",
     });
     if (call2.status < 500) {
       return { status: call2.status, json: call2.json, source: "getInstanceDetails:instanceId" };
@@ -486,7 +486,7 @@ async function fetchRemoteCrossRampDecision(params: {
     environment: params.environment,
     path: "/transactions/merchant/getPayinTransactionInformation",
     queryParams: { orderId: params.merchantOrderId },
-    credentialRole: "payin",
+    credentialProfile: "india_payin",
   });
   if (call3.status < 500) {
     const decision = classifyCrossRampDecision(

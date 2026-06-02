@@ -44,7 +44,7 @@ async function signedGet(params: {
       environment: params.environment,
       path: params.path,
       queryParams: qp,
-      credentialRole: "payin",
+      credentialProfile: "india_payin",
     });
   }
   const key = cacheKey(params.environment, params.path, qp);
@@ -54,7 +54,7 @@ async function signedGet(params: {
     environment: params.environment,
     path: params.path,
     queryParams: qp,
-    credentialRole: "payin",
+    credentialProfile: "india_payin",
   });
   cache.set(key, { expiresAt: Date.now() + ttl, payload });
   return payload;

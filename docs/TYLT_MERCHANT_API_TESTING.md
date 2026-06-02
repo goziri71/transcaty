@@ -70,7 +70,7 @@ TL Pay is **crypto settlement infrastructure** (stablecoins, conversion rails, t
 
 `payin:create,payout:create,balance:read,internal_transfer:create` — or `*` only in sandboxes. (`tylt:internal_transfer` is still accepted as a legacy scope name.)
 
-Related: environment variables for Tylt are listed in `.env.example`: **pay-in** vs **pay-out** service keys (`TYLT_{TEST|LIVE}_{PAYIN|PAYOUT}_*`), with legacy fallbacks (`TYLT_*`, `TYLT_TEST_*`, `TYLT_LIVE_*`), optional `TYLT_H2H_REQUIRE_END_USER_KYC`, caches, internal-transfer allowlist.
+Related: environment variables for Tylt are listed in `.env.example`: **India** lane (`TYLT_{TEST|LIVE}_INDIA_PAYIN_*` / `INDIA_PAYOUT_*`), with fallbacks to generic `PAYIN_` / `PAYOUT_` and legacy `TYLT_*`. EU uses `TYLT_*_EUR_PAYIN_*` / `EUR_PAYOUT_*` (see `TYLT_EUR_OPEN_BANKING.md`). Optional `TYLT_H2H_REQUIRE_END_USER_KYC`, caches, internal-transfer allowlist.
 
 **Schemas in code:** Request bodies match `app.ts` (Zod) for each route; shared query helpers live in `src/lib/tylt-merchant-api-schemas.ts`.
 
@@ -103,7 +103,7 @@ Use this as the **default onboarding flow** for backend engineers building again
 | Requirement | Notes |
 |-------------|--------|
 | Transacty base URL | e.g. `https://api.example.com` or `http://localhost:3000` for local dev. |
-| Tylt credentials on the server | **Pay-in:** `TYLT_TEST_PAYIN_*` / `TYLT_LIVE_PAYIN_*` (or legacy `TYLT_TEST_*` / shared `TYLT_*`). **Pay-out:** `TYLT_TEST_PAYOUT_*` / `TYLT_LIVE_PAYOUT_*` (or same legacy fallbacks). See `.env.example`. |
+| Tylt credentials on the server | **India:** `TYLT_TEST_INDIA_PAYIN_*` / `INDIA_PAYOUT_*` (or `TYLT_TEST_PAYIN_*` / `PAYOUT_*` / legacy). See `.env.example`. |
 | Merchant account | Created via portal signup or a seed script. |
 | Merchant API key | Created in portal; note **public key** + **secret** (secret is shown once). |
 | Key **environment** | `test` or `live` on the key row must match the Tylt credentials you expect for that traffic. |

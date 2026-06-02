@@ -1,15 +1,23 @@
 /**
  * Tylt API credentials per merchant key environment (test | live).
- * Tylt issues separate API key + secret per enabled service; we model
- * the common split as **payin** vs **payout** (plus shared fallbacks).
- * Plain or *_ENC via getSecret (same pattern as other provider configs).
+ * TL Pay issues separate API key + secret per product/service.
+ *
+ * Profiles (recommended):
+ * - `eur_payin` / `eur_payout` — EU Open Banking (Prime Fiat)
+ * - `india_payin` / `india_payout` — India UPI H2H, CrossRamp, CPG
+ *
+ * Fallback per profile: `TYLT_{TEST|LIVE}_{EUR|INDIA}_{PAYIN|PAYOUT}_*`, then shared
+ * `TYLT_{TEST|LIVE}_{PAYIN|PAYOUT}_*`, then legacy `TYLT_{TEST|LIVE}_*`, then `TYLT_*`.
  */
 import { getSecret } from "../../../src/lib/encryption.js";
 
 export type TyltMerchantEnvironment = "test" | "live";
 
-/** Which Tylt credential pair to use for outbound calls and webhooks. */
+/** @deprecated Prefer {@link TyltCredentialProfile} for lane-specific keys. */
 export type TyltCredentialRole = "payin" | "payout";
+
+/** TL Pay credential lane — maps to dedicated env var prefixes. */
+export type TyltCredentialProfile = "eur_payin" | "eur_payout" | "india_payin" | "india_payout";
 
 export type TyltConfig = {
   apiKey: string;
@@ -23,6 +31,13 @@ type PartialCfg = {
   baseUrl?: string;
 };
 
+const PROFILE_ENV_MID: Record<TyltCredentialProfile, string> = {
+  eur_payin: "EUR_PAYIN_",
+  eur_payout: "EUR_PAYOUT_",
+  india_payin: "INDIA_PAYIN_",
+  india_payout: "INDIA_PAYOUT_",
+};
+
 function coalesce(...vals: (string | undefined)[]): string | undefined {
   for (const v of vals) {
     const t = v?.trim();
@@ -31,21 +46,20 @@ function coalesce(...vals: (string | undefined)[]): string | undefined {
   return undefined;
 }
 
-function pickLegacyPerEnv(prefix: "TYLT_TEST_" | "TYLT_LIVE_"): PartialCfg {
+function pickEnvBlock(prefix: "TYLT_TEST_" | "TYLT_LIVE_", envMid: string): PartialCfg {
   return {
-    apiKey: getSecret(`${prefix}API_KEY`, `${prefix}API_KEY_ENC`)?.trim(),
-    apiSecret: getSecret(`${prefix}API_SECRET`, `${prefix}API_SECRET_ENC`)?.trim(),
-    baseUrl: getSecret(`${prefix}BASE_URL`, `${prefix}BASE_URL_ENC`)?.trim(),
+    apiKey: getSecret(`${prefix}${envMid}API_KEY`, `${prefix}${envMid}API_KEY_ENC`)?.trim(),
+    apiSecret: getSecret(`${prefix}${envMid}API_SECRET`, `${prefix}${envMid}API_SECRET_ENC`)?.trim(),
+    baseUrl: getSecret(`${prefix}${envMid}BASE_URL`, `${prefix}${envMid}BASE_URL_ENC`)?.trim(),
   };
 }
 
+function pickLegacyPerEnv(prefix: "TYLT_TEST_" | "TYLT_LIVE_"): PartialCfg {
+  return pickEnvBlock(prefix, "");
+}
+
 function pickRolePerEnv(prefix: "TYLT_TEST_" | "TYLT_LIVE_", role: TyltCredentialRole): PartialCfg {
-  const mid = role === "payin" ? "PAYIN_" : "PAYOUT_";
-  return {
-    apiKey: getSecret(`${prefix}${mid}API_KEY`, `${prefix}${mid}API_KEY_ENC`)?.trim(),
-    apiSecret: getSecret(`${prefix}${mid}API_SECRET`, `${prefix}${mid}API_SECRET_ENC`)?.trim(),
-    baseUrl: getSecret(`${prefix}${mid}BASE_URL`, `${prefix}${mid}BASE_URL_ENC`)?.trim(),
-  };
+  return pickEnvBlock(prefix, role === "payin" ? "PAYIN_" : "PAYOUT_");
 }
 
 function pickShared(): PartialCfg {
@@ -56,29 +70,15 @@ function pickShared(): PartialCfg {
   };
 }
 
-/**
- * Resolved credentials for outbound Tylt HTTP and webhook HMAC verification.
- *
- * Precedence per field: `TYLT_{TEST|LIVE}_{PAYIN|PAYOUT}_*`, then legacy
- * `TYLT_{TEST|LIVE}_*`, then shared `TYLT_*`. Base URL defaults to
- * https://api.tylt.money when still empty.
- */
-export function getTyltCredentials(
-  environment: TyltMerchantEnvironment,
-  role: TyltCredentialRole
-): TyltConfig | null {
-  const prefix = environment === "live" ? "TYLT_LIVE_" : "TYLT_TEST_";
-  const roleSpecific = pickRolePerEnv(prefix, role);
-  const legacy = pickLegacyPerEnv(prefix);
-  const shared = pickShared();
+function roleForProfile(profile: TyltCredentialProfile): TyltCredentialRole {
+  return profile === "eur_payout" || profile === "india_payout" ? "payout" : "payin";
+}
 
-  const apiKey = coalesce(roleSpecific.apiKey, legacy.apiKey, shared.apiKey);
-  const apiSecret = coalesce(roleSpecific.apiSecret, legacy.apiSecret, shared.apiSecret);
-  const baseUrlRaw =
-    coalesce(roleSpecific.baseUrl, legacy.baseUrl, shared.baseUrl) ?? "https://api.tylt.money";
-
+function resolveConfig(layers: PartialCfg[]): TyltConfig | null {
+  const apiKey = coalesce(...layers.map((l) => l.apiKey));
+  const apiSecret = coalesce(...layers.map((l) => l.apiSecret));
+  const baseUrlRaw = coalesce(...layers.map((l) => l.baseUrl)) ?? "https://api.tylt.money";
   if (!apiKey || !apiSecret) return null;
-
   return {
     apiKey,
     apiSecret,
@@ -87,11 +87,50 @@ export function getTyltCredentials(
 }
 
 /**
- * @deprecated Use {@link getTyltCredentials}(environment, "payin"). Kept for
- * callers that assumed a single Tylt key; pay-in credentials are the closest match.
+ * Resolve credentials for a product lane (EU vs India, pay-in vs pay-out).
  */
+export function getTyltCredentialsForProfile(
+  environment: TyltMerchantEnvironment,
+  profile: TyltCredentialProfile
+): TyltConfig | null {
+  const prefix = environment === "live" ? "TYLT_LIVE_" : "TYLT_TEST_";
+  const role = roleForProfile(profile);
+  return resolveConfig([
+    pickEnvBlock(prefix, PROFILE_ENV_MID[profile]),
+    pickRolePerEnv(prefix, role),
+    pickLegacyPerEnv(prefix),
+    pickShared(),
+  ]);
+}
+
+/**
+ * Generic pay-in / pay-out role (no EUR_/INDIA_ prefix). Prefer {@link getTyltCredentialsForProfile}.
+ */
+export function getTyltCredentials(
+  environment: TyltMerchantEnvironment,
+  role: TyltCredentialRole
+): TyltConfig | null {
+  const prefix = environment === "live" ? "TYLT_LIVE_" : "TYLT_TEST_";
+  return resolveConfig([pickRolePerEnv(prefix, role), pickLegacyPerEnv(prefix), pickShared()]);
+}
+
+/** @deprecated Use {@link getTyltCredentialsForProfile}(environment, "india_payin"). */
 export function getTyltConfig(environment: TyltMerchantEnvironment): TyltConfig | null {
-  return getTyltCredentials(environment, "payin");
+  return getTyltCredentialsForProfile(environment, "india_payin");
+}
+
+export function assertTyltConfiguredForProfile(
+  environment: TyltMerchantEnvironment,
+  profile: TyltCredentialProfile
+): TyltConfig {
+  const c = getTyltCredentialsForProfile(environment, profile);
+  if (!c) {
+    const mid = PROFILE_ENV_MID[profile];
+    throw new Error(
+      `Tylt credentials are not configured for profile ${profile} (set TYLT_*_${mid}API_KEY and TYLT_*_${mid}API_SECRET, or fallbacks)`
+    );
+  }
+  return c;
 }
 
 export function assertTyltConfigured(
@@ -108,3 +147,14 @@ export function assertTyltConfigured(
   }
   return c;
 }
+
+/** Webhook verification order when lane is unknown (unified callback URL). */
+export const TYLT_PAYIN_PROFILE_VERIFY_ORDER: TyltCredentialProfile[] = [
+  "eur_payin",
+  "india_payin",
+];
+
+export const TYLT_PAYOUT_PROFILE_VERIFY_ORDER: TyltCredentialProfile[] = [
+  "eur_payout",
+  "india_payout",
+];

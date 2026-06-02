@@ -230,7 +230,7 @@ export async function createTyltCpgPayinRequest(params: {
     path: "/transactions/merchant/createPayinRequest",
     body,
     idempotencyKey: tx.id,
-    credentialRole: "payin",
+    credentialProfile: "india_payin",
   });
 
   const platformOrderId = extractCpgCreatePlatformOrderId(json);
@@ -281,7 +281,7 @@ export async function cpgGetPayinTransactionInformation(params: {
     environment: params.environment,
     path: "/transactions/merchant/getPayinTransactionInformation",
     queryParams: { orderId: params.orderId },
-    credentialRole: "payin",
+    credentialProfile: "india_payin",
   });
 }
 
@@ -294,7 +294,7 @@ export async function cpgGetPayinTransactionHistory(params: {
     environment: params.environment,
     path: "/transactions/merchant/getPayinTransactionHistory",
     queryParams: { rows: params.rows, page: params.page },
-    credentialRole: "payin",
+    credentialProfile: "india_payin",
   });
 }
 

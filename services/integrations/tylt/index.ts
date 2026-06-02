@@ -1,8 +1,11 @@
 export {
   getTyltConfig,
   getTyltCredentials,
+  getTyltCredentialsForProfile,
   assertTyltConfigured,
+  assertTyltConfiguredForProfile,
   type TyltConfig,
+  type TyltCredentialProfile,
   type TyltCredentialRole,
   type TyltMerchantEnvironment,
 } from "./config.js";
@@ -24,6 +27,7 @@ export {
   extractTyltWebhookMerchantOrderId,
   readTyltWebhookSignatureHeader,
   verifyTyltWebhookSignature,
+  type TyltWebhookCredentialMode,
   type TyltWebhookProductRoute,
 } from "./webhooks.js";
 export { createTyltCrossRampPayinOrder, applyTyltCrossRampWebhookPayload, parseTransactionMetadata, TYLT_PRODUCT_CROSSRAMP, TYLT_PRODUCT_H2H_UPI } from "./crossramp-payin.js";

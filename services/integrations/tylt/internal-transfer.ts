@@ -65,7 +65,7 @@ export async function tyltGetMerchantDetails(environment: TyltMerchantEnvironmen
     environment,
     path: "/transactions/merchant/getMerchantDetails",
     queryParams: {},
-    credentialRole: "payin",
+    credentialProfile: "india_payin",
   });
 }
 
@@ -88,7 +88,7 @@ export async function tyltTransferMerchantBalance(params: {
     environment: params.environment,
     path: "/transactions/merchant/transferMerchantBalance",
     body,
-    credentialRole: "payin",
+    credentialProfile: "india_payin",
   });
 }
 

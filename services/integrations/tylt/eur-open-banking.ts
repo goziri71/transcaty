@@ -102,7 +102,7 @@ export async function fetchEurInstanceDetails(params: {
     environment: params.environment,
     path: "/v2/prime-fiat/instance/details",
     queryParams: { merchantOrderId: params.merchantOrderId },
-    credentialRole: "payin",
+    credentialProfile: "eur_payin",
   });
 }
 
