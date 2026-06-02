@@ -64,5 +64,8 @@ describe("portal-wallet-balance", () => {
     assert.equal(item.region, "india");
     assert.equal(item.displayLabel, "India (USDT)");
     assert.ok(item.limits.payin.max > 0);
+    assert.equal(item.market, "india");
+    assert.equal(item.activationStatus, "active");
+    assert.equal(item.walletActivated, true);
   });
 });

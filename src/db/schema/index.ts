@@ -120,6 +120,27 @@ export const merchants = pgTable("merchants", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+export const merchantMarkets = pgTable(
+  "merchant_markets",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    merchantId: uuid("merchant_id")
+      .notNull()
+      .references(() => merchants.id, { onDelete: "cascade" }),
+    market: text("market").notNull(),
+    entitlementStatus: text("entitlement_status").notNull().default("disabled"),
+    kybStatus: text("kyb_status").notNull().default("not_started"),
+    requestedAt: timestamp("requested_at", { withTimezone: true }),
+    approvedAt: timestamp("approved_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("merchant_markets_merchant_id_idx").on(t.merchantId),
+    unique("merchant_markets_merchant_market_unique").on(t.merchantId, t.market),
+  ]
+);
+
 export const merchantApiKeys = pgTable(
   "merchant_api_keys",
   {

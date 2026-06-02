@@ -584,7 +584,14 @@ Use **`{{baseUrl}}`** and the EU collection **Pre-request Script** on every row.
 
 **Expect (200):** Same shape as pay-in create (`checkoutUrl`, `instanceId`, etc.). Server debits **USDC** using quoted `cryptoAmount` when present.
 
-**Common 400:** `payout_failed` / insufficient USDC — fund wallet first.
+**Common 400 codes on payout create:**
+
+| `code` | Meaning |
+|--------|---------|
+| `insufficient_balance` | Not enough **USDC** (debit uses TL quote `cryptoAmount`). Fund via successful pay-in first. |
+| `wallet_not_found` | No USDC wallet yet — complete a pay-in that credits USDC. |
+| `payment_provider_rejected` | TL Pay rejected create (message from partner). |
+| `payout_failed` | Other payout failure (e.g. domestic rails). |
 
 ### 8.5 EU payout — approve (POST)
 

@@ -21,6 +21,8 @@ export type AuditAction =
   | "provider.merchant.status_changed"
   | "provider.merchant.kyc_changed"
   | "provider.merchant.pricing_changed"
+  | "provider.merchant.market_updated"
+  | "merchant.market.requested"
   | "provider.customer.status_changed"
   | "provider.wallet.adjusted"
   | "provider.transaction.status_changed"

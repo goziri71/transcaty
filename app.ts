@@ -88,6 +88,10 @@ import {
 } from "./services/operations/transfers.js";
 import { sumPendingPayinAmountsByCurrency } from "./src/lib/merchant-pending-balance.js";
 import {
+  assertMerchantMarketApiAccess,
+  type MerchantMarket,
+} from "./src/lib/merchant-markets.js";
+import {
   limitsForMerchantWalletCurrency,
   portalWalletBalanceItemSchema,
   presentPortalWalletBalanceItem,
@@ -1175,6 +1179,37 @@ export async function buildApp() {
     return true;
   }
 
+  async function requireMerchantMarketEnabled(
+    merchantId: string,
+    market: MerchantMarket,
+    reply: FastifyReply
+  ): Promise<boolean> {
+    const gate = await assertMerchantMarketApiAccess({
+      merchantId,
+      market,
+      kycRequired,
+    });
+    if (!gate.ok) {
+      reply.status(403).send({
+        error: "Forbidden",
+        message: gate.message,
+        code: gate.code,
+        market: gate.market,
+      });
+      return false;
+    }
+    return true;
+  }
+
+  async function requireKycAndMarket(
+    merchantId: string,
+    market: MerchantMarket,
+    reply: FastifyReply
+  ): Promise<boolean> {
+    if (!(await requireKycVerified(merchantId, reply))) return false;
+    return requireMerchantMarketEnabled(merchantId, market, reply);
+  }
+
   function merchantHasTyltDiscoveryListScope(m: { scopes: string[] }): boolean {
     return (
       m.scopes.includes("*") ||
@@ -1257,7 +1292,7 @@ export async function buildApp() {
       if (!m.scopes.includes("payin:create") && !m.scopes.includes("*")) {
         return reply.status(403).send({ error: "Forbidden", message: "Missing scope: payin:create" });
       }
-      if (!(await requireKycVerified(m.merchantId, reply))) return;
+      if (!(await requireKycAndMarket(m.merchantId, "bangladesh", reply))) return;
       const body = request.body as {
         amount: string;
         paymentMethodCode: string;
@@ -1371,7 +1406,7 @@ export async function buildApp() {
       if (!m.scopes.includes("payin:create") && !m.scopes.includes("*")) {
         return reply.status(403).send({ error: "Forbidden", message: "Missing scope: payin:create" });
       }
-      if (!(await requireKycVerified(m.merchantId, reply))) return;
+      if (!(await requireKycAndMarket(m.merchantId, "india", reply))) return;
       const body = request.body as {
         amount: string;
         currencySymbol: "USDT" | "INR";
@@ -1514,7 +1549,7 @@ export async function buildApp() {
       if (!m.scopes.includes("payin:create") && !m.scopes.includes("*")) {
         return reply.status(403).send({ error: "Forbidden", message: "Missing scope: payin:create" });
       }
-      if (!(await requireKycVerified(m.merchantId, reply))) return;
+      if (!(await requireKycAndMarket(m.merchantId, "india", reply))) return;
       const body = request.body as { transactionId: string; utr: string };
       const [txRow] = await db
         .select()
@@ -1793,7 +1828,7 @@ export async function buildApp() {
       if (!m.scopes.includes("payin:create") && !m.scopes.includes("*")) {
         return reply.status(403).send({ error: "Forbidden", message: "Missing scope: payin:create" });
       }
-      if (!(await requireKycVerified(m.merchantId, reply))) return;
+      if (!(await requireKycAndMarket(m.merchantId, "india", reply))) return;
       const body = request.body as {
         baseAmount: string;
         baseCurrency: string;
@@ -1954,7 +1989,7 @@ export async function buildApp() {
       if (!m.scopes.includes("payout:create") && !m.scopes.includes("*")) {
         return reply.status(403).send({ error: "Forbidden", message: "Missing scope: payout:create" });
       }
-      if (!(await requireKycVerified(m.merchantId, reply))) return;
+      if (!(await requireKycAndMarket(m.merchantId, "india", reply))) return;
       const body = request.body as {
         amount: string;
         settledCurrency: string;
@@ -2132,7 +2167,7 @@ export async function buildApp() {
       if (!m.scopes.includes("payin:create") && !m.scopes.includes("*")) {
         return reply.status(403).send({ error: "Forbidden", message: "Missing scope: payin:create" });
       }
-      if (!(await requireKycVerified(m.merchantId, reply))) return;
+      if (!(await requireKycAndMarket(m.merchantId, "europe", reply))) return;
       const body = request.body as {
         amount: string;
         currencySymbol: "EUR" | "GBP";
@@ -2272,7 +2307,7 @@ export async function buildApp() {
       if (!m.scopes.includes("payout:create") && !m.scopes.includes("*")) {
         return reply.status(403).send({ error: "Forbidden", message: "Missing scope: payout:create" });
       }
-      if (!(await requireKycVerified(m.merchantId, reply))) return;
+      if (!(await requireKycAndMarket(m.merchantId, "europe", reply))) return;
       const body = request.body as {
         amount: string;
         currencySymbol: "EUR";
@@ -2361,6 +2396,7 @@ export async function buildApp() {
         if (!m.scopes.includes("payout:create") && !m.scopes.includes("*")) {
           return reply.status(403).send({ error: "Forbidden", message: "Missing scope: payout:create" });
         }
+        if (!(await requireKycAndMarket(m.merchantId, "europe", reply))) return;
         const { transactionId } = request.params as { transactionId: string };
         const [txRow] = await db
           .select()
@@ -2499,7 +2535,7 @@ export async function buildApp() {
           message: "Missing scope: internal_transfer:create (legacy tylt:internal_transfer accepted)",
         });
       }
-      if (!(await requireKycVerified(m.merchantId, reply))) return;
+      if (!(await requireKycAndMarket(m.merchantId, "india", reply))) return;
       const body = request.body as {
         fromUUID: string;
         toUUID: string;
@@ -2592,7 +2628,7 @@ export async function buildApp() {
       if (!m.scopes.includes("payout:create") && !m.scopes.includes("*")) {
         return reply.status(403).send({ error: "Forbidden", message: "Missing scope: payout:create" });
       }
-      if (!(await requireKycVerified(m.merchantId, reply))) return;
+      if (!(await requireKycAndMarket(m.merchantId, "bangladesh", reply))) return;
       const body = request.body as { amount: string; benificiaryAccountInfo: { number: string; orgId: string; orgCode: string; orgName: string; holderName: string }; cardHolderInfo: { firstName: string; lastName: string; email: string; phone: string } };
       const amount = parseFloat(body.amount);
       if (!Number.isFinite(amount) || amount < LIMITS.payout.min || amount > LIMITS.payout.max) {
@@ -2667,7 +2703,7 @@ export async function buildApp() {
           message: "Missing scope: wallets:create",
         });
       }
-      if (!(await requireKycVerified(m.merchantId, reply))) return;
+      if (!(await requireKycAndMarket(m.merchantId, "bangladesh", reply))) return;
       const body = request.body as { label?: string };
       try {
         const customer = await createCustomerWallet({
@@ -2779,7 +2815,7 @@ export async function buildApp() {
           message: "Missing scope: transfer:create",
         });
       }
-      if (!(await requireKycVerified(m.merchantId, reply))) return;
+      if (!(await requireKycAndMarket(m.merchantId, "bangladesh", reply))) return;
       const body = request.body as {
         customerWalletId: string;
         amount: string;

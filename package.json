@@ -11,6 +11,7 @@
     "start": "node dist/src/server.js",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
+    "db:migrate-merchant-markets": "tsx scripts/migrate-merchant-markets.ts",
     "db:push": "drizzle-kit push",
     "db:seed-merchant": "tsx scripts/seed-merchant.ts",
     "db:seed-portal-user": "tsx scripts/seed-portal-user.ts",

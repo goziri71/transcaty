@@ -1085,6 +1085,82 @@ export async function registerProviderRoutes(app: FastifyInstance) {
     }
   );
 
+  const MARKET_IDS = ["bangladesh", "india", "europe"] as const;
+  const MARKET_ENTITLEMENT = [
+    "disabled",
+    "requested",
+    "kyb_in_review",
+    "approved",
+    "suspended",
+  ] as const;
+  const MARKET_KYB = ["not_started", "pending", "verified", "rejected"] as const;
+
+  app.patch(
+    "/provider/merchants/:merchantId/markets/:market",
+    {
+      schema: {
+        params: z.object({
+          merchantId: z.string().uuid(),
+          market: z.enum(MARKET_IDS),
+        }),
+        body: z.object({
+          entitlementStatus: z.enum(MARKET_ENTITLEMENT).optional(),
+          kybStatus: z.enum(MARKET_KYB).optional(),
+          reason: z.string().max(500).optional(),
+        }),
+        response: {
+          200: z.object({
+            market: z.enum(MARKET_IDS),
+            entitlementStatus: z.enum(MARKET_ENTITLEMENT),
+            kybStatus: z.enum(MARKET_KYB),
+            requestedAt: z.string().nullable(),
+            approvedAt: z.string().nullable(),
+          }),
+          401: errorResponse,
+          404: errorResponse,
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!ensureProviderPermission(request, reply, "merchant.kyc.write")) return;
+      const { merchantId, market } = request.params as {
+        merchantId: string;
+        market: (typeof MARKET_IDS)[number];
+      };
+      const body = request.body as {
+        entitlementStatus?: (typeof MARKET_ENTITLEMENT)[number];
+        kybStatus?: (typeof MARKET_KYB)[number];
+        reason?: string;
+      };
+
+      const [existing] = await db
+        .select({ id: merchants.id })
+        .from(merchants)
+        .where(eq(merchants.id, merchantId))
+        .limit(1);
+      if (!existing) {
+        return reply.status(404).send({ error: "Not found", message: "Merchant not found" });
+      }
+
+      const { setMerchantMarketByProvider } = await import("../../src/lib/merchant-markets.js");
+      const row = await setMerchantMarketByProvider({
+        merchantId,
+        market,
+        entitlementStatus: body.entitlementStatus,
+        kybStatus: body.kybStatus,
+        actor: body.reason ? `provider:${body.reason}` : "provider",
+      });
+
+      return {
+        market: row.market,
+        entitlementStatus: row.entitlementStatus,
+        kybStatus: row.kybStatus,
+        requestedAt: row.requestedAt?.toISOString() ?? null,
+        approvedAt: row.approvedAt?.toISOString() ?? null,
+      };
+    }
+  );
+
   const BILLING_MODE = ["percentage_only", "monthly_only", "both"] as const;
 
   app.get(

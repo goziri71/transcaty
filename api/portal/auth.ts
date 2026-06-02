@@ -10,7 +10,6 @@ import {
   merchants,
   merchantPricing,
   merchantUsers,
-  wallets,
 } from "../../src/db/schema/index.js";
 import {
   hashPassword,
@@ -122,24 +121,8 @@ export async function registerPortalAuthRoutes(app: FastifyInstance) {
         });
       }
 
-      await db.insert(wallets).values([
-        {
-          merchantId: merchant.id,
-          type: "merchant",
-          environment: "test",
-          balance: "0",
-          currency: "BDT",
-          status: "active",
-        },
-        {
-          merchantId: merchant.id,
-          type: "merchant",
-          environment: "live",
-          balance: "0",
-          currency: "BDT",
-          status: "active",
-        },
-      ]);
+      const { ensureMerchantMarkets } = await import("../../src/lib/merchant-markets.js");
+      await ensureMerchantMarkets(merchant.id);
 
       await db.insert(merchantPricing).values({
         merchantId: merchant.id,

@@ -8,7 +8,9 @@ import { audit } from "../../../src/lib/audit.js";
 import { addAmount, assertPositive, cmpAmount, normalizeMoneyAmountToTwoDecimals, subAmount } from "../../../src/lib/money.js";
 import type { WebhookEvent } from "../../../src/lib/merchant-webhook.js";
 import { PayoutCreationError } from "../../domestic/bangladesh/payout.js";
+import { UpstreamProviderClientError } from "../../../src/lib/merchant-facing-errors.js";
 import { tyltSignedPostJson } from "./client.js";
+import { pickTyltJsonPrimaryMessage } from "./h2h-upi.js";
 import type { TyltMerchantEnvironment } from "./config.js";
 import {
   classifyEurPayoutDecision,
@@ -172,7 +174,16 @@ export async function createTyltEurPayoutInstance(params: {
 
   if (status >= 400 || !parsed.instanceId || !parsed.checkoutUrl) {
     await db.update(transactions).set({ status: "failed", updatedAt: new Date() }).where(eq(transactions.id, tx.id));
-    throw new Error("Tylt EU payout create failed");
+    const merchantMsg =
+      pickTyltJsonPrimaryMessage(json) ??
+      "Payment partner could not create this payout. Check amount, payee IBAN, and merchant details.";
+    throw new UpstreamProviderClientError(
+      `tylt_eur_payout_create http=${status}`,
+      merchantMsg,
+      status >= 400 ? status : 502,
+      tx.id,
+      null
+    );
   }
 
   const debitAmount = normalizeMoneyAmountToTwoDecimals(
@@ -196,9 +207,11 @@ export async function createTyltEurPayoutInstance(params: {
         .for("update")
         .limit(1);
 
-      if (!wallet) throw new PayoutCreationError("Merchant USDC wallet not found", tx.id, null);
+      if (!wallet) {
+        throw new PayoutCreationError("Merchant USDC wallet not found", tx.id, null, "wallet_not_found");
+      }
       if (cmpAmount(wallet.balance, debitAmount) < 0) {
-        throw new PayoutCreationError("Insufficient USDC balance", tx.id, null);
+        throw new PayoutCreationError("Insufficient USDC balance", tx.id, null, "insufficient_balance");
       }
 
       await txDb.insert(ledgerEntries).values({

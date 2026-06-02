@@ -10,6 +10,14 @@ export const portalWalletLimitsSchema = z.object({
   payout: z.object({ min: z.number(), max: z.number() }),
 });
 
+export const portalWalletMarketSchema = z.enum(["bangladesh", "india", "europe"]);
+export const portalWalletActivationStatusSchema = z.enum([
+  "active",
+  "not_enabled",
+  "pending_kyb",
+  "suspended",
+]);
+
 export const portalWalletBalanceItemSchema = z.object({
   id: z.string(),
   currency: z.string(),
@@ -25,6 +33,11 @@ export const portalWalletBalanceItemSchema = z.object({
   updatedAt: z.string().nullable(),
   createdAt: z.string(),
   limits: portalWalletLimitsSchema,
+  market: portalWalletMarketSchema,
+  entitlementStatus: z.string(),
+  kybStatus: z.string(),
+  activationStatus: portalWalletActivationStatusSchema,
+  walletActivated: z.boolean(),
 });
 
 export type PortalWalletBalanceItem = z.infer<typeof portalWalletBalanceItemSchema>;
@@ -116,15 +129,24 @@ export function presentPortalWalletBalanceItem(
     updatedAt: lastUpdated,
     createdAt: row.createdAt.toISOString(),
     limits: limitsForMerchantWalletCurrency(row.currency),
+    market: (region === "other" ? "bangladesh" : region) as z.infer<typeof portalWalletMarketSchema>,
+    entitlementStatus: "approved",
+    kybStatus: "verified",
+    activationStatus: "active",
+    walletActivated: true,
   };
 }
 
-/** Primary wallet card: BDT-first, then currency, then id (matches legacy `/portal/me/balance`). */
+/** Primary wallet card: active markets first, then BDT-first, then currency. */
 export function pickPrimaryPortalWalletItem(
   items: PortalWalletBalanceItem[]
 ): PortalWalletBalanceItem | null {
   if (items.length === 0) return null;
-  const sorted = [...items].sort((a, b) => {
+  const pool = items.filter((i) => i.activationStatus === "active");
+  const sorted = [...(pool.length > 0 ? pool : items)].sort((a, b) => {
+    const aAct = a.walletActivated ? 0 : 1;
+    const bAct = b.walletActivated ? 0 : 1;
+    if (aAct !== bAct) return aAct - bAct;
     const aBdt = a.currency.toUpperCase() === "BDT" ? 0 : 1;
     const bBdt = b.currency.toUpperCase() === "BDT" ? 0 : 1;
     if (aBdt !== bBdt) return aBdt - bBdt;

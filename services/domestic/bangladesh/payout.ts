@@ -22,12 +22,20 @@ import { assertPayoutAllowed } from "../../../src/lib/fraud-policy.js";
 export class PayoutCreationError extends Error {
   transactionId: string;
   platformOrderId: string | null;
+  /** Merchant API `code` when set (e.g. insufficient_balance for EU USDC). */
+  merchantCode?: string;
 
-  constructor(message: string, transactionId: string, platformOrderId?: string | null) {
+  constructor(
+    message: string,
+    transactionId: string,
+    platformOrderId?: string | null,
+    merchantCode?: string
+  ) {
     super(message);
     this.name = "PayoutCreationError";
     this.transactionId = transactionId;
     this.platformOrderId = platformOrderId ?? null;
+    this.merchantCode = merchantCode;
   }
 }
 

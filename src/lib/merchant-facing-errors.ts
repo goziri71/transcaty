@@ -21,6 +21,7 @@ const OPERATION_FAILED = "Could not complete this request.";
 function isPayoutCreationError(err: unknown): err is Error & {
   transactionId: string;
   platformOrderId: string | null;
+  merchantCode?: string;
 } {
   return (
     err instanceof Error &&
@@ -28,6 +29,58 @@ function isPayoutCreationError(err: unknown): err is Error & {
     "transactionId" in err &&
     typeof (err as { transactionId?: unknown }).transactionId === "string"
   );
+}
+
+function payoutCreationErrorResponse(err: Error & {
+  transactionId: string;
+  platformOrderId: string | null;
+  merchantCode?: string;
+}): MerchantFacingResult {
+  const base = {
+    transactionId: err.transactionId,
+    reference: err.transactionId,
+    platformOrderId: err.platformOrderId ?? null,
+  };
+
+  const code = err.merchantCode;
+  if (code === "insufficient_balance" || err.message === "Insufficient USDC balance") {
+    return {
+      status: 400,
+      body: {
+        error: "Bad Request",
+        message:
+          "Insufficient USDC balance. Complete a successful EU pay-in to fund your USDC wallet, then retry the payout.",
+        code: "insufficient_balance",
+        ...base,
+      },
+      logDetail: err.message,
+    };
+  }
+
+  if (code === "wallet_not_found" || err.message === "Merchant USDC wallet not found") {
+    return {
+      status: 400,
+      body: {
+        error: "Bad Request",
+        message:
+          "No USDC wallet found for this merchant. Fund USDC with a successful EU pay-in before creating a payout.",
+        code: "wallet_not_found",
+        ...base,
+      },
+      logDetail: err.message,
+    };
+  }
+
+  return {
+    status: 400,
+    body: {
+      error: "Bad Request",
+      message: PAYOUT_FAILED,
+      code: "payout_failed",
+      ...base,
+    },
+    logDetail: err.message,
+  };
 }
 
 export type MerchantFacingBody = {
@@ -54,7 +107,9 @@ export class UpstreamProviderClientError extends Error {
   constructor(
     internalDetail: string,
     public readonly merchantMessage: string,
-    public readonly upstreamHttpStatus: number
+    public readonly upstreamHttpStatus: number,
+    public readonly transactionId?: string,
+    public readonly platformOrderId?: string | null
   ) {
     super(internalDetail);
     this.name = "UpstreamProviderClientError";
@@ -90,18 +145,7 @@ export function merchantPaymentFlowErrorResponse(err: unknown): MerchantFacingRe
   }
 
   if (isPayoutCreationError(err)) {
-    return {
-      status: 400,
-      body: {
-        error: "Bad Request",
-        message: PAYOUT_FAILED,
-        code: "payout_failed",
-        transactionId: err.transactionId,
-        reference: err.transactionId,
-        platformOrderId: err.platformOrderId ?? null,
-      },
-      logDetail: err.message,
-    };
+    return payoutCreationErrorResponse(err);
   }
 
   if (err instanceof UpstreamProviderClientError) {
@@ -111,6 +155,13 @@ export function merchantPaymentFlowErrorResponse(err: unknown): MerchantFacingRe
         error: "Bad Request",
         message: err.merchantMessage,
         code: "payment_provider_rejected",
+        ...(err.transactionId
+          ? {
+              transactionId: err.transactionId,
+              reference: err.transactionId,
+              platformOrderId: err.platformOrderId ?? null,
+            }
+          : {}),
       },
       logDetail: err.message,
     };

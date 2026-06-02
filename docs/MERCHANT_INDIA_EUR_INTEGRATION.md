@@ -55,8 +55,12 @@ All portal routes require `Authorization: Bearer <portal_jwt>` (or `X-Portal-Tok
 
 | Endpoint | Use in UI |
 |----------|-----------|
-| `GET /portal/me/wallets?environment=` | **Primary.** One card per pocket: `currency`, `balance`, `availableBalance`, `pendingBalance`, `displayLabel`, `region`, `limits`. |
+| `GET /portal/me/wallets?environment=` | **Primary.** One card per settlement pocket per market (`BDT`, `INR`, `USDT`, `USDC`), including **`activationStatus`**: `active`, `not_enabled`, `pending_kyb`, `suspended`. |
+| `GET /portal/me/markets` | Market entitlements: `bangladesh` / `india` / `europe` and KYB status per market. |
+| `POST /portal/me/markets/:market/request` | Merchant requests a new market (`europe`, `india`, `bangladesh`). |
 | `GET /portal/me/balance?environment=` | Legacy headline row (BDT-first) **plus** same data in `items[]`. Prefer **wallets** for India/EU cards. |
+
+**Payment markets:** Merchants enable **Bangladesh**, **India**, and **Europe** separately (different KYB). Provider approves via `PATCH /provider/merchants/:id/markets/:market` with `entitlementStatus: approved`. Until a market is approved, `/v1` routes for that region return `403` (`market_not_enabled`). Wallets for that market are provisioned on approval.
 
 **`region` / `displayLabel` mapping (for cards):**
 
