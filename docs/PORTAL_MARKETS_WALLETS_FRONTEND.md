@@ -1,6 +1,13 @@
-# Portal — Markets & Wallets (Frontend)
+# Markets & Wallets — Frontend Spec (Portal + Admin)
 
-> **Single source of truth** for the merchant portal **markets**, **wallet catalog**, and related API changes (June 2026). Auth, MFA, KYC wizard, customers, and other portal routes remain in [`PORTAL_FRONTEND_SPEC.md`](./PORTAL_FRONTEND_SPEC.md).
+> **Single source of truth** for **merchant portal** markets/wallets and **provider admin** market approval (June 2026). Login, MFA, and other portal routes: [`PORTAL_FRONTEND_SPEC.md`](./PORTAL_FRONTEND_SPEC.md). Provider auth/MFA: [`PROVIDER_FRONTEND_SPEC.md`](./PROVIDER_FRONTEND_SPEC.md).
+
+**Two apps:**
+
+| App | Users | This doc |
+|-----|-------|----------|
+| Merchant portal | Merchants | [Part A — Merchant portal](#part-a--merchant-portal) |
+| Provider / superadmin dashboard | Transacty ops | [Part B — Provider admin](#part-b--provider-admin) |
 
 ---
 
@@ -28,9 +35,11 @@ What it runs: `drizzle/0021_merchant_markets.sql` via `scripts/migrate-merchant-
 
 Safe to re-run on deploy. On **Render**, run once in the shell or as a one-off job with production `DATABASE_URL`.
 
-After migration, restart the API and implement the portal against the endpoints below.
+After migration, restart the API and implement both portal and provider UIs against the endpoints below.
 
 ---
+
+## Part A — Merchant portal
 
 ## What changed (product)
 
@@ -426,17 +435,218 @@ await api.post(`/portal/me/markets/${market}/request`);
 
 ---
 
+## Part B — Provider admin
+
+Ops **approves payment markets** (Bangladesh / India / Europe), not individual wallet rows. When a market is **approved**, the backend **auto-creates** settlement wallets (test + live). There is no `POST …/wallets/:id/activate`.
+
+**Where in the app:** Merchant detail page (`/merchants/:merchantId`) — add a **Payment markets** panel (three rows). Optional: dashboard widget for merchants with any `entitlementStatus === "requested"`.
+
+**Auth:** Provider session JWT — `Authorization: Bearer <provider_jwt>` (see [`PROVIDER_FRONTEND_SPEC.md`](./PROVIDER_FRONTEND_SPEC.md)).
+
+**Permission:** `merchant.kyc.write` (same as global KYC approve/reject). Hide actions if the role lacks this permission.
+
+**No step-up MFA** on market PATCH (unlike wallet adjustments).
+
+### End-to-end flow
+
+```mermaid
+sequenceDiagram
+  participant M as Merchant portal
+  participant API as Transacty API
+  participant O as Provider admin
+
+  M->>API: POST /portal/me/markets/europe/request
+  API-->>M: entitlementStatus requested
+  O->>API: GET /provider/merchants/:id/markets
+  API-->>O: europe requested, kyb pending
+  O->>API: PATCH …/markets/europe { approved, verified }
+  API-->>O: approved + approvedAt
+  Note over API: Provisions USDC wallets test+live
+  M->>API: GET /portal/me/wallets
+  API-->>M: walletActivated true for USDC
+```
+
+### Read markets (admin list)
+
+**Status today:** `PATCH` exists; **`GET /provider/merchants/:merchantId/markets` is not implemented yet.** Admin UI needs a read endpoint before the markets panel can load on page open.
+
+**Ask backend to add** (expected contract — mirror merchant portal):
+
+**GET** `/provider/merchants/:merchantId/markets`
+
+**Permission:** `merchant.read`
+
+**Response (200)**
+
+```json
+{
+  "items": [
+    {
+      "market": "bangladesh",
+      "entitlementStatus": "approved",
+      "kybStatus": "verified",
+      "requestedAt": null,
+      "approvedAt": "2026-06-01T12:00:00.000Z",
+      "settlementCurrencies": ["BDT"]
+    },
+    {
+      "market": "europe",
+      "entitlementStatus": "requested",
+      "kybStatus": "pending",
+      "requestedAt": "2026-06-02T09:00:00.000Z",
+      "approvedAt": null,
+      "settlementCurrencies": ["USDC"]
+    }
+  ]
+}
+```
+
+Same field meanings as [merchant `GET /portal/me/markets`](#list-markets). Items order: `bangladesh` → `india` → `europe`.
+
+**Interim (until GET exists):** use `GET /provider/merchants/:merchantId/overview` → `auditTrail` for `merchant.market.requested` / `provider.merchant.market_updated` events only — **not** sufficient for a full markets table; do not ship admin UI without GET.
+
+### Approve / reject / suspend market
+
+**PATCH** `/provider/merchants/:merchantId/markets/:market`
+
+| Param | Values |
+|-------|--------|
+| `:merchantId` | UUID |
+| `:market` | `bangladesh` \| `india` \| `europe` |
+
+**Headers**
+
+```
+Authorization: Bearer <provider_jwt>
+Content-Type: application/json
+```
+
+**Body** (all fields optional; send at least one)
+
+```json
+{
+  "entitlementStatus": "approved",
+  "kybStatus": "verified",
+  "reason": "KYB docs reviewed — EU entity verified"
+}
+```
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `entitlementStatus` | `disabled` \| `requested` \| `kyb_in_review` \| `approved` \| `suspended` | **`approved`** triggers wallet provisioning |
+| `kybStatus` | `not_started` \| `pending` \| `verified` \| `rejected` | Market-specific KYB |
+| `reason` | string, max 500 | Stored in audit meta (not shown to merchant) |
+
+**Success (200)**
+
+```json
+{
+  "market": "europe",
+  "entitlementStatus": "approved",
+  "kybStatus": "verified",
+  "requestedAt": "2026-06-02T09:00:00.000Z",
+  "approvedAt": "2026-06-02T14:30:00.000Z"
+}
+```
+
+**Errors**
+
+| Status | Example | When |
+|--------|---------|------|
+| 401 | `{ "error": "Unauthorized" }` | Missing/invalid JWT |
+| 403 | `{ "error": "Forbidden", "message": "…" }` | Role lacks `merchant.kyc.write` |
+| 404 | `{ "error": "Not found", "message": "Merchant not found" }` | Bad `merchantId` |
+
+**Side effects on `entitlementStatus: "approved"`**
+
+- Sets `approvedAt` if not already set
+- If global merchant `kycStatus === "verified"` and `kybStatus` omitted → backend sets market `kybStatus` to `verified`
+- Creates merchant settlement wallets for that market in **test** and **live** (BDT / INR+USDT / USDC)
+
+### Recommended admin actions
+
+| Operator intent | PATCH body |
+|-----------------|------------|
+| **Approve** market after KYB | `{ "entitlementStatus": "approved", "kybStatus": "verified", "reason": "…" }` |
+| Mark **under review** | `{ "entitlementStatus": "kyb_in_review", "kybStatus": "pending" }` |
+| **Reject** KYB | `{ "kybStatus": "rejected", "reason": "…" }` (keep or set `entitlementStatus` as policy) |
+| **Suspend** rail | `{ "entitlementStatus": "suspended" }` |
+| **Disable** market | `{ "entitlementStatus": "disabled" }` |
+
+Global KYC on the same merchant detail page (`PATCH /provider/merchants/:merchantId/kyc`) is **separate** but related: verified global KYC can satisfy market KYB checks on the API even if market `kybStatus` is still `pending`.
+
+### Admin UI — Payment markets panel
+
+**Load** (once GET exists):
+
+```typescript
+GET /provider/merchants/${merchantId}/markets
+```
+
+Also show merchant **`kycStatus`** from `GET /provider/merchants/:merchantId` for context.
+
+**Table columns**
+
+| Column | Source |
+|--------|--------|
+| Market | `market` → label: Bangladesh / India / Europe |
+| Status | `entitlementStatus` badge |
+| Market KYB | `kybStatus` |
+| Settlement | `settlementCurrencies` joined (e.g. `USDC`) |
+| Requested | `requestedAt` |
+| Approved | `approvedAt` |
+| Actions | Approve / Reject / Suspend / Disable |
+
+**Row actions**
+
+- **`requested` or `kyb_in_review`** → primary **Approve** → PATCH with `approved` + `verified`; confirm modal mentioning wallets will be created
+- **Reject** → PATCH `kybStatus: "rejected"` (+ optional `entitlementStatus: "disabled"`)
+- **`approved`** → **Suspend** → PATCH `entitlementStatus: "suspended"`
+- **`suspended`** → **Re-enable** → PATCH `approved` again (re-provisions wallets if needed)
+
+After PATCH, replace row from **response body**; optionally refetch merchant **wallets** on overview (`GET /provider/merchants/:merchantId/overview` → `wallets[]`) to show new BDT/INR/USDT/USDC rows.
+
+**Badge copy (admin)**
+
+| `entitlementStatus` | Label |
+|---------------------|-------|
+| `disabled` | Not enabled |
+| `requested` | **Needs review** |
+| `kyb_in_review` | KYB in review |
+| `approved` | Active |
+| `suspended` | Suspended |
+
+### Pending requests queue (optional v1.1)
+
+No dedicated `GET /provider/markets/requests` exists. v1 options:
+
+- Filter merchant list client-side after enriching each merchant (expensive), or
+- Backend adds a queue endpoint later
+
+For v1, **merchant detail** driven by `requested` / `kyb_in_review` rows is enough.
+
+### Admin checklist
+
+- [ ] Block panel actions unless user has `merchant.kyc.write`
+- [ ] Confirm backend shipped `GET /provider/merchants/:merchantId/markets` before building load state
+- [ ] Approve modal copy: wallets auto-created; merchant sees them on next portal refresh
+- [ ] Link to global KYC section on same page when `kybStatus` is `not_started` / `pending`
+- [ ] Audit: `provider.merchant.market_updated` appears in merchant overview audit trail after PATCH
+
+---
+
 ## Out of scope (this doc)
 
 | Topic | Where |
 |-------|--------|
-| Login, MFA, KYC wizard | [`PORTAL_FRONTEND_SPEC.md`](./PORTAL_FRONTEND_SPEC.md) |
+| Login, MFA, KYC wizard (merchant) | [`PORTAL_FRONTEND_SPEC.md`](./PORTAL_FRONTEND_SPEC.md) |
+| Provider login, MFA, step-up (other actions) | [`PROVIDER_FRONTEND_SPEC.md`](./PROVIDER_FRONTEND_SPEC.md) |
 | HMAC `/v1` pay-in, payout payloads | [`MERCHANT_INDIA_EUR_INTEGRATION.md`](./MERCHANT_INDIA_EUR_INTEGRATION.md), [`TYLT_MERCHANT_API_TESTING.md`](./TYLT_MERCHANT_API_TESTING.md) |
-| Provider approve market | Provider dashboard / `PATCH /provider/merchants/:id/markets/:market` |
 
 ---
 
-## Other docs (out of scope here)
+## Other docs
 
-- [`PORTAL_FRONTEND_SPEC.md`](./PORTAL_FRONTEND_SPEC.md) — login, MFA, KYC, API keys, customers (balance/wallets sections there are **not** updated for markets; use **this** file instead)
-- [`MERCHANT_INDIA_EUR_INTEGRATION.md`](./MERCHANT_INDIA_EUR_INTEGRATION.md) — merchant **server** `/v1` integration (HMAC), not portal UI
+- [`PORTAL_FRONTEND_SPEC.md`](./PORTAL_FRONTEND_SPEC.md) — merchant portal (balance/wallets sections there are **not** updated for markets; use **Part A** here)
+- [`PROVIDER_FRONTEND_SPEC.md`](./PROVIDER_FRONTEND_SPEC.md) — provider shell, auth, merchant detail shell (add **Part B** markets panel there)
+- [`MERCHANT_INDIA_EUR_INTEGRATION.md`](./MERCHANT_INDIA_EUR_INTEGRATION.md) — merchant **server** `/v1` integration (HMAC)
