@@ -1095,6 +1095,57 @@ export async function registerProviderRoutes(app: FastifyInstance) {
   ] as const;
   const MARKET_KYB = ["not_started", "pending", "verified", "rejected"] as const;
 
+  const providerMarketRowSchema = z.object({
+    market: z.enum(MARKET_IDS),
+    entitlementStatus: z.enum(MARKET_ENTITLEMENT),
+    kybStatus: z.enum(MARKET_KYB),
+    requestedAt: z.string().nullable(),
+    approvedAt: z.string().nullable(),
+    settlementCurrencies: z.array(z.string()),
+  });
+
+  app.get(
+    "/provider/merchants/:merchantId/markets",
+    {
+      schema: {
+        params: z.object({ merchantId: z.string().uuid() }),
+        response: {
+          200: z.object({ items: z.array(providerMarketRowSchema) }),
+          401: errorResponse,
+          404: errorResponse,
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!ensureProviderPermission(request, reply, "merchant.read")) return;
+      const { merchantId } = request.params as { merchantId: string };
+
+      const [existing] = await db
+        .select({ id: merchants.id })
+        .from(merchants)
+        .where(eq(merchants.id, merchantId))
+        .limit(1);
+      if (!existing) {
+        return reply.status(404).send({ error: "Not found", message: "Merchant not found" });
+      }
+
+      const { listMerchantMarkets, MARKET_SETTLEMENT_CURRENCIES } = await import(
+        "../../src/lib/merchant-markets.js"
+      );
+      const rows = await listMerchantMarkets(merchantId);
+      return {
+        items: rows.map((r) => ({
+          market: r.market,
+          entitlementStatus: r.entitlementStatus,
+          kybStatus: r.kybStatus,
+          requestedAt: r.requestedAt?.toISOString() ?? null,
+          approvedAt: r.approvedAt?.toISOString() ?? null,
+          settlementCurrencies: [...MARKET_SETTLEMENT_CURRENCIES[r.market]],
+        })),
+      };
+    }
+  );
+
   app.patch(
     "/provider/merchants/:merchantId/markets/:market",
     {

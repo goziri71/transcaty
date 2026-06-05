@@ -468,10 +468,6 @@ sequenceDiagram
 
 ### Read markets (admin list)
 
-**Status today:** `PATCH` exists; **`GET /provider/merchants/:merchantId/markets` is not implemented yet.** Admin UI needs a read endpoint before the markets panel can load on page open.
-
-**Ask backend to add** (expected contract — mirror merchant portal):
-
 **GET** `/provider/merchants/:merchantId/markets`
 
 **Permission:** `merchant.read`
@@ -502,8 +498,6 @@ sequenceDiagram
 ```
 
 Same field meanings as [merchant `GET /portal/me/markets`](#list-markets). Items order: `bangladesh` → `india` → `europe`.
-
-**Interim (until GET exists):** use `GET /provider/merchants/:merchantId/overview` → `auditTrail` for `merchant.market.requested` / `provider.merchant.market_updated` events only — **not** sufficient for a full markets table; do not ship admin UI without GET.
 
 ### Approve / reject / suspend market
 
@@ -577,7 +571,7 @@ Global KYC on the same merchant detail page (`PATCH /provider/merchants/:merchan
 
 ### Admin UI — Payment markets panel
 
-**Load** (once GET exists):
+**Load:**
 
 ```typescript
 GET /provider/merchants/${merchantId}/markets
@@ -628,7 +622,7 @@ For v1, **merchant detail** driven by `requested` / `kyb_in_review` rows is enou
 ### Admin checklist
 
 - [ ] Block panel actions unless user has `merchant.kyc.write`
-- [ ] Confirm backend shipped `GET /provider/merchants/:merchantId/markets` before building load state
+- [ ] Load markets with `GET /provider/merchants/:merchantId/markets` on merchant detail open
 - [ ] Approve modal copy: wallets auto-created; merchant sees them on next portal refresh
 - [ ] Link to global KYC section on same page when `kybStatus` is `not_started` / `pending`
 - [ ] Audit: `provider.merchant.market_updated` appears in merchant overview audit trail after PATCH
