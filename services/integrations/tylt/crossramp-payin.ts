@@ -230,6 +230,22 @@ export function parseCrossRampMerchantOrderId(payload: unknown): string | undefi
   return undefined;
 }
 
+/** TL Pay manual ops completion (`manualSettlement: 1` in webhook `data`). */
+export function parseManualSettlement(payload: unknown): boolean {
+  const root = payload as Record<string, unknown> | null;
+  if (!root || typeof root !== "object") return false;
+  const data = (root.data ?? root) as Record<string, unknown>;
+  const v = data.manualSettlement ?? data.manual_settlement;
+  return v === 1 || v === true || v === "1";
+}
+
+/** Success terminal callback after TL Pay manual handling — may recover a prior `failed` row. */
+export function isTyltManualSettlementSuccessWebhook(parsed: unknown): boolean {
+  const eventId = parseCrossRampEventId(parsed);
+  if (eventId == null || !SUCCESS_EVENT_IDS.has(eventId)) return false;
+  return parseManualSettlement(parsed);
+}
+
 export function parseTransactionType(payload: unknown): string | undefined {
   const data = (payload as Record<string, unknown>)?.data as Record<string, unknown> | undefined;
   const accounts = data?.accounts as Record<string, unknown> | undefined;
@@ -557,6 +573,10 @@ export async function applyTyltCrossRampWebhookPayload(
     return null;
   }
 
+  if (tx.status === "success") {
+    return null;
+  }
+
   /** Progress-only UPI events (docs): no merchant webhook, but persist snapshot for H2H polling. */
   const callbackDecision = classifyCrossRampDecisionImpl(eventId);
   if (callbackDecision === "non_terminal" || callbackDecision === "unknown") {
@@ -579,7 +599,10 @@ export async function applyTyltCrossRampWebhookPayload(
     return null;
   }
 
-  if (tx.status !== "pending") {
+  const manualRecovery =
+    parseManualSettlement(parsed) && SUCCESS_EVENT_IDS.has(eventId) && tx.status === "failed";
+
+  if (tx.status !== "pending" && !manualRecovery) {
     return null;
   }
 
@@ -591,7 +614,7 @@ export async function applyTyltCrossRampWebhookPayload(
     merchantOrderId: tyltMerchantOrderIdForRemote,
     instanceId: tx.externalId,
   });
-  if (remote.decision !== callbackDecisionWithStatus) {
+  if (remote.decision !== callbackDecisionWithStatus && !manualRecovery) {
     await db
       .update(transactions)
       .set({
@@ -661,6 +684,10 @@ export async function applyTyltCrossRampWebhookPayload(
       currency: tx.currency,
     });
 
+    const settleFromStatus = manualRecovery
+      ? or(eq(transactions.status, "pending"), eq(transactions.status, "failed"))
+      : eq(transactions.status, "pending");
+
     const result = await db.transaction(async (txDb) => {
       const [updated] = await txDb
         .update(transactions)
@@ -669,10 +696,19 @@ export async function applyTyltCrossRampWebhookPayload(
           paidAmount,
           metadata: mergeMeta(tx.metadata, {
             disputeState: { status: "resolved", resolvedAt: new Date().toISOString(), resolution: "success" },
+            ...(manualRecovery
+              ? {
+                  manualSettlementRecovery: {
+                    at: new Date().toISOString(),
+                    eventId,
+                    previousStatus: "failed",
+                  },
+                }
+              : {}),
           }),
           updatedAt: new Date(),
         })
-        .where(and(eq(transactions.id, tx.id), eq(transactions.status, "pending")))
+        .where(and(eq(transactions.id, tx.id), settleFromStatus))
         .returning();
 
       if (!updated) {
@@ -681,6 +717,18 @@ export async function applyTyltCrossRampWebhookPayload(
 
       if (!wallet) {
         return { walletCredited: false as const };
+      }
+
+      const [existingCredit] = await txDb
+        .select({ id: ledgerEntries.id })
+        .from(ledgerEntries)
+        .where(
+          and(eq(ledgerEntries.referenceId, tx.id), eq(ledgerEntries.type, "payin"), eq(ledgerEntries.direction, "credit"))
+        )
+        .limit(1);
+
+      if (existingCredit) {
+        return { walletCredited: false as const, alreadyCredited: true as const };
       }
 
       const [lockedWallet] = await txDb
@@ -733,7 +781,13 @@ export async function applyTyltCrossRampWebhookPayload(
       action: "payment.completed",
       resource: tx.id,
       merchantId: tx.merchantId,
-      meta: { paidAmount, instanceId: tx.externalId, eventId, product: meta.tyltProduct },
+      meta: {
+        paidAmount,
+        instanceId: tx.externalId,
+        eventId,
+        product: meta.tyltProduct,
+        ...(manualRecovery ? { manualSettlement: true, previousStatus: "failed" } : {}),
+      },
     });
 
     return {

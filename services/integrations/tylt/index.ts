@@ -33,7 +33,9 @@ export {
 export {
   createTyltCrossRampPayinOrder,
   applyTyltCrossRampWebhookPayload,
+  isTyltManualSettlementSuccessWebhook,
   parseCrossRampEventId,
+  parseManualSettlement,
   parseTransactionMetadata,
   TYLT_PRODUCT_CROSSRAMP,
   TYLT_PRODUCT_H2H_UPI,

@@ -49,6 +49,7 @@ import {
   applyTyltWebhookByProductRoute,
   applyTyltWebhookByStoredRailProduct,
   extractTyltWebhookMerchantOrderId,
+  isTyltManualSettlementSuccessWebhook,
   parseCrossRampEventId,
   readTyltWebhookSignatureHeader,
   verifyTyltWebhookSignature,
@@ -1084,21 +1085,33 @@ export async function buildApp() {
       externalId: externalIdGuess,
     });
     if (claim.kind === "duplicate") {
+      if (!isTyltManualSettlementSuccessWebhook(body)) {
+        app.log.info(
+          {
+            ...tyltWebhookSummary,
+            webhookEventId: claim.eventId,
+            claim: "duplicate",
+            previousStatus: claim.previousStatus,
+          },
+          "tylt webhook duplicate (replay absorbed by webhook_events)"
+        );
+        return reply.type("text/plain").send("ok");
+      }
       app.log.info(
         {
           ...tyltWebhookSummary,
           webhookEventId: claim.eventId,
-          claim: "duplicate",
+          claim: "duplicate_manual_retry",
           previousStatus: claim.previousStatus,
         },
-        "tylt webhook duplicate (replay absorbed by webhook_events)"
+        "tylt webhook duplicate re-applying for manual settlement"
       );
-      return reply.type("text/plain").send("ok");
+    } else {
+      app.log.info(
+        { ...tyltWebhookSummary, webhookEventId: claim.eventId, claim: "fresh" },
+        "tylt webhook received (fresh)"
+      );
     }
-    app.log.info(
-      { ...tyltWebhookSummary, webhookEventId: claim.eventId, claim: "fresh" },
-      "tylt webhook received (fresh)"
-    );
     try {
       const webhook = await opts.apply(body);
       await markWebhookProcessed(claim.eventId, {
@@ -1108,7 +1121,7 @@ export async function buildApp() {
         {
           ...tyltWebhookSummary,
           webhookEventId: claim.eventId,
-          claim: "fresh",
+          claim: claim.kind === "duplicate" ? "duplicate_manual_retry" : "fresh",
           applyResult: webhook ? "applied" : "no_op",
           transactionId: webhook?.event?.transactionId ?? null,
           merchantWebhookType: webhook?.event?.type ?? null,

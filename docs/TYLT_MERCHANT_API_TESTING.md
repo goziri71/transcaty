@@ -367,6 +367,8 @@ See [§6.4](#64-h2h-upi-pay-in--create-post) and [§6.5](#65-h2h--buyer-confirms
 
 **Webhook replay vs new callback:** Set **`TYLT_WEBHOOK_DEBUG_BODY=1`** on the API service (Render env), restart, then trigger TL Pay callbacks. Logs include **`dedupeHash`**, **`tyltEventId`**, **`merchantOrderId`**, and **`claim`** (`fresh` vs `duplicate`). With debug on, **`tyltWebhookPayload`** is the exact raw JSON body — compare hashes/bodies when TL Pay resends vs pushes an updated status after manual handling. Remove the env var after debugging.
 
+**Manual settlement (India H2H / CrossRamp):** When TL Pay ops completes a trade manually, callbacks include **`data.manualSettlement: 1`** with terminal success **`event.id` 4 or 6**. If Transacty already marked the pay-in **`failed`** (e.g. expiry before manual fix), the webhook handler can **recover** to **`success`** and credit the wallet. Identical replays of the same manual-success body are **re-applied** (not dedupe-blocked) so a missed first apply can be fixed by TL Pay resending the same webhook.
+
 ### 6.5 H2H — buyer confirms payment (POST)
 
 - **Method:** POST  
