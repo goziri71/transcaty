@@ -15,6 +15,7 @@ import { sql, eq, and, count, desc } from "drizzle-orm";
 import { db } from "./src/db/index.js";
 import { getRedis } from "./src/lib/redis.js";
 import {
+  computeDedupeHash,
   markWebhookFailed,
   markWebhookProcessed,
   tryClaimWebhookEvent,
@@ -47,6 +48,8 @@ import {
 import {
   applyTyltWebhookByProductRoute,
   applyTyltWebhookByStoredRailProduct,
+  extractTyltWebhookMerchantOrderId,
+  parseCrossRampEventId,
   readTyltWebhookSignatureHeader,
   verifyTyltWebhookSignature,
   type TyltWebhookCredentialMode,
@@ -122,6 +125,8 @@ export async function buildApp() {
   const isProduction = process.env.NODE_ENV === "production";
   const debugBodyEnvSet = process.env.PAYOK_WEBHOOK_DEBUG_BODY === "1";
   const allowDebugBody = debugBodyEnvSet && !isProduction;
+  const debugTyltWebhookBodyEnvSet = process.env.TYLT_WEBHOOK_DEBUG_BODY === "1";
+  const allowTyltWebhookDebugBody = debugTyltWebhookBodyEnvSet;
   const app = Fastify({
     logger: {
       level: process.env.LOG_LEVEL ?? "info",
@@ -162,6 +167,13 @@ export async function buildApp() {
   if (debugBodyEnvSet && isProduction) {
     app.log.warn(
       "PAYOK_WEBHOOK_DEBUG_BODY is set but NODE_ENV=production; raw-body diagnostics suppressed for security."
+    );
+  }
+  if (debugTyltWebhookBodyEnvSet) {
+    app.log.warn(
+      isProduction
+        ? "TYLT_WEBHOOK_DEBUG_BODY=1: full TL Pay webhook payloads will be logged. Remove after debugging."
+        : "TYLT_WEBHOOK_DEBUG_BODY=1: full TL Pay webhook payloads will be logged."
     );
   }
 
@@ -1049,6 +1061,20 @@ export async function buildApp() {
       }
       return null;
     })();
+    const dedupeHash = computeDedupeHash(opts.rail, environment, rawBody);
+    const tyltWebhookSummary = {
+      rail: opts.rail,
+      environment,
+      dedupeHash,
+      tyltEventId: parseCrossRampEventId(body),
+      merchantOrderId: extractTyltWebhookMerchantOrderId(body),
+      externalId: externalIdGuess,
+      rawBodyLen: rawBody.length,
+      ...(allowTyltWebhookDebugBody && rawBody
+        ? { tyltWebhookPayload: rawBody }
+        : {}),
+    };
+
     const claim = await tryClaimWebhookEvent({
       rail: opts.rail,
       environment,
@@ -1059,16 +1085,36 @@ export async function buildApp() {
     });
     if (claim.kind === "duplicate") {
       app.log.info(
-        { rail: opts.rail, environment, eventId: claim.eventId, status: claim.previousStatus },
+        {
+          ...tyltWebhookSummary,
+          webhookEventId: claim.eventId,
+          claim: "duplicate",
+          previousStatus: claim.previousStatus,
+        },
         "tylt webhook duplicate (replay absorbed by webhook_events)"
       );
       return reply.type("text/plain").send("ok");
     }
+    app.log.info(
+      { ...tyltWebhookSummary, webhookEventId: claim.eventId, claim: "fresh" },
+      "tylt webhook received (fresh)"
+    );
     try {
       const webhook = await opts.apply(body);
       await markWebhookProcessed(claim.eventId, {
         transactionId: webhook?.event?.transactionId ?? null,
       });
+      app.log.info(
+        {
+          ...tyltWebhookSummary,
+          webhookEventId: claim.eventId,
+          claim: "fresh",
+          applyResult: webhook ? "applied" : "no_op",
+          transactionId: webhook?.event?.transactionId ?? null,
+          merchantWebhookType: webhook?.event?.type ?? null,
+        },
+        webhook ? "tylt webhook applied" : "tylt webhook processed (no state change)"
+      );
       if (webhook) {
         queueMerchantWebhook(webhook.merchantId, webhook.event).catch((e) =>
           app.log.warn(e, "Merchant webhook queue failed")
@@ -1076,7 +1122,16 @@ export async function buildApp() {
       }
     } catch (err) {
       await markWebhookFailed(claim.eventId, err).catch(() => {});
-      app.log.error(err);
+      app.log.error(
+        {
+          ...tyltWebhookSummary,
+          webhookEventId: claim.eventId,
+          claim: "fresh",
+          applyResult: "error",
+          err: err instanceof Error ? err.message : String(err),
+        },
+        "tylt webhook apply failed"
+      );
       return reply.status(500).type("text/plain").send("INTERNAL");
     }
     return reply.type("text/plain").send("ok");

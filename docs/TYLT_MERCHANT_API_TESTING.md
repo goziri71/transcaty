@@ -365,6 +365,8 @@ See [§6.4](#64-h2h-upi-pay-in--create-post) and [§6.5](#65-h2h--buyer-confirms
 
 **Troubleshooting upstream 400:** The server forwards `APP_BASE_URL` into Tylt’s required **`callBackUrl`** (`{APP_BASE_URL}/webhooks/tylt/h2h/{test|live}`). If `APP_BASE_URL` is **`http://localhost:...`**, Tylt may **reject** the create with **HTTP 400** (they often require a **public** webhook URL). Use **ngrok** (or your deployed API URL) in `APP_BASE_URL` for integration tests, restart the API, then retry. Check server logs for `upstream_message=` / `upstream_body=` after failures (operators only).
 
+**Webhook replay vs new callback:** Set **`TYLT_WEBHOOK_DEBUG_BODY=1`** on the API service (Render env), restart, then trigger TL Pay callbacks. Logs include **`dedupeHash`**, **`tyltEventId`**, **`merchantOrderId`**, and **`claim`** (`fresh` vs `duplicate`). With debug on, **`tyltWebhookPayload`** is the exact raw JSON body — compare hashes/bodies when TL Pay resends vs pushes an updated status after manual handling. Remove the env var after debugging.
+
 ### 6.5 H2H — buyer confirms payment (POST)
 
 - **Method:** POST  

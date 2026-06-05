@@ -30,7 +30,14 @@ export {
   type TyltWebhookCredentialMode,
   type TyltWebhookProductRoute,
 } from "./webhooks.js";
-export { createTyltCrossRampPayinOrder, applyTyltCrossRampWebhookPayload, parseTransactionMetadata, TYLT_PRODUCT_CROSSRAMP, TYLT_PRODUCT_H2H_UPI } from "./crossramp-payin.js";
+export {
+  createTyltCrossRampPayinOrder,
+  applyTyltCrossRampWebhookPayload,
+  parseCrossRampEventId,
+  parseTransactionMetadata,
+  TYLT_PRODUCT_CROSSRAMP,
+  TYLT_PRODUCT_H2H_UPI,
+} from "./crossramp-payin.js";
 export {
   createTyltH2hPayinInstance,
   getMerchantH2hPayinStatus,
