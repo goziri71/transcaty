@@ -160,7 +160,8 @@ export async function createTyltH2hPayinInstance(params: {
     tyltMerchantOrderId,
   };
 
-  const settlementCurrency: "USDT" | "INR" = params.currencySymbol === "INR" ? "INR" : "USDT";
+  /** India UPI: payer fiat may be INR; merchant wallet always settles USDT. */
+  const settlementCurrency = "USDT" as const;
 
   const [tx] = await db
     .insert(transactions)

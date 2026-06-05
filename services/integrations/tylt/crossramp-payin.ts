@@ -6,7 +6,7 @@ import { db } from "../../../src/db/index.js";
 import { transactions, wallets, ledgerEntries } from "../../../src/db/schema/index.js";
 import { audit } from "../../../src/lib/audit.js";
 import { tryApplyTransactionFee } from "../../../src/lib/billing/index.js";
-import { addAmount, normalizeMoneyAmountToTwoDecimals } from "../../../src/lib/money.js";
+import { addAmount, normalizeMoneyAmountToTwoDecimals, subAmount } from "../../../src/lib/money.js";
 import type { WebhookEvent } from "../../../src/lib/merchant-webhook.js";
 import { tyltSignedGetJson, tyltSignedPostJson } from "./client.js";
 import type { TyltMerchantEnvironment } from "./config.js";
@@ -69,8 +69,8 @@ export async function createTyltCrossRampPayinOrder(params: {
     currencySymbol: params.currencySymbol,
   };
 
-  const settlementCurrency: "USDT" | "INR" =
-    params.currencySymbol === "INR" ? "INR" : "USDT";
+  /** India UPI: payer fiat may be INR; merchant wallet always settles USDT. */
+  const settlementCurrency = "USDT" as const;
 
   const [tx] = await db
     .insert(transactions)
@@ -244,6 +244,21 @@ export function isTyltManualSettlementSuccessWebhook(parsed: unknown): boolean {
   const eventId = parseCrossRampEventId(parsed);
   if (eventId == null || !SUCCESS_EVENT_IDS.has(eventId)) return false;
   return parseManualSettlement(parsed);
+}
+
+/** Merchant wallet currency for India UPI pay-in success (INR payer leg → USDT settlement). */
+export function parseUpiPayinSettlementCurrency(payload: unknown): "USDT" | "INR" {
+  const data = extractTyltPayinDataEnvelope(payload);
+  if (!data) return "USDT";
+  const accounts = data.accounts as Record<string, unknown> | undefined;
+  const trade = data.trade as Record<string, unknown> | undefined;
+  const crypto = trade?.cryptoCurrency as Record<string, unknown> | undefined;
+  const sym = String(accounts?.cryptoCurrencySymbol ?? crypto?.symbol ?? "")
+    .trim()
+    .toUpperCase();
+  if (sym === "USDT") return "USDT";
+  if (sym === "INR") return "INR";
+  return "USDT";
 }
 
 export function parseTransactionType(payload: unknown): string | undefined {
@@ -549,6 +564,29 @@ export async function getOrCreateMerchantWallet(params: {
   return created;
 }
 
+async function findExistingPayinCredit(
+  transactionId: string
+): Promise<{ id: string; amount: string; walletId: string; currency: string } | null> {
+  const [row] = await db
+    .select({
+      id: ledgerEntries.id,
+      amount: ledgerEntries.amount,
+      walletId: ledgerEntries.walletId,
+      currency: wallets.currency,
+    })
+    .from(ledgerEntries)
+    .innerJoin(wallets, eq(wallets.id, ledgerEntries.walletId))
+    .where(
+      and(
+        eq(ledgerEntries.referenceId, transactionId),
+        eq(ledgerEntries.type, "payin"),
+        eq(ledgerEntries.direction, "credit")
+      )
+    )
+    .limit(1);
+  return row ?? null;
+}
+
 /**
  * Apply verified Tylt UPI pay-in webhook payload (CrossRamp hosted + H2H). Caller must verify HMAC first.
  * Non-terminal events return null (no merchant webhook).
@@ -570,10 +608,6 @@ export async function applyTyltCrossRampWebhookPayload(
 
   const meta = readMetadata(tx);
   if (!isTyltUpiPayinMetadata(meta)) {
-    return null;
-  }
-
-  if (tx.status === "success") {
     return null;
   }
 
@@ -599,8 +633,37 @@ export async function applyTyltCrossRampWebhookPayload(
     return null;
   }
 
-  const manualRecovery =
-    parseManualSettlement(parsed) && SUCCESS_EVENT_IDS.has(eventId) && tx.status === "failed";
+  const settlementCurrency =
+    eventId != null && SUCCESS_EVENT_IDS.has(eventId)
+      ? parseUpiPayinSettlementCurrency(parsed)
+      : tx.currency;
+
+  const existingCredit =
+    eventId != null && SUCCESS_EVENT_IDS.has(eventId)
+      ? await findExistingPayinCredit(tx.id)
+      : null;
+
+  const isManualSuccess = parseManualSettlement(parsed) && SUCCESS_EVENT_IDS.has(eventId);
+  const manualFailedRecovery = isManualSuccess && tx.status === "failed";
+  const wrongWalletRecovery =
+    isManualSuccess &&
+    tx.status === "success" &&
+    existingCredit != null &&
+    existingCredit.currency.trim().toUpperCase() !== settlementCurrency.trim().toUpperCase();
+
+  if (tx.status === "success" && !wrongWalletRecovery) {
+    if (
+      existingCredit &&
+      existingCredit.currency.trim().toUpperCase() === settlementCurrency.trim().toUpperCase()
+    ) {
+      return null;
+    }
+    if (!isManualSuccess) {
+      return null;
+    }
+  }
+
+  const manualRecovery = manualFailedRecovery || wrongWalletRecovery;
 
   if (tx.status !== "pending" && !manualRecovery) {
     return null;
@@ -681,12 +744,14 @@ export async function applyTyltCrossRampWebhookPayload(
     const wallet = await getOrCreateMerchantWallet({
       merchantId: tx.merchantId,
       environment: tx.environment,
-      currency: tx.currency,
+      currency: settlementCurrency,
     });
 
-    const settleFromStatus = manualRecovery
+    const settleFromStatus = manualFailedRecovery
       ? or(eq(transactions.status, "pending"), eq(transactions.status, "failed"))
-      : eq(transactions.status, "pending");
+      : wrongWalletRecovery
+        ? eq(transactions.status, "success")
+        : eq(transactions.status, "pending");
 
     const result = await db.transaction(async (txDb) => {
       const [updated] = await txDb
@@ -694,14 +759,23 @@ export async function applyTyltCrossRampWebhookPayload(
         .set({
           status: "success",
           paidAmount,
+          currency: settlementCurrency,
           metadata: mergeMeta(tx.metadata, {
+            settlementCurrency,
             disputeState: { status: "resolved", resolvedAt: new Date().toISOString(), resolution: "success" },
             ...(manualRecovery
               ? {
                   manualSettlementRecovery: {
                     at: new Date().toISOString(),
                     eventId,
-                    previousStatus: "failed",
+                    previousStatus: manualFailedRecovery ? "failed" : "success",
+                    ...(wrongWalletRecovery
+                      ? {
+                          wrongWalletCorrected: true,
+                          fromCurrency: existingCredit?.currency ?? null,
+                          toCurrency: settlementCurrency,
+                        }
+                      : {}),
                   },
                 }
               : {}),
@@ -719,15 +793,61 @@ export async function applyTyltCrossRampWebhookPayload(
         return { walletCredited: false as const };
       }
 
-      const [existingCredit] = await txDb
-        .select({ id: ledgerEntries.id })
+      const [existingCreditRow] = await txDb
+        .select({
+          id: ledgerEntries.id,
+          amount: ledgerEntries.amount,
+          walletId: ledgerEntries.walletId,
+          currency: wallets.currency,
+        })
         .from(ledgerEntries)
+        .innerJoin(wallets, eq(wallets.id, ledgerEntries.walletId))
         .where(
-          and(eq(ledgerEntries.referenceId, tx.id), eq(ledgerEntries.type, "payin"), eq(ledgerEntries.direction, "credit"))
+          and(
+            eq(ledgerEntries.referenceId, tx.id),
+            eq(ledgerEntries.type, "payin"),
+            eq(ledgerEntries.direction, "credit")
+          )
         )
         .limit(1);
 
-      if (existingCredit) {
+      if (
+        existingCreditRow &&
+        existingCreditRow.currency.trim().toUpperCase() === settlementCurrency.trim().toUpperCase()
+      ) {
+        return { walletCredited: false as const, alreadyCredited: true as const };
+      }
+
+      if (
+        wrongWalletRecovery &&
+        existingCreditRow &&
+        existingCreditRow.currency.trim().toUpperCase() !== settlementCurrency.trim().toUpperCase()
+      ) {
+        const [wrongWallet] = await txDb
+          .select()
+          .from(wallets)
+          .where(eq(wallets.id, existingCreditRow.walletId))
+          .for("update")
+          .limit(1);
+        if (wrongWallet) {
+          const reversalAmount = String(existingCreditRow.amount);
+          await txDb.insert(ledgerEntries).values({
+            walletId: wrongWallet.id,
+            environment: tx.environment,
+            amount: reversalAmount,
+            direction: "debit",
+            type: "payin",
+            referenceId: tx.id,
+          });
+          await txDb
+            .update(wallets)
+            .set({
+              balance: subAmount(String(wrongWallet.balance), reversalAmount),
+              updatedAt: new Date(),
+            })
+            .where(eq(wallets.id, wrongWallet.id));
+        }
+      } else if (existingCreditRow) {
         return { walletCredited: false as const, alreadyCredited: true as const };
       }
 
@@ -786,7 +906,14 @@ export async function applyTyltCrossRampWebhookPayload(
         instanceId: tx.externalId,
         eventId,
         product: meta.tyltProduct,
-        ...(manualRecovery ? { manualSettlement: true, previousStatus: "failed" } : {}),
+        ...(manualRecovery
+          ? {
+              manualSettlement: true,
+              previousStatus: manualFailedRecovery ? "failed" : "success",
+              settlementCurrency,
+              ...(wrongWalletRecovery ? { wrongWalletCorrected: true } : {}),
+            }
+          : { settlementCurrency }),
       },
     });
 

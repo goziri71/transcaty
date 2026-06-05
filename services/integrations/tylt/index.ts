@@ -36,6 +36,7 @@ export {
   isTyltManualSettlementSuccessWebhook,
   parseCrossRampEventId,
   parseManualSettlement,
+  parseUpiPayinSettlementCurrency,
   parseTransactionMetadata,
   TYLT_PRODUCT_CROSSRAMP,
   TYLT_PRODUCT_H2H_UPI,
