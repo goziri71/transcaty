@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { and, count, desc, eq, ilike, inArray } from "drizzle-orm";
+import { sanitizeIlikeSearchQuery } from "../../src/lib/security-config.js";
 import { db } from "../../src/db/index.js";
 import {
   ledgerEntries,
@@ -821,7 +822,10 @@ export async function registerProviderRoutes(app: FastifyInstance) {
       const conditions = [];
       if (status) conditions.push(eq(merchants.status, status));
       if (kycStatus) conditions.push(eq(merchants.kycStatus, kycStatus));
-      if (q) conditions.push(ilike(merchants.name, `%${q}%`));
+      if (q) {
+        const safeQ = sanitizeIlikeSearchQuery(q);
+        if (safeQ) conditions.push(ilike(merchants.name, `%${safeQ}%`));
+      }
 
       const [totalResult] = await db
         .select({ count: count() })

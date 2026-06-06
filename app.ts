@@ -15,6 +15,13 @@ import { sql, eq, and, count, desc } from "drizzle-orm";
 import { db } from "./src/db/index.js";
 import { getRedis } from "./src/lib/redis.js";
 import {
+  getAuthLoginRateLimitConfig,
+  getWebhookRateLimitConfig,
+  isAuthRateLimitPath,
+  isWebhookRoutePath,
+} from "./src/lib/security-config.js";
+import { logSecurityEvent } from "./src/lib/security-events.js";
+import {
   computeDedupeHash,
   markWebhookFailed,
   markWebhookProcessed,
@@ -127,7 +134,7 @@ export async function buildApp() {
   const debugBodyEnvSet = process.env.PAYOK_WEBHOOK_DEBUG_BODY === "1";
   const allowDebugBody = debugBodyEnvSet && !isProduction;
   const debugTyltWebhookBodyEnvSet = process.env.TYLT_WEBHOOK_DEBUG_BODY === "1";
-  const allowTyltWebhookDebugBody = debugTyltWebhookBodyEnvSet;
+  const allowTyltWebhookDebugBody = debugTyltWebhookBodyEnvSet && !isProduction;
   const app = Fastify({
     logger: {
       level: process.env.LOG_LEVEL ?? "info",
@@ -170,12 +177,12 @@ export async function buildApp() {
       "PAYOK_WEBHOOK_DEBUG_BODY is set but NODE_ENV=production; raw-body diagnostics suppressed for security."
     );
   }
-  if (debugTyltWebhookBodyEnvSet) {
+  if (debugTyltWebhookBodyEnvSet && isProduction) {
     app.log.warn(
-      isProduction
-        ? "TYLT_WEBHOOK_DEBUG_BODY=1: full TL Pay webhook payloads will be logged. Remove after debugging."
-        : "TYLT_WEBHOOK_DEBUG_BODY=1: full TL Pay webhook payloads will be logged."
+      "TYLT_WEBHOOK_DEBUG_BODY is set but NODE_ENV=production; raw-body diagnostics suppressed for security."
     );
+  } else if (debugTyltWebhookBodyEnvSet) {
+    app.log.warn("TYLT_WEBHOOK_DEBUG_BODY=1: full TL Pay webhook payloads will be logged.");
   }
 
   app.setValidatorCompiler(validatorCompiler);
@@ -289,15 +296,46 @@ export async function buildApp() {
     timeWindow: rateLimitWindow,
     nameSpace: "tx-rl:",
     continueExceeding: true,
+    onExceeded: (request) => {
+      const path = request.url.split("?")[0];
+      const event =
+        isAuthRateLimitPath(path) ? "auth.login_rate_limited" : "rate_limit.exceeded";
+      logSecurityEvent(event, { path, method: request.method });
+    },
     // When Redis is configured but unreachable, ioredis throws before /health can run;
     // skipOnError lets requests through (no distributed limit until Redis is back).
     ...(rateLimitRedis ? { redis: rateLimitRedis as never, skipOnError: true } : {}),
+  });
+  app.addHook("onRoute", (routeOptions) => {
+    const path = routeOptions.url;
+    if (typeof path !== "string") return;
+    const baseConfig =
+      typeof routeOptions.config === "object" && routeOptions.config !== null
+        ? routeOptions.config
+        : {};
+
+    if (isWebhookRoutePath(path)) {
+      routeOptions.config = {
+        ...baseConfig,
+        rateLimit: getWebhookRateLimitConfig(),
+      };
+      return;
+    }
+
+    if (isAuthRateLimitPath(path)) {
+      routeOptions.config = {
+        ...baseConfig,
+        rateLimit: getAuthLoginRateLimitConfig(),
+      };
+    }
   });
   app.log.info(
     {
       store: rateLimitRedis ? "redis" : "memory",
       max: rateLimitMax,
       window: rateLimitWindow,
+      webhookLimit: getWebhookRateLimitConfig(),
+      authLoginLimit: getAuthLoginRateLimitConfig(),
     },
     "rate-limit configured"
   );
@@ -905,6 +943,7 @@ export async function buildApp() {
         debugPayload.verifyDiagnostics = verifyDebug?.diagnostics ?? null;
       }
       app.log.warn(debugPayload, "payin webhook 401: invalid signature");
+      logSecurityEvent("webhook.signature_rejected", { path: PAYIN_WEBHOOK_PATH, rail: "payok-bd-payin" });
       return reply.status(401).send("Invalid signature");
     }
     if (debugWebhookBody && verifyDebug?.match) {
@@ -981,6 +1020,7 @@ export async function buildApp() {
         debugPayload.verifyDiagnostics = verifyDebug?.diagnostics ?? null;
       }
       app.log.warn(debugPayload, "payout webhook 401: invalid signature");
+      logSecurityEvent("webhook.signature_rejected", { path: PAYOUT_WEBHOOK_PATH, rail: "payok-bd-payout" });
       return reply.status(401).send("Invalid signature");
     }
     if (debugWebhookBody && verifyDebug?.match) {
@@ -1051,6 +1091,11 @@ export async function buildApp() {
     const sig = readTyltWebhookSignatureHeader(request.headers as Record<string, string | string[] | undefined>);
     if (!verifyTyltWebhookSignature(environment, rawBody, sig, opts.tyltWebhookCredential)) {
       app.log.warn({ path: opts.pathConstant, hasSig: !!sig, rawBodyLen: rawBody.length }, opts.rejectLogMessage);
+      logSecurityEvent("webhook.signature_rejected", {
+        path: opts.pathConstant,
+        rail: opts.rail,
+        environment,
+      });
       return reply.status(401).type("text/plain").send("Invalid signature");
     }
     const body = typeof request.body === "object" && request.body !== null ? request.body : {};
