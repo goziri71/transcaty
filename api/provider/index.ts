@@ -32,6 +32,9 @@ import { reconcileCrossRampPayinByTransactionId } from "../../services/integrati
 import { ProviderCircuitOpenError } from "../../src/lib/provider-circuit-breaker.js";
 import { queueMerchantWebhook } from "../../src/lib/merchant-webhook.js";
 import { registerProviderMerchantRiskRoutes } from "./merchant-risk.js";
+import { registerProviderMerchantOpsRoutes } from "./merchant-ops.js";
+import { providerMerchantAudit } from "../../src/lib/provider-audit.js";
+import { presentTransactionRail } from "../../src/lib/transaction-rail-label.js";
 
 const errorResponse = z.object({
   error: z.string(),
@@ -154,8 +157,23 @@ function getTransactionPayokEnvironment(metadata: string | null): PayokEnvironme
   }
 }
 
+function parseTransactionMetadata(metadata: string | null): Record<string, unknown> | null {
+  if (!metadata?.trim()) return null;
+  try {
+    return JSON.parse(metadata) as Record<string, unknown>;
+  } catch {
+    return { rawMetadata: metadata };
+  }
+}
+
+function isReviewRequired(metadata: string | null): boolean {
+  const meta = parseTransactionMetadata(metadata);
+  return meta?.reviewRequired === true;
+}
+
 export async function registerProviderRoutes(app: FastifyInstance) {
   await registerProviderMerchantRiskRoutes(app);
+  await registerProviderMerchantOpsRoutes(app);
   app.get(
     "/provider/me",
     {
@@ -1008,10 +1026,9 @@ export async function registerProviderRoutes(app: FastifyInstance) {
         .set({ status, updatedAt: new Date() })
         .where(eq(merchants.id, merchantId));
 
-      audit({
+      providerMerchantAudit(request, {
         action: "provider.merchant.status_changed",
-        actor: "provider:super_admin",
-        resource: merchantId,
+        merchantId,
         meta: { from: existing.status, to: status, reason: reason ?? null },
       });
 
@@ -1078,10 +1095,9 @@ export async function registerProviderRoutes(app: FastifyInstance) {
           .where(eq(merchantBusinessProfiles.id, profile.id));
       }
 
-      audit({
+      providerMerchantAudit(request, {
         action: "provider.merchant.kyc_changed",
-        actor: "provider:super_admin",
-        resource: merchantId,
+        merchantId,
         meta: { from: existing.kycStatus ?? "pending", to: kycStatus, reason: reason ?? null },
       });
 
@@ -1351,11 +1367,10 @@ export async function registerProviderRoutes(app: FastifyInstance) {
           .returning();
         billingMode = inserted?.billingMode ?? body.billingMode ?? "percentage_only";
       }
-      audit({
+      providerMerchantAudit(request, {
         action: "provider.merchant.pricing_changed",
-        actor: "provider:super_admin",
-        resource: merchantId,
-        meta: body,
+        merchantId,
+        meta: body as Record<string, unknown>,
       });
 
       return { id: merchantId, billingMode };
@@ -1487,11 +1502,11 @@ export async function registerProviderRoutes(app: FastifyInstance) {
         .set({ status, updatedAt: new Date() })
         .where(eq(wallets.id, walletId));
 
-      audit({
+      providerMerchantAudit(request, {
         action: "provider.customer.status_changed",
-        actor: "provider:super_admin",
+        merchantId: customer.merchantId,
         resource: walletId,
-        meta: { merchantId: customer.merchantId, from: customer.status, to: status, reason: reason ?? null },
+        meta: { from: customer.status, to: status, reason: reason ?? null },
       });
 
       return { id: walletId, status };
@@ -1585,14 +1600,13 @@ export async function registerProviderRoutes(app: FastifyInstance) {
           })
           .returning({ id: providerActionRequests.id });
 
-        audit({
+        providerMerchantAudit(request, {
           action: "provider.wallet.adjusted",
-          actor: actor.providerUserId ?? "provider:api_key",
+          merchantId: customerWallet.merchantId,
           resource: walletId,
           meta: {
             queuedOnly: true,
             walletType: "customer",
-            merchantId: customerWallet.merchantId,
             direction: body.direction,
             amount: toMoneyString(amount),
             reason: body.reason,
@@ -1649,13 +1663,12 @@ export async function registerProviderRoutes(app: FastifyInstance) {
         return reply.status(400).send({ error: "Bad Request", message: "Insufficient balance for debit" });
       }
 
-      audit({
+      providerMerchantAudit(request, {
         action: "provider.wallet.adjusted",
-        actor: "provider:super_admin",
+        merchantId: result.wallet.merchantId,
         resource: result.wallet.id,
         meta: {
           walletType: "customer",
-          merchantId: result.wallet.merchantId,
           direction: body.direction,
           amount: toMoneyString(amount),
           previousBalance: toMoneyString(result.previousBalance),
@@ -1755,10 +1768,9 @@ export async function registerProviderRoutes(app: FastifyInstance) {
           })
           .returning({ id: providerActionRequests.id });
 
-        audit({
+        providerMerchantAudit(request, {
           action: "provider.wallet.adjusted",
-          actor: actor.providerUserId ?? "provider:api_key",
-          resource: merchantId,
+          merchantId,
           meta: {
             queuedOnly: true,
             direction: body.direction,
@@ -1818,12 +1830,11 @@ export async function registerProviderRoutes(app: FastifyInstance) {
         return reply.status(400).send({ error: "Bad Request", message: "Insufficient balance for debit" });
       }
 
-      audit({
+      providerMerchantAudit(request, {
         action: "provider.wallet.adjusted",
-        actor: "provider:super_admin",
+        merchantId,
         resource: result.wallet.id,
         meta: {
-          merchantId,
           direction: body.direction,
           amount: toMoneyString(amount),
           previousBalance: toMoneyString(result.previousBalance),
@@ -1844,6 +1855,31 @@ export async function registerProviderRoutes(app: FastifyInstance) {
     }
   );
 
+  const transactionRailFieldsSchema = z.object({
+    currency: z.string(),
+    rail: z.enum(["bangladesh", "india", "europe", "internal", "unknown"]),
+    railLabel: z.string(),
+  });
+
+  const providerTransactionListItemSchema = z.object({
+    id: z.string(),
+    merchantId: z.string(),
+    merchantName: z.string(),
+    type: z.string(),
+    status: z.string(),
+    amount: z.string(),
+    paidAmount: z.string().nullable(),
+    currency: z.string(),
+    environment: z.string(),
+    provider: z.string().nullable(),
+    platformOrderId: z.string().nullable(),
+    reviewRequired: z.boolean(),
+    rail: transactionRailFieldsSchema.shape.rail,
+    railLabel: z.string(),
+    createdAt: z.string(),
+    updatedAt: z.string(),
+  });
+
   app.get(
     "/provider/transactions",
     {
@@ -1852,25 +1888,14 @@ export async function registerProviderRoutes(app: FastifyInstance) {
           merchantId: z.string().uuid().optional(),
           type: z.enum(TRANSACTION_TYPE).optional(),
           status: z.enum(TRANSACTION_STATUS).optional(),
+          environment: z.enum(["test", "live"]).optional(),
+          reviewRequired: z.coerce.boolean().optional(),
           limit: z.coerce.number().min(1).max(100).default(20),
           offset: z.coerce.number().min(0).default(0),
         }),
         response: {
           200: z.object({
-            items: z.array(
-              z.object({
-                id: z.string(),
-                merchantId: z.string(),
-                merchantName: z.string(),
-                type: z.string(),
-                status: z.string(),
-                amount: z.string(),
-                paidAmount: z.string().nullable(),
-                platformOrderId: z.string().nullable(),
-                createdAt: z.string(),
-                updatedAt: z.string(),
-              })
-            ),
+            items: z.array(providerTransactionListItemSchema),
             total: z.number(),
             limit: z.number(),
             offset: z.number(),
@@ -1881,10 +1906,12 @@ export async function registerProviderRoutes(app: FastifyInstance) {
     },
     async (request, reply) => {
       if (!ensureProviderPermission(request, reply, "tx.read")) return;
-      const { merchantId, type, status, limit, offset } = request.query as {
+      const { merchantId, type, status, environment, reviewRequired, limit, offset } = request.query as {
         merchantId?: string;
         type?: (typeof TRANSACTION_TYPE)[number];
         status?: (typeof TRANSACTION_STATUS)[number];
+        environment?: "test" | "live";
+        reviewRequired?: boolean;
         limit: number;
         offset: number;
       };
@@ -1892,6 +1919,10 @@ export async function registerProviderRoutes(app: FastifyInstance) {
       if (merchantId) conditions.push(eq(transactions.merchantId, merchantId));
       if (type) conditions.push(eq(transactions.type, type));
       if (status) conditions.push(eq(transactions.status, status));
+      if (environment) conditions.push(eq(transactions.environment, environment));
+      if (reviewRequired === true) {
+        conditions.push(ilike(transactions.metadata, '%"reviewRequired":true%'));
+      }
 
       const [totalResult] = await db
         .select({ count: count() })
@@ -1907,6 +1938,10 @@ export async function registerProviderRoutes(app: FastifyInstance) {
           status: transactions.status,
           amount: transactions.amount,
           paidAmount: transactions.paidAmount,
+          currency: transactions.currency,
+          environment: transactions.environment,
+          provider: transactions.provider,
+          metadata: transactions.metadata,
           platformOrderId: transactions.externalId,
           createdAt: transactions.createdAt,
           updatedAt: transactions.updatedAt,
@@ -1919,21 +1954,125 @@ export async function registerProviderRoutes(app: FastifyInstance) {
         .offset(offset);
 
       return {
-        items: rows.map((r) => ({
-          id: r.id,
-          merchantId: r.merchantId,
-          merchantName: r.merchantName,
-          type: r.type,
-          status: r.status,
-          amount: String(r.amount),
-          paidAmount: r.paidAmount ? String(r.paidAmount) : null,
-          platformOrderId: r.platformOrderId,
-          createdAt: r.createdAt.toISOString(),
-          updatedAt: r.updatedAt.toISOString(),
-        })),
+        items: rows.map((r) => {
+          const rail = presentTransactionRail({
+            provider: r.provider,
+            currency: r.currency,
+            metadata: r.metadata,
+          });
+          return {
+            id: r.id,
+            merchantId: r.merchantId,
+            merchantName: r.merchantName,
+            type: r.type,
+            status: r.status,
+            amount: String(r.amount),
+            paidAmount: r.paidAmount ? String(r.paidAmount) : null,
+            currency: r.currency,
+            environment: r.environment,
+            provider: r.provider,
+            platformOrderId: r.platformOrderId,
+            reviewRequired: isReviewRequired(r.metadata),
+            rail: rail.rail,
+            railLabel: rail.railLabel,
+            createdAt: r.createdAt.toISOString(),
+            updatedAt: r.updatedAt.toISOString(),
+          };
+        }),
         total: Number(totalResult?.count ?? 0),
         limit,
         offset,
+      };
+    }
+  );
+
+  app.get(
+    "/provider/transactions/:transactionId",
+    {
+      schema: {
+        params: z.object({ transactionId: z.string().uuid() }),
+        response: {
+          200: z.object({
+            id: z.string(),
+            merchantId: z.string(),
+            merchantName: z.string(),
+            walletId: z.string().nullable(),
+            type: z.string(),
+            status: z.string(),
+            amount: z.string(),
+            paidAmount: z.string().nullable(),
+            currency: z.string(),
+            environment: z.string(),
+            provider: z.string().nullable(),
+            platformOrderId: z.string().nullable(),
+            reviewRequired: z.boolean(),
+            rail: transactionRailFieldsSchema.shape.rail,
+            railLabel: z.string(),
+            metadata: z.record(z.unknown()).nullable(),
+            createdAt: z.string(),
+            updatedAt: z.string(),
+          }),
+          401: errorResponse,
+          404: errorResponse,
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!ensureProviderPermission(request, reply, "tx.read")) return;
+      const { transactionId } = request.params as { transactionId: string };
+
+      const [row] = await db
+        .select({
+          id: transactions.id,
+          merchantId: transactions.merchantId,
+          merchantName: merchants.name,
+          walletId: transactions.walletId,
+          type: transactions.type,
+          status: transactions.status,
+          amount: transactions.amount,
+          paidAmount: transactions.paidAmount,
+          currency: transactions.currency,
+          environment: transactions.environment,
+          provider: transactions.provider,
+          externalId: transactions.externalId,
+          metadata: transactions.metadata,
+          createdAt: transactions.createdAt,
+          updatedAt: transactions.updatedAt,
+        })
+        .from(transactions)
+        .innerJoin(merchants, eq(transactions.merchantId, merchants.id))
+        .where(eq(transactions.id, transactionId))
+        .limit(1);
+
+      if (!row) {
+        return reply.status(404).send({ error: "Not found", message: "Transaction not found" });
+      }
+
+      const rail = presentTransactionRail({
+        provider: row.provider,
+        currency: row.currency,
+        metadata: row.metadata,
+      });
+
+      return {
+        id: row.id,
+        merchantId: row.merchantId,
+        merchantName: row.merchantName,
+        walletId: row.walletId,
+        type: row.type,
+        status: row.status,
+        amount: String(row.amount),
+        paidAmount: row.paidAmount ? String(row.paidAmount) : null,
+        currency: row.currency,
+        environment: row.environment,
+        provider: row.provider,
+        platformOrderId: row.externalId,
+        reviewRequired: isReviewRequired(row.metadata),
+        rail: rail.rail,
+        railLabel: rail.railLabel,
+        metadata: parseTransactionMetadata(row.metadata),
+        createdAt: row.createdAt.toISOString(),
+        updatedAt: row.updatedAt.toISOString(),
       };
     }
   );
@@ -2034,13 +2173,12 @@ export async function registerProviderRoutes(app: FastifyInstance) {
           })
           .returning({ id: providerActionRequests.id });
 
-        audit({
+        providerMerchantAudit(request, {
           action: "provider.transaction.status_changed",
-          actor: actor.providerUserId ?? "provider:api_key",
+          merchantId: existing.merchantId,
           resource: transactionId,
           meta: {
             queuedOnly: true,
-            merchantId: existing.merchantId,
             type: existing.type,
             from: existing.status,
             to: body.status,
@@ -2077,12 +2215,11 @@ export async function registerProviderRoutes(app: FastifyInstance) {
         })
         .where(eq(transactions.id, transactionId));
 
-      audit({
+      providerMerchantAudit(request, {
         action: "provider.transaction.status_changed",
-        actor: "provider:super_admin",
+        merchantId: existing.merchantId,
         resource: transactionId,
         meta: {
-          merchantId: existing.merchantId,
           type: existing.type,
           from: existing.status,
           to: body.status,
@@ -2117,8 +2254,11 @@ export async function registerProviderRoutes(app: FastifyInstance) {
                 resourceId: z.string(),
                 ticketId: z.string().nullable(),
                 riskLevel: z.string(),
+                reason: z.string().nullable(),
+                rejectedReason: z.string().nullable(),
                 requestedBy: z.string().nullable(),
                 approvedBy: z.string().nullable(),
+                payload: z.record(z.unknown()),
                 createdAt: z.string(),
                 updatedAt: z.string(),
               })
@@ -2166,14 +2306,81 @@ export async function registerProviderRoutes(app: FastifyInstance) {
           resourceId: r.resourceId,
           ticketId: r.ticketId,
           riskLevel: r.riskLevel,
+          reason: r.reason,
+          rejectedReason: r.rejectedReason,
           requestedBy: r.requestedBy,
           approvedBy: r.approvedBy,
+          payload: parsePayload(r.payload),
           createdAt: r.createdAt.toISOString(),
           updatedAt: r.updatedAt.toISOString(),
         })),
         total: Number(totalResult?.count ?? 0),
         limit,
         offset,
+      };
+    }
+  );
+
+  app.get(
+    "/provider/approvals/:requestId",
+    {
+      schema: {
+        params: z.object({ requestId: z.string().uuid() }),
+        response: {
+          200: z.object({
+            id: z.string(),
+            actionType: z.string(),
+            status: z.string(),
+            resourceType: z.string(),
+            resourceId: z.string(),
+            ticketId: z.string().nullable(),
+            riskLevel: z.string(),
+            reason: z.string().nullable(),
+            rejectedReason: z.string().nullable(),
+            requestedBy: z.string().nullable(),
+            approvedBy: z.string().nullable(),
+            payload: z.record(z.unknown()),
+            executedAt: z.string().nullable(),
+            rejectedAt: z.string().nullable(),
+            createdAt: z.string(),
+            updatedAt: z.string(),
+          }),
+          401: errorResponse,
+          404: errorResponse,
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!ensureProviderPermission(request, reply, "approval.read")) return;
+      const { requestId } = request.params as { requestId: string };
+
+      const [row] = await db
+        .select()
+        .from(providerActionRequests)
+        .where(eq(providerActionRequests.id, requestId))
+        .limit(1);
+
+      if (!row) {
+        return reply.status(404).send({ error: "Not found", message: "Approval request not found" });
+      }
+
+      return {
+        id: row.id,
+        actionType: row.actionType,
+        status: row.status,
+        resourceType: row.resourceType,
+        resourceId: row.resourceId,
+        ticketId: row.ticketId,
+        riskLevel: row.riskLevel,
+        reason: row.reason,
+        rejectedReason: row.rejectedReason,
+        requestedBy: row.requestedBy,
+        approvedBy: row.approvedBy,
+        payload: parsePayload(row.payload),
+        executedAt: row.executedAt?.toISOString() ?? null,
+        rejectedAt: row.rejectedAt?.toISOString() ?? null,
+        createdAt: row.createdAt.toISOString(),
+        updatedAt: row.updatedAt.toISOString(),
       };
     }
   );
@@ -2485,9 +2692,9 @@ export async function registerProviderRoutes(app: FastifyInstance) {
         outcome.isSuccess ? "success" : "failed";
       const isMismatch = txRow.status !== suggestedLocalStatus;
 
-      audit({
+      providerMerchantAudit(request, {
         action: "provider.transaction.reconciled",
-        actor: "provider:super_admin",
+        merchantId: txRow.merchantId,
         resource: txRow.id,
         meta: {
           type: txRow.type,

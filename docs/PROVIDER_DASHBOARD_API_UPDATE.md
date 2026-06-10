@@ -294,3 +294,55 @@ Transaction + approval actions:
 - Keep drill flow:
   - dashboard -> merchant overview -> customer overview -> action modal -> refresh section data.
 - All money amounts are strings; do not parse as float in UI state logic unless necessary for display formatting.
+
+---
+
+## Provider admin expansion (June 2026)
+
+Merchant detail panels and transaction monitor upgrades for the super-admin SPA.
+
+### KYC review (read-only + document download)
+
+| Method | Path | Permission |
+|--------|------|------------|
+| GET | `/provider/merchants/:merchantId/kyc/business` | `merchant.read` |
+| GET | `/provider/merchants/:merchantId/kyc/persons` | `merchant.read` |
+| GET | `/provider/merchants/:merchantId/kyc/documents` | `merchant.read` |
+| GET | `/provider/merchants/:merchantId/kyc/documents/:documentId/download-url` | `merchant.kyc.write` |
+
+`download-url` returns `{ downloadUrl, expiresIn }` (signed Supabase URL, 1h). Requires `SUPABASE_*` env on API.
+
+### Merchant ops visibility
+
+| Method | Path | Permission |
+|--------|------|------------|
+| GET | `/provider/merchants/:merchantId/audit-log?limit&offset&action` | `merchant.read` |
+| GET | `/provider/merchants/:merchantId/webhook` | `merchant.read` |
+| GET | `/provider/merchants/:merchantId/users` | `merchant.read` |
+| GET | `/provider/merchants/:merchantId/api-keys` | `merchant.read` |
+| PATCH | `/provider/merchants/:merchantId/api-keys/:keyId` `{ status: "revoked", reason? }` | `merchant.status.write` |
+
+Webhook response: `{ webhookUrl, webhookConfigured }` (secret never exposed).
+
+Markets (unchanged): `GET/PATCH /provider/merchants/:merchantId/markets` — see `PORTAL_MARKETS_WALLETS_FRONTEND.md`.
+
+### Transactions
+
+**List** `GET /provider/transactions` — new query params:
+
+- `environment` — `test` \| `live`
+- `reviewRequired` — `true` filters pending txs flagged in metadata
+
+Each item now includes: `currency`, `environment`, `provider`, `reviewRequired`, `rail`, `railLabel`.
+
+**Detail** `GET /provider/transactions/:transactionId` — full row + parsed `metadata` object + rail fields.
+
+### Approvals
+
+**List** `GET /provider/approvals` — each item now includes `reason`, `rejectedReason`, `payload` (parsed JSON).
+
+**Detail** `GET /provider/approvals/:requestId` — full approval row including `payload`, timestamps.
+
+### Audit persistence
+
+Provider mutations (status, KYC, pricing, wallet adjust, tx status, reconcile) now write to `merchant_audit_log` when `merchantId` is known. Use `GET …/audit-log` for paginated history (replaces relying only on the 20-row snippet in overview).

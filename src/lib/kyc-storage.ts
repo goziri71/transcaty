@@ -83,3 +83,19 @@ export async function createKycUploadUrl(params: {
     expiresIn,
   };
 }
+
+/** Signed read URL for provider KYC review (short-lived). */
+export async function createKycDownloadUrl(
+  fileReference: string,
+  expiresIn = 3600
+): Promise<{ downloadUrl: string; expiresIn: number }> {
+  const client = getClient();
+  const { data, error } = await client.storage.from(BUCKET).createSignedUrl(fileReference, expiresIn);
+  if (error) {
+    throw new Error(`Supabase createSignedUrl failed: ${error.message}`);
+  }
+  if (!data?.signedUrl) {
+    throw new Error("Supabase createSignedUrl returned invalid response");
+  }
+  return { downloadUrl: data.signedUrl, expiresIn };
+}
