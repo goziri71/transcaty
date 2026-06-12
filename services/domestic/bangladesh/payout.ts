@@ -392,7 +392,8 @@ export async function handlePayoutCallback(body: {
         and(
           eq(wallets.merchantId, tx.merchantId),
           eq(wallets.environment, tx.environment),
-          eq(wallets.type, "merchant")
+          eq(wallets.type, "merchant"),
+          eq(wallets.currency, "BDT")
         )
       )
       .for("update")

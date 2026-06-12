@@ -154,7 +154,9 @@ export async function handlePayinCallback(body: {
       return { applied: false as const };
     }
 
-    const [wallet] = await txDb
+    const settlementCurrency = tx.currency.trim().toUpperCase() || "BDT";
+
+    let [wallet] = await txDb
       .select()
       .from(wallets)
       .where(
@@ -162,6 +164,7 @@ export async function handlePayinCallback(body: {
           eq(wallets.merchantId, tx.merchantId),
           eq(wallets.environment, tx.environment),
           eq(wallets.type, "merchant"),
+          eq(wallets.currency, settlementCurrency),
           eq(wallets.status, "active")
         )
       )
@@ -169,7 +172,21 @@ export async function handlePayinCallback(body: {
       .limit(1);
 
     if (!wallet) {
-      return { applied: true as const, walletCredited: false };
+      const [created] = await txDb
+        .insert(wallets)
+        .values({
+          merchantId: tx.merchantId,
+          environment: tx.environment,
+          type: "merchant",
+          currency: settlementCurrency,
+          balance: "0",
+          status: "active",
+        })
+        .returning();
+      if (!created) {
+        return { applied: true as const, walletCredited: false };
+      }
+      wallet = created;
     }
 
     await txDb.insert(ledgerEntries).values({

@@ -3,6 +3,10 @@
  * LOCKED: Do not modify for Nigeria, Kenya, or unrelated features.
  */
 export { createPayinOrder, handlePayinCallback } from "./payin.js";
+export {
+  reconcilePayokPayinByTransactionId,
+  repairMisCreditedPayinWallet,
+} from "./payin-reconcile.js";
 export { createPayoutOrder, handlePayoutCallback } from "./payout.js";
 export { payokBalanceQuery } from "./provider/client.js";
 export { getPayokConfig, getPayokCallbackPublicKeys } from "./provider/config.js";

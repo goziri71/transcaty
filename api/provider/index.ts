@@ -28,6 +28,7 @@ import {
   requireProviderStepUp,
 } from "../../src/lib/provider-auth.js";
 import { getDefaultPayokEnvironment, type PayokEnvironment } from "../../services/domestic/bangladesh/provider/config.js";
+import { reconcilePayokPayinByTransactionId } from "../../services/domestic/bangladesh/payin-reconcile.js";
 import { reconcileCrossRampPayinByTransactionId } from "../../services/integrations/tylt/index.js";
 import { ProviderCircuitOpenError } from "../../src/lib/provider-circuit-breaker.js";
 import { queueMerchantWebhook } from "../../src/lib/merchant-webhook.js";
@@ -2815,6 +2816,108 @@ export async function registerProviderRoutes(app: FastifyInstance) {
           });
         }
         throw err;
+      }
+    }
+  );
+
+  app.post(
+    "/provider/payok/payin/reconcile",
+    {
+      schema: {
+        body: z.object({ transactionId: z.string().uuid() }),
+        response: {
+          200: z.object({
+            outcome: z.enum(["finalized", "not_terminal", "skipped"]),
+            transactionId: z.string(),
+            detail: z.string().optional(),
+            reason: z.enum(["already_terminal", "wrong_rail"]).optional(),
+            payokCode: z.string().nullable().optional(),
+            payokStatus: z.string().nullable().optional(),
+            merchantWebhookQueued: z.boolean().optional(),
+          }),
+          400: errorResponse,
+          401: errorResponse,
+          404: errorResponse,
+          502: errorResponse,
+          500: errorResponse,
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!ensureProviderPermission(request, reply, "tx.reconcile")) return;
+      const body = request.body as { transactionId: string };
+      try {
+        const result = await reconcilePayokPayinByTransactionId(body.transactionId);
+        if (result.outcome === "error") {
+          if (result.detail === "transaction_not_found") {
+            return reply.status(404).send({ error: "Not found", message: "Transaction not found" });
+          }
+          if (result.detail === "not_payin") {
+            return reply.status(400).send({ error: "Bad Request", message: "Transaction is not a pay-in" });
+          }
+          return reply.status(502).send({
+            error: "Bad Gateway",
+            message: `Payok reconcile failed: ${result.detail}`,
+          });
+        }
+        if (result.outcome === "skipped") {
+          if (result.reason === "wrong_rail") {
+            return reply.status(400).send({
+              error: "Bad Request",
+              message: "Not a Bangladesh Payok pay-in transaction",
+            });
+          }
+          return reply.status(200).send({
+            outcome: "skipped",
+            transactionId: result.transactionId,
+            reason: result.reason,
+          });
+        }
+        if (result.outcome === "finalized") {
+          if (result.merchantWebhook) {
+            queueMerchantWebhook(result.merchantWebhook.merchantId, result.merchantWebhook.event).catch((e) =>
+              request.log.warn(e, "merchant webhook queue failed after Payok reconcile")
+            );
+          }
+          audit({
+            action: "provider.payok.payin.reconcile",
+            actor: request.provider?.providerUserId ?? "provider:api_key",
+            resource: body.transactionId,
+            meta: {
+              outcome: "finalized",
+              payokCode: result.payokCode ?? null,
+              payokStatus: result.payokStatus ?? null,
+            },
+          });
+          return reply.status(200).send({
+            outcome: "finalized",
+            transactionId: result.transactionId,
+            payokCode: result.payokCode ?? null,
+            payokStatus: result.payokStatus ?? null,
+            merchantWebhookQueued: Boolean(result.merchantWebhook),
+          });
+        }
+        audit({
+          action: "provider.payok.payin.reconcile",
+          actor: request.provider?.providerUserId ?? "provider:api_key",
+          resource: body.transactionId,
+          meta: {
+            outcome: "not_terminal",
+            payokCode: result.payokCode ?? null,
+            payokStatus: result.payokStatus ?? null,
+            detail: result.detail,
+          },
+        });
+        return reply.status(200).send({
+          outcome: "not_terminal",
+          transactionId: result.transactionId,
+          payokCode: result.payokCode ?? null,
+          payokStatus: result.payokStatus ?? null,
+          detail: result.detail,
+        });
+      } catch (err) {
+        request.log.error(err);
+        return reply.status(500).send({ error: "Internal Server Error" });
       }
     }
   );

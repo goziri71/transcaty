@@ -28,6 +28,7 @@ export type AuditAction =
   | "provider.transaction.status_changed"
   | "provider.transaction.reconciled"
   | "provider.tylt.crossramp.reconcile"
+  | "provider.payok.payin.reconcile"
   | "provider.tylt.internal_transfer.completed"
   | "provider.tylt.internal_transfer.failed"
   | "billing.fee_applied"

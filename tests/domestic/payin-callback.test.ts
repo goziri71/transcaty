@@ -114,6 +114,106 @@ test("handlePayinCallback is idempotent across duplicate callbacks", { skip }, a
   }
 });
 
+test("handlePayinCallback credits BDT wallet when INR wallet also exists", { skip }, async () => {
+  const { db } = await import("../../src/db/index.js");
+  const { handlePayinCallback } = await import(
+    "../../services/domestic/bangladesh/payin.js"
+  );
+  const { merchants, wallets, transactions, ledgerEntries } = await import(
+    "../../src/db/schema/index.js"
+  );
+
+  const [merchant] = await db
+    .insert(merchants)
+    .values({
+      name: `test-payin-multi-${randomUUID().slice(0, 8)}`,
+      status: "active",
+      kycStatus: "verified",
+    })
+    .returning();
+  assert.ok(merchant);
+
+  const [inrWallet] = await db
+    .insert(wallets)
+    .values({
+      merchantId: merchant.id,
+      type: "merchant",
+      environment: "test",
+      balance: "500.00",
+      currency: "INR",
+      status: "active",
+    })
+    .returning();
+  assert.ok(inrWallet);
+
+  const [bdtWallet] = await db
+    .insert(wallets)
+    .values({
+      merchantId: merchant.id,
+      type: "merchant",
+      environment: "test",
+      balance: "0.00",
+      currency: "BDT",
+      status: "active",
+    })
+    .returning();
+  assert.ok(bdtWallet);
+
+  const [tx] = await db
+    .insert(transactions)
+    .values({
+      merchantId: merchant.id,
+      environment: "test",
+      type: "payin",
+      status: "pending",
+      amount: "500.00",
+      currency: "BDT",
+    })
+    .returning();
+  assert.ok(tx);
+
+  try {
+    const result = await handlePayinCallback({
+      code: "SUCCESS",
+      status: "SUCCESS",
+      merchantOrderId: tx.id,
+      paidAmount: "500.00",
+    });
+    assert.ok(result);
+
+    const [bdtAfter] = await db
+      .select()
+      .from(wallets)
+      .where(eq(wallets.id, bdtWallet.id))
+      .limit(1);
+    const [inrAfter] = await db
+      .select()
+      .from(wallets)
+      .where(eq(wallets.id, inrWallet.id))
+      .limit(1);
+
+    assert.equal(bdtAfter?.balance, "500.00", "BDT wallet must receive pay-in credit");
+    assert.equal(inrAfter?.balance, "500.00", "INR wallet must be unchanged");
+
+    const [ledger] = await db
+      .select()
+      .from(ledgerEntries)
+      .where(
+        and(
+          eq(ledgerEntries.referenceId, tx.id),
+          eq(ledgerEntries.type, "payin")
+        )
+      );
+    assert.equal(ledger.length, 1);
+    assert.equal(ledger[0]?.walletId, bdtWallet.id);
+  } finally {
+    await db.delete(ledgerEntries).where(eq(ledgerEntries.referenceId, tx.id));
+    await db.delete(transactions).where(eq(transactions.id, tx.id));
+    await db.delete(wallets).where(eq(wallets.merchantId, merchant.id));
+    await db.delete(merchants).where(eq(merchants.id, merchant.id));
+  }
+});
+
 test("handlePayinCallback marks transaction failed when provider reports failure", { skip }, async () => {
   const { db } = await import("../../src/db/index.js");
   const { handlePayinCallback } = await import(
