@@ -307,10 +307,26 @@ You need balance first. If balance is 0, see "Quick Test: Add Balance" below.
   "status": "pending",
   "amount": "100",
   "platformOrderId": "...",
-  "recipient": { "masked": "****5678" },
+  "recipient": {
+    "benificiaryAccountInfo": {
+      "number": "01712345678",
+      "orgId": "BKASH",
+      "orgCode": "BKASH",
+      "orgName": "BKASH",
+      "holderName": "John Doe"
+    },
+    "cardHolderInfo": {
+      "firstName": "John",
+      "lastName": "Doe",
+      "email": "john@example.com",
+      "phone": "01712345678"
+    }
+  },
   "estimatedCompletion": "..."
 }
 ```
+
+Full recipient details are echoed back so the merchant can store and reconcile payouts on their side.
 
 **Save the `transactionId`** for the next step.
 
@@ -333,13 +349,27 @@ You need balance first. If balance is 0, see "Quick Test: Add Balance" below.
   "status": "pending",
   "amount": "100",
   "platformOrderId": "...",
-  "recipient": { "masked": "****5678" },
+  "recipient": {
+    "benificiaryAccountInfo": {
+      "number": "01712345678",
+      "orgId": "BKASH",
+      "orgCode": "BKASH",
+      "orgName": "BKASH",
+      "holderName": "John Doe"
+    },
+    "cardHolderInfo": {
+      "firstName": "John",
+      "lastName": "Doe",
+      "email": "john@example.com",
+      "phone": "01712345678"
+    }
+  },
   "createdAt": "...",
   "completedAt": null
 }
 ```
 
-When Payok completes the payout, `status` becomes `success`.
+`recipient` is `null` only for legacy payouts created before recipient metadata was stored. When Payok completes the payout, `status` becomes `success`.
 
 ---
 

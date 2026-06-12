@@ -183,6 +183,7 @@ export async function createPayoutOrder(params: {
         provider: "payok-bd-payout",
         metadata: JSON.stringify({
           benificiaryAccountInfo: params.benificiaryAccountInfo,
+          cardHolderInfo: params.cardHolderInfo,
           environment: params.environment,
         }),
       })

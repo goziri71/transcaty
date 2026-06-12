@@ -29,6 +29,10 @@ import {
 } from "./src/lib/webhook-events.js";
 import { withIdempotency } from "./src/lib/idempotency.js";
 import {
+  merchantPayoutRecipientSchema,
+  parsePayoutRecipientFromMetadata,
+} from "./src/lib/merchant-payout-recipient.js";
+import {
   wallets,
   transactions,
   merchants,
@@ -2724,7 +2728,7 @@ export async function buildApp() {
             status: z.string(),
             amount: z.string(),
             platformOrderId: z.string().optional(),
-            recipient: z.object({ masked: z.string() }),
+            recipient: merchantPayoutRecipientSchema,
             estimatedCompletion: z.string().nullable().optional(),
           }),
           400: merchantFacingError,
@@ -2759,14 +2763,15 @@ export async function buildApp() {
               benificiaryAccountInfo: body.benificiaryAccountInfo,
               cardHolderInfo: body.cardHolderInfo,
             });
-            const num = body.benificiaryAccountInfo.number;
-            const masked = num.length > 4 ? `****${num.slice(-4)}` : "****";
             const estimatedCompletion = new Date(Date.now() + 5 * 60 * 1000).toISOString();
             return {
               ...result,
               status: result.status ?? "pending",
               amount: body.amount,
-              recipient: { masked },
+              recipient: {
+                benificiaryAccountInfo: body.benificiaryAccountInfo,
+                cardHolderInfo: body.cardHolderInfo,
+              },
               estimatedCompletion,
             };
           }
@@ -3098,7 +3103,7 @@ export async function buildApp() {
             status: z.string(),
             amount: z.string(),
             platformOrderId: z.string().nullable(),
-            recipient: z.object({ masked: z.string() }),
+            recipient: merchantPayoutRecipientSchema.nullable(),
             createdAt: z.string(),
             completedAt: z.string().nullable(),
           }),
@@ -3132,16 +3137,13 @@ export async function buildApp() {
         )
         .limit(1);
       if (!tx) return reply.status(404).send({ error: "Not found" });
-      const meta = tx.metadata ? (JSON.parse(tx.metadata) as { benificiaryAccountInfo?: { number?: string } }) : {};
-      const num = meta.benificiaryAccountInfo?.number ?? "";
-      const masked = num.length > 4 ? `****${num.slice(-4)}` : "****";
       return {
         id: tx.id,
         transactionId: tx.id,
         status: tx.status,
         amount: String(tx.amount),
         platformOrderId: tx.externalId ?? null,
-        recipient: { masked },
+        recipient: parsePayoutRecipientFromMetadata(tx.metadata),
         createdAt: tx.createdAt.toISOString(),
         completedAt: tx.status === "success" ? tx.updatedAt.toISOString() : null,
       };
