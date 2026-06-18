@@ -1,0 +1,734 @@
+/**
+ * Provider admin: FX rate profiles, merchant FX overrides, fee schedules, IP allowlists.
+ */
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import { z } from "zod";
+import { and, desc, eq, isNull } from "drizzle-orm";
+import { db } from "../../src/db/index.js";
+import {
+  fxRateProfiles,
+  merchantApiIpRules,
+  merchantFeeSchedules,
+  merchantFxOverrides,
+  merchants,
+} from "../../src/db/schema/index.js";
+import {
+  canProviderAccess,
+  canProviderActionContext,
+  requireProviderStepUp,
+  type ProviderPermission,
+} from "../../src/lib/provider-auth.js";
+import { providerMerchantAudit } from "../../src/lib/provider-audit.js";
+import { validateCidrList, normalizeCidrList } from "../../src/lib/ip-cidr.js";
+import { invalidateMerchantIpRuleCache } from "../../src/lib/merchant-ip-whitelist.js";
+import { applySpreadToCryptoAmount } from "../../src/lib/fx/spread.js";
+import { resolveFxSpread } from "../../src/lib/fx/rate-resolver.js";
+
+const errorResponse = z.object({
+  error: z.string(),
+  message: z.string().optional(),
+  code: z.string().optional(),
+});
+
+const FX_PRODUCT = ["cpg_payout", "eur_payout"] as const;
+const FEE_RAIL = ["bangladesh", "india", "europe", "cpg_crypto"] as const;
+const FEE_TYPE = ["payin", "payout"] as const;
+const ENV = ["test", "live"] as const;
+
+function ensurePermission(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  permission: ProviderPermission
+): boolean {
+  const actor = request.provider;
+  if (!actor) {
+    reply.status(401).send({ error: "Unauthorized" });
+    return false;
+  }
+  if (!canProviderActionContext(actor, permission)) {
+    const message =
+      actor.authType === "api_key" && !canProviderAccess(actor.role, permission)
+        ? "Insufficient role permission"
+        : actor.authType === "api_key"
+          ? "API-key sessions cannot perform this action; use a JWT session with MFA"
+          : "Insufficient permission";
+    reply.status(403).send({ error: "Forbidden", message });
+    return false;
+  }
+  return true;
+}
+
+async function ensureMerchantExists(merchantId: string, reply: FastifyReply): Promise<boolean> {
+  const [m] = await db.select({ id: merchants.id }).from(merchants).where(eq(merchants.id, merchantId)).limit(1);
+  if (!m) {
+    reply.status(404).send({ error: "Not found", message: "Merchant not found" });
+    return false;
+  }
+  return true;
+}
+
+const fxProfileSchema = z.object({
+  id: z.string(),
+  product: z.enum(FX_PRODUCT),
+  settledCurrency: z.string(),
+  networkSymbol: z.string().nullable(),
+  quoteCurrency: z.string().nullable(),
+  source: z.string(),
+  manualRate: z.string().nullable(),
+  spreadBps: z.number(),
+  spreadMode: z.string(),
+  effectiveFrom: z.string(),
+  effectiveTo: z.string().nullable(),
+  status: z.string(),
+  createdBy: z.string().nullable(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+
+export async function registerProviderAdminConfigRoutes(app: FastifyInstance) {
+  app.get(
+    "/provider/fx-rate-profiles",
+    {
+      schema: {
+        querystring: z.object({
+          product: z.enum(FX_PRODUCT).optional(),
+          settledCurrency: z.string().optional(),
+          status: z.enum(["active", "archived"]).optional(),
+          limit: z.coerce.number().min(1).max(100).default(50),
+        }),
+        response: {
+          200: z.object({ items: z.array(fxProfileSchema) }),
+          401: errorResponse,
+          403: errorResponse,
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!ensurePermission(request, reply, "merchant.rates.read")) return;
+      const q = request.query as {
+        product?: (typeof FX_PRODUCT)[number];
+        settledCurrency?: string;
+        status?: string;
+        limit: number;
+      };
+      const conditions = [];
+      if (q.product) conditions.push(eq(fxRateProfiles.product, q.product));
+      if (q.settledCurrency) conditions.push(eq(fxRateProfiles.settledCurrency, q.settledCurrency.trim().toUpperCase()));
+      if (q.status) conditions.push(eq(fxRateProfiles.status, q.status));
+
+      const rows = await db
+        .select()
+        .from(fxRateProfiles)
+        .where(conditions.length ? and(...conditions) : undefined)
+        .orderBy(desc(fxRateProfiles.effectiveFrom))
+        .limit(q.limit);
+
+      return {
+        items: rows.map((r) => ({
+          id: r.id,
+          product: r.product as (typeof FX_PRODUCT)[number],
+          settledCurrency: r.settledCurrency,
+          networkSymbol: r.networkSymbol,
+          quoteCurrency: r.quoteCurrency,
+          source: r.source,
+          manualRate: r.manualRate != null ? String(r.manualRate) : null,
+          spreadBps: r.spreadBps,
+          spreadMode: r.spreadMode,
+          effectiveFrom: r.effectiveFrom.toISOString(),
+          effectiveTo: r.effectiveTo?.toISOString() ?? null,
+          status: r.status,
+          createdBy: r.createdBy,
+          createdAt: r.createdAt.toISOString(),
+          updatedAt: r.updatedAt.toISOString(),
+        })),
+      };
+    }
+  );
+
+  app.post(
+    "/provider/fx-rate-profiles",
+    {
+      schema: {
+        body: z.object({
+          product: z.enum(FX_PRODUCT),
+          settledCurrency: z.string().min(2).max(8),
+          networkSymbol: z.string().optional().nullable(),
+          quoteCurrency: z.string().optional().nullable(),
+          source: z.enum(["manual_fixed", "upstream_mirror"]).default("manual_fixed"),
+          manualRate: z.string().optional().nullable(),
+          spreadBps: z.number().int().min(0).max(10_000).default(0),
+          spreadMode: z.enum(["on_output", "on_rate"]).default("on_output"),
+          effectiveFrom: z.string().datetime().optional(),
+          effectiveTo: z.string().datetime().optional().nullable(),
+        }),
+        response: { 201: fxProfileSchema, 401: errorResponse, 403: errorResponse },
+      },
+    },
+    async (request, reply) => {
+      if (!ensurePermission(request, reply, "merchant.rates.write")) return;
+      if (!(await requireProviderStepUp(request, reply, "merchant.rates.write"))) return;
+      const body = request.body as {
+        product: (typeof FX_PRODUCT)[number];
+        settledCurrency: string;
+        networkSymbol?: string | null;
+        quoteCurrency?: string | null;
+        source: "manual_fixed" | "upstream_mirror";
+        manualRate?: string | null;
+        spreadBps: number;
+        spreadMode: "on_output" | "on_rate";
+        effectiveFrom?: string;
+        effectiveTo?: string | null;
+      };
+      const actor = request.provider?.email ?? request.provider?.providerUserId ?? "provider";
+      const [row] = await db
+        .insert(fxRateProfiles)
+        .values({
+          product: body.product,
+          settledCurrency: String(body.settledCurrency).trim().toUpperCase(),
+          networkSymbol: body.networkSymbol?.trim() || null,
+          quoteCurrency: body.quoteCurrency?.trim()?.toUpperCase() || null,
+          source: body.source,
+          manualRate: body.manualRate ?? null,
+          spreadBps: body.spreadBps,
+          spreadMode: body.spreadMode,
+          effectiveFrom: body.effectiveFrom ? new Date(body.effectiveFrom) : new Date(),
+          effectiveTo: body.effectiveTo ? new Date(body.effectiveTo) : null,
+          status: "active",
+          createdBy: actor,
+        })
+        .returning();
+      if (!row) throw new Error("Failed to create FX rate profile");
+      return reply.status(201).send({
+        id: row.id,
+        product: row.product as (typeof FX_PRODUCT)[number],
+        settledCurrency: row.settledCurrency,
+        networkSymbol: row.networkSymbol,
+        quoteCurrency: row.quoteCurrency,
+        source: row.source,
+        manualRate: row.manualRate != null ? String(row.manualRate) : null,
+        spreadBps: row.spreadBps,
+        spreadMode: row.spreadMode,
+        effectiveFrom: row.effectiveFrom.toISOString(),
+        effectiveTo: row.effectiveTo?.toISOString() ?? null,
+        status: row.status,
+        createdBy: row.createdBy,
+        createdAt: row.createdAt.toISOString(),
+        updatedAt: row.updatedAt.toISOString(),
+      });
+    }
+  );
+
+  app.patch(
+    "/provider/fx-rate-profiles/:id",
+    {
+      schema: {
+        params: z.object({ id: z.string().uuid() }),
+        body: z.object({
+          spreadBps: z.number().int().min(0).max(10_000).optional(),
+          manualRate: z.string().optional().nullable(),
+          status: z.enum(["active", "archived"]).optional(),
+          effectiveTo: z.string().datetime().optional().nullable(),
+        }),
+        response: { 200: fxProfileSchema, 404: errorResponse, 401: errorResponse, 403: errorResponse },
+      },
+    },
+    async (request, reply) => {
+      if (!ensurePermission(request, reply, "merchant.rates.write")) return;
+      if (!(await requireProviderStepUp(request, reply, "merchant.rates.write"))) return;
+      const { id } = request.params as { id: string };
+      const body = request.body as Record<string, unknown>;
+      const patch: Record<string, unknown> = { updatedAt: new Date() };
+      if (body.spreadBps != null) patch.spreadBps = body.spreadBps;
+      if (body.manualRate !== undefined) patch.manualRate = body.manualRate;
+      if (body.status != null) patch.status = body.status;
+      if (body.effectiveTo !== undefined) {
+        patch.effectiveTo = body.effectiveTo ? new Date(body.effectiveTo as string) : null;
+      }
+      const [row] = await db.update(fxRateProfiles).set(patch).where(eq(fxRateProfiles.id, id)).returning();
+      if (!row) return reply.status(404).send({ error: "Not found", message: "Rate profile not found" });
+      return {
+        id: row.id,
+        product: row.product as (typeof FX_PRODUCT)[number],
+        settledCurrency: row.settledCurrency,
+        networkSymbol: row.networkSymbol,
+        quoteCurrency: row.quoteCurrency,
+        source: row.source,
+        manualRate: row.manualRate != null ? String(row.manualRate) : null,
+        spreadBps: row.spreadBps,
+        spreadMode: row.spreadMode,
+        effectiveFrom: row.effectiveFrom.toISOString(),
+        effectiveTo: row.effectiveTo?.toISOString() ?? null,
+        status: row.status,
+        createdBy: row.createdBy,
+        createdAt: row.createdAt.toISOString(),
+        updatedAt: row.updatedAt.toISOString(),
+      };
+    }
+  );
+
+  app.post(
+    "/provider/fx-rate-profiles/preview-quote",
+    {
+      schema: {
+        body: z.object({
+          product: z.enum(FX_PRODUCT),
+          amount: z.string(),
+          settledCurrency: z.string(),
+          networkSymbol: z.string().optional().nullable(),
+          merchantId: z.string().uuid().optional(),
+          environment: z.enum(ENV).default("test"),
+        }),
+        response: {
+          200: z.object({
+            baseAmount: z.string(),
+            spreadBps: z.number(),
+            spreadAmount: z.string(),
+            totalDebit: z.string(),
+            disabled: z.boolean(),
+          }),
+          401: errorResponse,
+          403: errorResponse,
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!ensurePermission(request, reply, "merchant.rates.read")) return;
+      const body = request.body as {
+        product: (typeof FX_PRODUCT)[number];
+        amount: string;
+        settledCurrency: string;
+        networkSymbol?: string | null;
+        merchantId?: string;
+        environment: (typeof ENV)[number];
+      };
+      const resolved = body.merchantId
+        ? await resolveFxSpread({
+            merchantId: body.merchantId,
+            environment: body.environment,
+            product: body.product,
+            settledCurrency: body.settledCurrency,
+            networkSymbol: body.networkSymbol,
+          })
+        : null;
+      const spreadBps = resolved?.spreadBps ?? 0;
+      if (resolved?.disabled) {
+        return { baseAmount: body.amount, spreadBps: 0, spreadAmount: "0.00", totalDebit: body.amount, disabled: true };
+      }
+      const spread = applySpreadToCryptoAmount(body.amount, spreadBps);
+      return { ...spread, spreadBps, disabled: false };
+    }
+  );
+
+  app.get(
+    "/provider/merchants/:merchantId/fx-overrides",
+    {
+      schema: {
+        params: z.object({ merchantId: z.string().uuid() }),
+        querystring: z.object({ environment: z.enum(ENV).optional() }),
+        response: {
+          200: z.object({
+            items: z.array(
+              z.object({
+                id: z.string(),
+                environment: z.enum(ENV),
+                product: z.enum(FX_PRODUCT),
+                settledCurrency: z.string(),
+                networkSymbol: z.string().nullable(),
+                spreadBpsOverride: z.number().nullable(),
+                manualRateOverride: z.string().nullable(),
+                disabled: z.boolean(),
+                effectiveFrom: z.string(),
+                effectiveTo: z.string().nullable(),
+              })
+            ),
+          }),
+          401: errorResponse,
+          403: errorResponse,
+          404: errorResponse,
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!ensurePermission(request, reply, "merchant.rates.read")) return;
+      const { merchantId } = request.params as { merchantId: string };
+      if (!(await ensureMerchantExists(merchantId, reply))) return;
+      const { environment } = request.query as { environment?: (typeof ENV)[number] };
+      const conditions = [eq(merchantFxOverrides.merchantId, merchantId)];
+      if (environment) conditions.push(eq(merchantFxOverrides.environment, environment));
+      const rows = await db
+        .select()
+        .from(merchantFxOverrides)
+        .where(and(...conditions))
+        .orderBy(desc(merchantFxOverrides.updatedAt));
+      return {
+        items: rows.map((r) => ({
+          id: r.id,
+          environment: r.environment as (typeof ENV)[number],
+          product: r.product as (typeof FX_PRODUCT)[number],
+          settledCurrency: r.settledCurrency,
+          networkSymbol: r.networkSymbol,
+          spreadBpsOverride: r.spreadBpsOverride,
+          manualRateOverride: r.manualRateOverride != null ? String(r.manualRateOverride) : null,
+          disabled: r.disabled,
+          effectiveFrom: r.effectiveFrom.toISOString(),
+          effectiveTo: r.effectiveTo?.toISOString() ?? null,
+        })),
+      };
+    }
+  );
+
+  app.put(
+    "/provider/merchants/:merchantId/fx-overrides",
+    {
+      schema: {
+        params: z.object({ merchantId: z.string().uuid() }),
+        body: z.object({
+          environment: z.enum(ENV),
+          product: z.enum(FX_PRODUCT),
+          settledCurrency: z.string(),
+          networkSymbol: z.string().optional().nullable(),
+          spreadBpsOverride: z.number().int().min(0).max(10_000).optional().nullable(),
+          manualRateOverride: z.string().optional().nullable(),
+          disabled: z.boolean().optional(),
+          effectiveFrom: z.string().datetime().optional(),
+          effectiveTo: z.string().datetime().optional().nullable(),
+        }),
+        response: { 200: z.object({ id: z.string() }), 401: errorResponse, 403: errorResponse, 404: errorResponse },
+      },
+    },
+    async (request, reply) => {
+      if (!ensurePermission(request, reply, "merchant.rates.write")) return;
+      if (!(await requireProviderStepUp(request, reply, "merchant.rates.write"))) return;
+      const { merchantId } = request.params as { merchantId: string };
+      if (!(await ensureMerchantExists(merchantId, reply))) return;
+      const body = request.body as Record<string, unknown>;
+      const currency = String(body.settledCurrency).trim().toUpperCase();
+      const network = (body.networkSymbol as string | null | undefined)?.trim() || null;
+
+      const [existing] = await db
+        .select()
+        .from(merchantFxOverrides)
+        .where(
+          and(
+            eq(merchantFxOverrides.merchantId, merchantId),
+            eq(merchantFxOverrides.environment, body.environment as string),
+            eq(merchantFxOverrides.product, body.product as string),
+            eq(merchantFxOverrides.settledCurrency, currency),
+            network
+              ? eq(merchantFxOverrides.networkSymbol, network)
+              : isNull(merchantFxOverrides.networkSymbol)
+          )
+        )
+        .limit(1);
+
+      let id: string;
+      if (existing) {
+        const [updated] = await db
+          .update(merchantFxOverrides)
+          .set({
+            spreadBpsOverride: (body.spreadBpsOverride as number | null | undefined) ?? null,
+            manualRateOverride: (body.manualRateOverride as string | null | undefined) ?? null,
+            disabled: (body.disabled as boolean | undefined) ?? existing.disabled,
+            effectiveFrom: body.effectiveFrom ? new Date(body.effectiveFrom as string) : existing.effectiveFrom,
+            effectiveTo:
+              body.effectiveTo !== undefined
+                ? body.effectiveTo
+                  ? new Date(body.effectiveTo as string)
+                  : null
+                : existing.effectiveTo,
+            updatedAt: new Date(),
+          })
+          .where(eq(merchantFxOverrides.id, existing.id))
+          .returning({ id: merchantFxOverrides.id });
+        id = updated!.id;
+      } else {
+        const [inserted] = await db
+          .insert(merchantFxOverrides)
+          .values({
+            merchantId,
+            environment: body.environment as string,
+            product: body.product as string,
+            settledCurrency: currency,
+            networkSymbol: network,
+            spreadBpsOverride: (body.spreadBpsOverride as number | null | undefined) ?? null,
+            manualRateOverride: (body.manualRateOverride as string | null | undefined) ?? null,
+            disabled: (body.disabled as boolean | undefined) ?? false,
+            effectiveFrom: body.effectiveFrom ? new Date(body.effectiveFrom as string) : new Date(),
+            effectiveTo: body.effectiveTo ? new Date(body.effectiveTo as string) : null,
+          })
+          .returning({ id: merchantFxOverrides.id });
+        id = inserted!.id;
+      }
+
+      providerMerchantAudit(request, {
+        action: "provider.merchant.rates_changed",
+        merchantId,
+        meta: { overrideId: id, product: body.product, settledCurrency: currency },
+      });
+      return { id };
+    }
+  );
+
+  const feeScheduleSchema = z.object({
+    id: z.string(),
+    environment: z.enum(ENV),
+    rail: z.enum(FEE_RAIL),
+    currency: z.string(),
+    feeType: z.enum(FEE_TYPE),
+    billingMode: z.string(),
+    feePercentage: z.string().nullable(),
+    feeFlat: z.string().nullable(),
+    feeMin: z.string().nullable(),
+    feeMax: z.string().nullable(),
+    effectiveFrom: z.string(),
+    effectiveTo: z.string().nullable(),
+    status: z.string(),
+  });
+
+  app.get(
+    "/provider/merchants/:merchantId/fee-schedules",
+    {
+      schema: {
+        params: z.object({ merchantId: z.string().uuid() }),
+        querystring: z.object({ environment: z.enum(ENV).optional(), status: z.string().optional() }),
+        response: {
+          200: z.object({ items: z.array(feeScheduleSchema) }),
+          401: errorResponse,
+          403: errorResponse,
+          404: errorResponse,
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!ensurePermission(request, reply, "merchant.pricing.read")) return;
+      const { merchantId } = request.params as { merchantId: string };
+      if (!(await ensureMerchantExists(merchantId, reply))) return;
+      const q = request.query as { environment?: (typeof ENV)[number]; status?: string };
+      const conditions = [eq(merchantFeeSchedules.merchantId, merchantId)];
+      if (q.environment) conditions.push(eq(merchantFeeSchedules.environment, q.environment));
+      if (q.status) conditions.push(eq(merchantFeeSchedules.status, q.status));
+      const rows = await db
+        .select()
+        .from(merchantFeeSchedules)
+        .where(and(...conditions))
+        .orderBy(desc(merchantFeeSchedules.effectiveFrom));
+      return {
+        items: rows.map((r) => ({
+          id: r.id,
+          environment: r.environment as (typeof ENV)[number],
+          rail: r.rail as (typeof FEE_RAIL)[number],
+          currency: r.currency,
+          feeType: r.feeType as (typeof FEE_TYPE)[number],
+          billingMode: r.billingMode,
+          feePercentage: r.feePercentage != null ? String(r.feePercentage) : null,
+          feeFlat: r.feeFlat != null ? String(r.feeFlat) : null,
+          feeMin: r.feeMin != null ? String(r.feeMin) : null,
+          feeMax: r.feeMax != null ? String(r.feeMax) : null,
+          effectiveFrom: r.effectiveFrom.toISOString(),
+          effectiveTo: r.effectiveTo?.toISOString() ?? null,
+          status: r.status,
+        })),
+      };
+    }
+  );
+
+  app.post(
+    "/provider/merchants/:merchantId/fee-schedules",
+    {
+      schema: {
+        params: z.object({ merchantId: z.string().uuid() }),
+        body: z.object({
+          environment: z.enum(ENV),
+          rail: z.enum(FEE_RAIL),
+          currency: z.string().min(2).max(8),
+          feeType: z.enum(FEE_TYPE),
+          billingMode: z.enum(["percentage_only", "monthly_only", "both"]).default("percentage_only"),
+          feePercentage: z.string().optional(),
+          feeFlat: z.string().optional(),
+          feeMin: z.string().optional(),
+          feeMax: z.string().optional().nullable(),
+          effectiveFrom: z.string().datetime().optional(),
+          effectiveTo: z.string().datetime().optional().nullable(),
+        }),
+        response: { 201: feeScheduleSchema, 401: errorResponse, 403: errorResponse, 404: errorResponse },
+      },
+    },
+    async (request, reply) => {
+      if (!ensurePermission(request, reply, "merchant.pricing.write")) return;
+      if (!(await requireProviderStepUp(request, reply, "merchant.pricing.write"))) return;
+      const { merchantId } = request.params as { merchantId: string };
+      if (!(await ensureMerchantExists(merchantId, reply))) return;
+      const body = request.body as Record<string, unknown>;
+      const [row] = await db
+        .insert(merchantFeeSchedules)
+        .values({
+          merchantId,
+          environment: body.environment as string,
+          rail: body.rail as string,
+          currency: String(body.currency).trim().toUpperCase(),
+          feeType: body.feeType as string,
+          billingMode: (body.billingMode as string) ?? "percentage_only",
+          feePercentage: (body.feePercentage as string | undefined) ?? "0",
+          feeFlat: (body.feeFlat as string | undefined) ?? "0",
+          feeMin: (body.feeMin as string | undefined) ?? "0",
+          feeMax: (body.feeMax as string | null | undefined) ?? null,
+          effectiveFrom: body.effectiveFrom ? new Date(body.effectiveFrom as string) : new Date(),
+          effectiveTo: body.effectiveTo ? new Date(body.effectiveTo as string) : null,
+          status: "active",
+        })
+        .returning();
+      if (!row) throw new Error("Failed to create fee schedule");
+      providerMerchantAudit(request, {
+        action: "provider.merchant.fee_schedule_changed",
+        merchantId,
+        meta: { scheduleId: row.id, rail: row.rail, currency: row.currency, feeType: row.feeType },
+      });
+      return reply.status(201).send({
+        id: row.id,
+        environment: row.environment as (typeof ENV)[number],
+        rail: row.rail as (typeof FEE_RAIL)[number],
+        currency: row.currency,
+        feeType: row.feeType as (typeof FEE_TYPE)[number],
+        billingMode: row.billingMode,
+        feePercentage: row.feePercentage != null ? String(row.feePercentage) : null,
+        feeFlat: row.feeFlat != null ? String(row.feeFlat) : null,
+        feeMin: row.feeMin != null ? String(row.feeMin) : null,
+        feeMax: row.feeMax != null ? String(row.feeMax) : null,
+        effectiveFrom: row.effectiveFrom.toISOString(),
+        effectiveTo: row.effectiveTo?.toISOString() ?? null,
+        status: row.status,
+      });
+    }
+  );
+
+  app.get(
+    "/provider/merchants/:merchantId/api-ip-rules",
+    {
+      schema: {
+        params: z.object({ merchantId: z.string().uuid() }),
+        querystring: z.object({ environment: z.enum(ENV) }),
+        response: {
+          200: z.object({
+            merchantId: z.string(),
+            environment: z.enum(ENV),
+            enabled: z.boolean(),
+            enforceMode: z.string(),
+            cidrs: z.array(z.string()),
+            notes: z.string().nullable(),
+            updatedBy: z.string().nullable(),
+            updatedAt: z.string().nullable(),
+          }),
+          401: errorResponse,
+          403: errorResponse,
+          404: errorResponse,
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!ensurePermission(request, reply, "merchant.ip_whitelist.read")) return;
+      const { merchantId } = request.params as { merchantId: string };
+      if (!(await ensureMerchantExists(merchantId, reply))) return;
+      const { environment } = request.query as { environment: (typeof ENV)[number] };
+      const [row] = await db
+        .select()
+        .from(merchantApiIpRules)
+        .where(and(eq(merchantApiIpRules.merchantId, merchantId), eq(merchantApiIpRules.environment, environment)))
+        .limit(1);
+      if (!row) {
+        return {
+          merchantId,
+          environment,
+          enabled: false,
+          enforceMode: "strict",
+          cidrs: [],
+          notes: null,
+          updatedBy: null,
+          updatedAt: null,
+        };
+      }
+      return {
+        merchantId,
+        environment: row.environment as (typeof ENV)[number],
+        enabled: row.enabled,
+        enforceMode: row.enforceMode,
+        cidrs: normalizeCidrList(row.cidrs),
+        notes: row.notes,
+        updatedBy: row.updatedBy,
+        updatedAt: row.updatedAt.toISOString(),
+      };
+    }
+  );
+
+  app.put(
+    "/provider/merchants/:merchantId/api-ip-rules",
+    {
+      schema: {
+        params: z.object({ merchantId: z.string().uuid() }),
+        body: z.object({
+          environment: z.enum(ENV),
+          enabled: z.boolean(),
+          enforceMode: z.enum(["strict", "log_only"]).default("strict"),
+          cidrs: z.array(z.string()),
+          notes: z.string().optional().nullable(),
+        }),
+        response: {
+          200: z.object({ ok: z.literal(true) }),
+          400: errorResponse,
+          401: errorResponse,
+          403: errorResponse,
+          404: errorResponse,
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!ensurePermission(request, reply, "merchant.ip_whitelist.write")) return;
+      if (!(await requireProviderStepUp(request, reply, "merchant.ip_whitelist.write"))) return;
+      const { merchantId } = request.params as { merchantId: string };
+      if (!(await ensureMerchantExists(merchantId, reply))) return;
+      const body = request.body as {
+        environment: (typeof ENV)[number];
+        enabled: boolean;
+        enforceMode: string;
+        cidrs: string[];
+        notes?: string | null;
+      };
+      const validation = validateCidrList(body.cidrs);
+      if (body.enabled && !validation.valid) {
+        return reply.status(400).send({
+          error: "Bad Request",
+          message: validation.errors.join("; "),
+        });
+      }
+      const actor = request.provider?.email ?? request.provider?.providerUserId ?? "provider";
+      await db
+        .insert(merchantApiIpRules)
+        .values({
+          merchantId,
+          environment: body.environment,
+          enabled: body.enabled,
+          enforceMode: body.enforceMode,
+          cidrs: body.cidrs,
+          notes: body.notes ?? null,
+          updatedBy: actor,
+        })
+        .onConflictDoUpdate({
+          target: [merchantApiIpRules.merchantId, merchantApiIpRules.environment],
+          set: {
+            enabled: body.enabled,
+            enforceMode: body.enforceMode,
+            cidrs: body.cidrs,
+            notes: body.notes ?? null,
+            updatedBy: actor,
+            updatedAt: new Date(),
+          },
+        });
+      invalidateMerchantIpRuleCache(merchantId, body.environment);
+      providerMerchantAudit(request, {
+        action: "provider.merchant.ip_whitelist_changed",
+        merchantId,
+        meta: { environment: body.environment, enabled: body.enabled, cidrCount: body.cidrs.length },
+      });
+      return { ok: true as const };
+    }
+  );
+}

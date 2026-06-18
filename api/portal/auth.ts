@@ -88,14 +88,20 @@ export async function registerPortalAuthRoutes(app: FastifyInstance) {
 
       const passwordHash = await hashPassword(body.password);
 
+      const slug = await (async () => {
+        const { allocateMerchantSlug } = await import("../../src/lib/merchant-slug.js");
+        return allocateMerchantSlug(body.businessName.trim());
+      })();
+
       const [merchant] = await db
         .insert(merchants)
         .values({
           name: body.businessName.trim(),
+          slug,
           status: "pending",
           kycStatus: "pending",
         })
-        .returning({ id: merchants.id });
+        .returning({ id: merchants.id, slug: merchants.slug });
 
       if (!merchant) {
         return reply.status(500).send({
@@ -151,6 +157,7 @@ export async function registerPortalAuthRoutes(app: FastifyInstance) {
       return reply.status(201).send({
         token,
         merchantId: merchant.id,
+        merchantSlug: merchant.slug,
         email: user.email,
         role: "admin",
         needsActivation: true,

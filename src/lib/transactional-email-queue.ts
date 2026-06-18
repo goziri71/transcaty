@@ -58,6 +58,16 @@ export type TransactionalEmailPayload =
       amount: string;
       transactionId: string;
       recipientMasked: string;
+    }
+  | {
+      kind: "merchant_payment_event";
+      to: string;
+      eventLabel: string;
+      statusWord: string;
+      transactionId: string;
+      amount: string;
+      paidAmount?: string;
+      platformOrderId: string | null;
     };
 
 export async function queueTransactionalEmail(payload: TransactionalEmailPayload): Promise<void> {
@@ -160,6 +170,43 @@ export async function deliverTransactionalEmail(payload: TransactionalEmailPaylo
     });
     if (!ok) throw new Error("merchant_portal_payout email delivery failed");
     console.log(`[email] merchant_portal_payout sent successfully to ${payload.to}`);
+    return;
+  }
+
+  if (payload.kind === "merchant_payment_event") {
+    const subject =
+      payload.statusWord === "completed"
+        ? `${payload.eventLabel} completed – ${appName}`
+        : `${payload.eventLabel} failed – ${appName}`;
+    const amountLine =
+      payload.paidAmount && payload.eventLabel === "Pay-in"
+        ? `Amount: ${payload.amount} (paid: ${payload.paidAmount})`
+        : `Amount: ${payload.amount}`;
+    const ok = await sendTransactionalEmail({
+      to: payload.to,
+      subject,
+      text: [
+        `Your ${payload.eventLabel.toLowerCase()} has ${payload.statusWord}.`,
+        "",
+        amountLine,
+        `Transaction ID: ${payload.transactionId}`,
+        payload.platformOrderId ? `Platform order: ${payload.platformOrderId}` : "",
+        "",
+        `View details in your ${appName} merchant portal.`,
+      ]
+        .filter(Boolean)
+        .join("\n"),
+      html: `
+        <div style="font-family: system-ui, sans-serif; max-width: 480px; padding: 24px;">
+          <h2 style="margin: 0 0 12px; font-size: 18px;">${escapeHtml(payload.eventLabel)} ${escapeHtml(payload.statusWord)}</h2>
+          <p style="margin: 0 0 8px; color: #374151;">${escapeHtml(amountLine)}</p>
+          <p style="margin: 0 0 8px; font-size: 14px; color: #6b7280;">Transaction: ${escapeHtml(payload.transactionId)}</p>
+          ${payload.platformOrderId ? `<p style="margin: 0 0 16px; font-size: 14px; color: #6b7280;">Platform order: ${escapeHtml(payload.platformOrderId)}</p>` : ""}
+          <p style="margin: 16px 0 0; color: #374151;">Check your merchant portal for the full ledger and reconciliation report.</p>
+        </div>
+      `.trim(),
+    });
+    if (!ok) throw new Error("merchant_payment_event email delivery failed");
     return;
   }
 

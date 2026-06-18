@@ -30,6 +30,10 @@ import {
   MERCHANT_MARKETS,
   requestMerchantMarket,
 } from "../../src/lib/merchant-markets.js";
+import {
+  buildReconciliationReport,
+  reconciliationReportToCsv,
+} from "../../src/lib/reconciliation-report.js";
 
 const errorResponse = z.object({
   error: z.string(),
@@ -65,6 +69,7 @@ export async function registerPortalMeRoutes(app: FastifyInstance) {
         response: {
           200: z.object({
             merchantId: z.string(),
+            merchantSlug: z.string(),
             businessName: z.string(),
             email: z.string(),
             role: z.string(),
@@ -107,6 +112,7 @@ export async function registerPortalMeRoutes(app: FastifyInstance) {
         .select({
           id: merchants.id,
           name: merchants.name,
+          slug: merchants.slug,
           kycStatus: merchants.kycStatus,
         })
         .from(merchants)
@@ -116,6 +122,9 @@ export async function registerPortalMeRoutes(app: FastifyInstance) {
       if (!merchant) {
         return reply.status(404).send({ error: "Not found", message: "Merchant not found" });
       }
+
+      const { ensureMerchantSlug } = await import("../../src/lib/merchant-slug.js");
+      const merchantSlug = await ensureMerchantSlug(merchant.id, merchant.name);
 
       const [profile] = await db
         .select({
@@ -145,6 +154,7 @@ export async function registerPortalMeRoutes(app: FastifyInstance) {
 
       return reply.send({
         merchantId: merchant.id,
+        merchantSlug,
         businessName: merchant.name,
         email: user.email,
         role: user.role,
@@ -348,6 +358,58 @@ export async function registerPortalMeRoutes(app: FastifyInstance) {
         approvedAt: row.approvedAt?.toISOString() ?? null,
         settlementCurrencies: [...MARKET_SETTLEMENT_CURRENCIES[row.market]],
       });
+    }
+  );
+
+  app.get(
+    "/portal/me/reconciliation",
+    {
+      schema: {
+        querystring: z.object({
+          environment: z.enum(["test", "live"]).default("test"),
+          from: z.string().datetime(),
+          to: z.string().datetime(),
+          format: z.enum(["json", "csv"]).default("json"),
+        }),
+        response: {
+          400: errorResponse,
+          401: errorResponse,
+        },
+      },
+    },
+    async (request, reply) => {
+      const user = request.portalUser;
+      if (!user) return reply.status(401).send({ error: "Unauthorized" });
+      const q = request.query as {
+        environment: "test" | "live";
+        from: string;
+        to: string;
+        format: "json" | "csv";
+      };
+      const from = new Date(q.from);
+      const to = new Date(q.to);
+      if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || from > to) {
+        return reply.status(400).send({ error: "Bad Request", message: "Invalid from/to range" });
+      }
+      const maxRangeMs = 93 * 24 * 60 * 60 * 1000;
+      if (to.getTime() - from.getTime() > maxRangeMs) {
+        return reply.status(400).send({ error: "Bad Request", message: "Date range max 93 days" });
+      }
+
+      const report = await buildReconciliationReport({
+        merchantId: user.merchantId,
+        environment: q.environment,
+        from,
+        to,
+      });
+
+      if (q.format === "csv") {
+        return reply
+          .header("Content-Type", "text/csv; charset=utf-8")
+          .header("Content-Disposition", `attachment; filename="reconciliation-${q.environment}.csv"`)
+          .send(reconciliationReportToCsv(report));
+      }
+      return reply.send(report);
     }
   );
 }

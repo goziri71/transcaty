@@ -36,6 +36,10 @@ export type ProviderPermission =
   | "merchant.kyc.write"
   | "merchant.pricing.read"
   | "merchant.pricing.write"
+  | "merchant.rates.read"
+  | "merchant.rates.write"
+  | "merchant.ip_whitelist.read"
+  | "merchant.ip_whitelist.write"
   | "customer.read"
   | "customer.status.write"
   | "wallet.adjust"
@@ -55,6 +59,8 @@ export const API_KEY_DENIED_PERMISSIONS = new Set<ProviderPermission>([
   "merchant.status.write",
   "merchant.kyc.write",
   "merchant.pricing.write",
+  "merchant.rates.write",
+  "merchant.ip_whitelist.write",
   "approval.review",
   "provider.users.manage",
 ]);
@@ -279,6 +285,9 @@ export type ProviderStepUpAction =
   | "wallet.adjust"
   | "tx.status.write"
   | "merchant.kyc.write"
+  | "merchant.pricing.write"
+  | "merchant.rates.write"
+  | "merchant.ip_whitelist.write"
   | "any";
 
 export function signProviderStepUpToken(payload: {
@@ -331,6 +340,10 @@ const ROLE_PERMISSIONS: Record<ProviderRole, ProviderPermission[]> = {
     "merchant.kyc.write",
     "merchant.pricing.read",
     "merchant.pricing.write",
+    "merchant.rates.read",
+    "merchant.rates.write",
+    "merchant.ip_whitelist.read",
+    "merchant.ip_whitelist.write",
     "customer.read",
     "customer.status.write",
     "wallet.adjust",
@@ -346,6 +359,8 @@ const ROLE_PERMISSIONS: Record<ProviderRole, ProviderPermission[]> = {
     "merchant.read",
     "merchant.status.write",
     "merchant.kyc.write",
+    "merchant.ip_whitelist.read",
+    "merchant.ip_whitelist.write",
     "customer.read",
     "customer.status.write",
     "tx.read",
@@ -358,6 +373,10 @@ const ROLE_PERMISSIONS: Record<ProviderRole, ProviderPermission[]> = {
     "merchant.read",
     "merchant.pricing.read",
     "merchant.pricing.write",
+    "merchant.rates.read",
+    "merchant.rates.write",
+    "merchant.ip_whitelist.read",
+    "merchant.ip_whitelist.write",
     "customer.read",
     "tx.read",
     "tx.reconcile",

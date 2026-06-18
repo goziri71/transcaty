@@ -23,6 +23,8 @@ export function getMerchantWebhookJobName(): string {
 export async function queueMerchantWebhook(merchantId: string, event: WebhookEvent): Promise<void> {
   const { queue } = await import("./queue.js");
   await queue.send(JOB_NAME, { merchantId, event }, { retryLimit: 5, retryDelay: 60 });
+  const { notifyMerchantUsersOfPaymentEvent } = await import("./merchant-payment-email.js");
+  void notifyMerchantUsersOfPaymentEvent(merchantId, event).catch(() => {});
 }
 
 function signPayload(payload: string, secret: string): string {

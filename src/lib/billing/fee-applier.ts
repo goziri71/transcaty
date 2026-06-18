@@ -10,6 +10,7 @@ export interface ApplyFeeInput {
   merchantId: string;
   transactionId: string;
   environment: "test" | "live";
+  currency: string;
   amount: string;
   feeAmount: string;
   feeType: TransactionFeeType;
@@ -19,11 +20,13 @@ export interface ApplyFeeInput {
 export type DbTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 async function applyFeeWithTx(tx: DbTx, input: ApplyFeeInput): Promise<boolean> {
-  const { merchantId, transactionId, environment, amount, feeAmount, feeType } = input;
+  const { merchantId, transactionId, environment, currency, amount, feeAmount, feeType } = input;
 
   if (toCents(feeAmount) <= 0n) {
     return false;
   }
+
+  const settlementCurrency = currency.trim().toUpperCase() || "BDT";
 
   const [merchantWallet] = await tx
     .select()
@@ -33,6 +36,7 @@ async function applyFeeWithTx(tx: DbTx, input: ApplyFeeInput): Promise<boolean> 
         eq(wallets.merchantId, merchantId),
         eq(wallets.environment, environment),
         eq(wallets.type, "merchant"),
+        eq(wallets.currency, settlementCurrency),
         eq(wallets.status, "active")
       )
     )
@@ -44,7 +48,7 @@ async function applyFeeWithTx(tx: DbTx, input: ApplyFeeInput): Promise<boolean> 
       action: "billing.fee_skipped",
       resource: transactionId,
       merchantId,
-      meta: { reason: "merchant_wallet_not_found", feeType, feeAmount },
+      meta: { reason: "merchant_wallet_not_found", feeType, feeAmount, currency: settlementCurrency },
     });
     return false;
   }
@@ -59,6 +63,7 @@ async function applyFeeWithTx(tx: DbTx, input: ApplyFeeInput): Promise<boolean> 
         feeType,
         feeAmount,
         balance: merchantWallet.balance,
+        currency: settlementCurrency,
       },
     });
     return false;
@@ -122,7 +127,7 @@ async function applyFeeWithTx(tx: DbTx, input: ApplyFeeInput): Promise<boolean> 
     action: "billing.fee_applied",
     resource: transactionId,
     merchantId,
-    meta: { feeType, amount, feeAmount },
+    meta: { feeType, amount, feeAmount, currency: settlementCurrency },
   });
 
   return true;
@@ -131,10 +136,6 @@ async function applyFeeWithTx(tx: DbTx, input: ApplyFeeInput): Promise<boolean> 
 /**
  * Apply transaction fee: debit merchant wallet, credit platform wallet.
  * Skips (no throw, audit-logged) on missing wallet or insufficient balance.
- *
- * Pass `parentTx` when the caller is already inside a `db.transaction` so the
- * fee shares the same atomic boundary as the parent operation; otherwise this
- * opens its own transaction.
  */
 export async function applyTransactionFee(
   input: ApplyFeeInput,

@@ -155,6 +155,20 @@
       "when": 1774132000000,
       "tag": "0021_merchant_markets",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1774132100000,
+      "tag": "0022_admin_rates_pricing_ip",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1774132200000,
+      "tag": "0023_merchant_slug",
+      "breakpoints": true
     }
   ]
 }

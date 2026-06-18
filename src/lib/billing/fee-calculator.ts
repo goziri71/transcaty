@@ -1,26 +1,25 @@
-import type { MerchantPricingRow } from "./pricing.js";
+import type { FeeScheduleRow } from "./fee-rail.js";
 
 export type TransactionFeeType = "payin" | "payout";
 
 /**
- * Compute transaction fee based on merchant pricing.
- * Returns fee amount in BDT (string for decimal precision).
+ * Compute transaction fee from a fee schedule row.
+ * Returns fee amount as decimal string in the transaction settlement currency.
  */
-export function computeTransactionFee(
-  pricing: MerchantPricingRow,
+export function computeFeeFromSchedule(
+  schedule: FeeScheduleRow,
   amount: string,
   feeType: TransactionFeeType
-): { feeAmount: string; feePercentage: string } | null {
-  if (pricing.billingMode === "monthly_only") {
+): { feeAmount: string; feePercentage: string; scheduleId: string } | null {
+  void feeType;
+  if (schedule.billingMode === "monthly_only") {
     return null;
   }
 
-  const pct =
-    feeType === "payin"
-      ? (pricing.feePercentagePayin && Number(pricing.feePercentagePayin)) || 0
-      : (pricing.feePercentagePayout && Number(pricing.feePercentagePayout)) || 0;
+  const pct = (schedule.feePercentage && Number(schedule.feePercentage)) || 0;
+  const flat = (schedule.feeFlat && Number(schedule.feeFlat)) || 0;
 
-  if (pct <= 0) {
+  if (pct <= 0 && flat <= 0) {
     return null;
   }
 
@@ -29,14 +28,10 @@ export function computeTransactionFee(
     return null;
   }
 
-  let fee = (amt * pct) / 100;
+  let fee = flat + (amt * pct) / 100;
 
-  const min =
-    feeType === "payin"
-      ? (pricing.feeMinPayin ? Number(pricing.feeMinPayin) : 0)
-      : (pricing.feeMinPayout ? Number(pricing.feeMinPayout) : 0);
-  const maxRaw =
-    feeType === "payin" ? pricing.feeMaxPayin : pricing.feeMaxPayout;
+  const min = schedule.feeMin ? Number(schedule.feeMin) : 0;
+  const maxRaw = schedule.feeMax;
   const max = maxRaw ? Number(maxRaw) : undefined;
 
   if (min > 0 && fee < min) {
@@ -49,5 +44,33 @@ export function computeTransactionFee(
   return {
     feeAmount: fee.toFixed(2),
     feePercentage: pct.toFixed(4),
+    scheduleId: schedule.id,
   };
+}
+
+/** @deprecated Use computeFeeFromSchedule via resolveFeeSchedule. */
+export function computeTransactionFee(
+  pricing: {
+    billingMode: string;
+    feePercentagePayin: string | null;
+    feePercentagePayout: string | null;
+    feeMinPayin: string | null;
+    feeMaxPayin: string | null;
+    feeMinPayout: string | null;
+    feeMaxPayout: string | null;
+  },
+  amount: string,
+  feeType: TransactionFeeType
+): { feeAmount: string; feePercentage: string } | null {
+  const schedule: FeeScheduleRow = {
+    id: "legacy",
+    billingMode: pricing.billingMode,
+    feePercentage: feeType === "payin" ? pricing.feePercentagePayin : pricing.feePercentagePayout,
+    feeFlat: "0",
+    feeMin: feeType === "payin" ? pricing.feeMinPayin : pricing.feeMinPayout,
+    feeMax: feeType === "payin" ? pricing.feeMaxPayin : pricing.feeMaxPayout,
+  };
+  const computed = computeFeeFromSchedule(schedule, amount, feeType);
+  if (!computed) return null;
+  return { feeAmount: computed.feeAmount, feePercentage: computed.feePercentage };
 }

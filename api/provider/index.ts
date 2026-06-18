@@ -34,6 +34,11 @@ import { ProviderCircuitOpenError } from "../../src/lib/provider-circuit-breaker
 import { queueMerchantWebhook } from "../../src/lib/merchant-webhook.js";
 import { registerProviderMerchantRiskRoutes } from "./merchant-risk.js";
 import { registerProviderMerchantOpsRoutes } from "./merchant-ops.js";
+import { registerProviderAdminConfigRoutes } from "./admin-config.js";
+import {
+  buildReconciliationReport,
+  reconciliationReportToCsv,
+} from "../../src/lib/reconciliation-report.js";
 import { providerMerchantAudit } from "../../src/lib/provider-audit.js";
 import { presentTransactionRail } from "../../src/lib/transaction-rail-label.js";
 
@@ -175,6 +180,7 @@ function isReviewRequired(metadata: string | null): boolean {
 export async function registerProviderRoutes(app: FastifyInstance) {
   await registerProviderMerchantRiskRoutes(app);
   await registerProviderMerchantOpsRoutes(app);
+  await registerProviderAdminConfigRoutes(app);
   app.get(
     "/provider/me",
     {
@@ -2919,6 +2925,57 @@ export async function registerProviderRoutes(app: FastifyInstance) {
         request.log.error(err);
         return reply.status(500).send({ error: "Internal Server Error" });
       }
+    }
+  );
+
+  app.get(
+    "/provider/merchants/:merchantId/reconciliation-report",
+    {
+      schema: {
+        params: z.object({ merchantId: z.string().uuid() }),
+        querystring: z.object({
+          environment: z.enum(["test", "live"]).default("test"),
+          from: z.string().datetime(),
+          to: z.string().datetime(),
+          format: z.enum(["json", "csv"]).default("json"),
+        }),
+        response: {
+          401: errorResponse,
+          403: errorResponse,
+          404: errorResponse,
+          400: errorResponse,
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!ensureProviderPermission(request, reply, "tx.read")) return;
+      const { merchantId } = request.params as { merchantId: string };
+      const q = request.query as {
+        environment: "test" | "live";
+        from: string;
+        to: string;
+        format: "json" | "csv";
+      };
+      const [m] = await db.select({ id: merchants.id }).from(merchants).where(eq(merchants.id, merchantId)).limit(1);
+      if (!m) return reply.status(404).send({ error: "Not found", message: "Merchant not found" });
+      const from = new Date(q.from);
+      const to = new Date(q.to);
+      if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || from > to) {
+        return reply.status(400).send({ error: "Bad Request", message: "Invalid from/to range" });
+      }
+      const report = await buildReconciliationReport({
+        merchantId,
+        environment: q.environment,
+        from,
+        to,
+      });
+      if (q.format === "csv") {
+        return reply
+          .header("Content-Type", "text/csv; charset=utf-8")
+          .header("Content-Disposition", `attachment; filename="reconciliation-${merchantId}.csv"`)
+          .send(reconciliationReportToCsv(report));
+      }
+      return report;
     }
   );
 }

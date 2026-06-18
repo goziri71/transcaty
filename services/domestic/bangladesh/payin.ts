@@ -211,6 +211,8 @@ export async function handlePayinCallback(body: {
         merchantId: tx.merchantId,
         transactionId: tx.id,
         environment: tx.environment,
+        currency: tx.currency,
+        provider: tx.provider,
         amount: paidAmount,
         feeType: "payin",
       },

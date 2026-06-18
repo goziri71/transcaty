@@ -2,6 +2,8 @@
 
 > API contract and UX flow for the Transacty merchant dashboard. Use this to build the portal UI.
 
+**June 2026 additions** (merchant slug, reconciliation report, payment emails): see **[FRONTEND_HANDOFF_JUNE_2026.md](./FRONTEND_HANDOFF_JUNE_2026.md)**.
+
 ---
 
 ## Overview

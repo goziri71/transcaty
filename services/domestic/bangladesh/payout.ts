@@ -377,6 +377,8 @@ export async function handlePayoutCallback(body: {
           merchantId: tx.merchantId,
           transactionId: tx.id,
           environment: tx.environment,
+          currency: tx.currency,
+          provider: tx.provider,
           amount: String(tx.amount),
           feeType: "payout",
         },

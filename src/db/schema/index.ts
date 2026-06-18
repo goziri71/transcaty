@@ -10,6 +10,8 @@ import {
   boolean,
   unique,
   json,
+  jsonb,
+  integer,
 } from "drizzle-orm/pg-core";
 
 export const merchantStatusEnum = pgEnum("merchant_status", [
@@ -109,16 +111,21 @@ export const merchantBlacklistEntryTypeEnum = pgEnum("merchant_blacklist_entry_t
   "email",
 ]);
 
-export const merchants = pgTable("merchants", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  name: text("name").notNull(),
-  status: merchantStatusEnum("status").notNull().default("pending"),
-  kycStatus: text("kyc_status").default("pending"),
-  webhookUrl: text("webhook_url"),
-  webhookSecretEnc: text("webhook_secret_enc"),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-});
+export const merchants = pgTable(
+  "merchants",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    name: text("name").notNull(),
+    slug: text("slug"),
+    status: merchantStatusEnum("status").notNull().default("pending"),
+    kycStatus: text("kyc_status").default("pending"),
+    webhookUrl: text("webhook_url"),
+    webhookSecretEnc: text("webhook_secret_enc"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("merchants_slug_idx").on(t.slug)]
+);
 
 export const merchantMarkets = pgTable(
   "merchant_markets",
@@ -244,6 +251,105 @@ export const monthlyBillingRecords = pgTable(
     index("monthly_billing_records_merchant_month_idx").on(t.merchantId, t.billingMonth),
     unique().on(t.merchantId, t.billingMonth),
   ]
+);
+
+export const fxRateProfiles = pgTable(
+  "fx_rate_profiles",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    product: text("product").notNull(),
+    settledCurrency: text("settled_currency").notNull(),
+    networkSymbol: text("network_symbol"),
+    quoteCurrency: text("quote_currency"),
+    source: text("source").notNull().default("manual_fixed"),
+    manualRate: decimal("manual_rate", { precision: 18, scale: 8 }),
+    spreadBps: integer("spread_bps").notNull().default(0),
+    spreadMode: text("spread_mode").notNull().default("on_output"),
+    effectiveFrom: timestamp("effective_from", { withTimezone: true }).notNull().defaultNow(),
+    effectiveTo: timestamp("effective_to", { withTimezone: true }),
+    status: text("status").notNull().default("active"),
+    createdBy: text("created_by"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("fx_rate_profiles_lookup_idx").on(t.product, t.settledCurrency, t.status, t.effectiveFrom),
+  ]
+);
+
+export const merchantFxOverrides = pgTable(
+  "merchant_fx_overrides",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    merchantId: uuid("merchant_id")
+      .notNull()
+      .references(() => merchants.id, { onDelete: "cascade" }),
+    environment: text("environment").notNull(),
+    product: text("product").notNull(),
+    settledCurrency: text("settled_currency").notNull(),
+    networkSymbol: text("network_symbol"),
+    spreadBpsOverride: integer("spread_bps_override"),
+    manualRateOverride: decimal("manual_rate_override", { precision: 18, scale: 8 }),
+    disabled: boolean("disabled").notNull().default(false),
+    effectiveFrom: timestamp("effective_from", { withTimezone: true }).notNull().defaultNow(),
+    effectiveTo: timestamp("effective_to", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("merchant_fx_overrides_merchant_idx").on(t.merchantId, t.environment)]
+);
+
+export const merchantFeeSchedules = pgTable(
+  "merchant_fee_schedules",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    merchantId: uuid("merchant_id")
+      .notNull()
+      .references(() => merchants.id, { onDelete: "cascade" }),
+    environment: text("environment").notNull(),
+    rail: text("rail").notNull(),
+    currency: text("currency").notNull(),
+    feeType: text("fee_type").notNull(),
+    billingMode: text("billing_mode").notNull().default("percentage_only"),
+    feePercentage: decimal("fee_percentage", { precision: 5, scale: 4 }).default("0"),
+    feeFlat: decimal("fee_flat", { precision: 18, scale: 2 }).default("0"),
+    feeMin: decimal("fee_min", { precision: 18, scale: 2 }).default("0"),
+    feeMax: decimal("fee_max", { precision: 18, scale: 2 }),
+    effectiveFrom: timestamp("effective_from", { withTimezone: true }).notNull().defaultNow(),
+    effectiveTo: timestamp("effective_to", { withTimezone: true }),
+    status: text("status").notNull().default("active"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("merchant_fee_schedules_lookup_idx").on(
+      t.merchantId,
+      t.environment,
+      t.rail,
+      t.currency,
+      t.feeType,
+      t.status,
+      t.effectiveFrom
+    ),
+  ]
+);
+
+export const merchantApiIpRules = pgTable(
+  "merchant_api_ip_rules",
+  {
+    merchantId: uuid("merchant_id")
+      .notNull()
+      .references(() => merchants.id, { onDelete: "cascade" }),
+    environment: text("environment").notNull(),
+    enabled: boolean("enabled").notNull().default(false),
+    enforceMode: text("enforce_mode").notNull().default("strict"),
+    cidrs: jsonb("cidrs").notNull().default([]),
+    notes: text("notes"),
+    updatedBy: text("updated_by"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.merchantId, t.environment] })]
 );
 
 export const transactions = pgTable(

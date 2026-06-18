@@ -498,6 +498,7 @@ export async function buildApp() {
         response: {
           200: z.object({
             merchantId: z.string(),
+            merchantSlug: z.string(),
             scopes: z.array(z.string()),
             environment: z.string(),
           }),
@@ -507,8 +508,16 @@ export async function buildApp() {
     async (request) => {
       const m = request.merchant;
       if (!m) throw new Error("Not authenticated");
+      const [row] = await db
+        .select({ name: merchants.name, slug: merchants.slug })
+        .from(merchants)
+        .where(eq(merchants.id, m.merchantId))
+        .limit(1);
+      const { ensureMerchantSlug } = await import("./src/lib/merchant-slug.js");
+      const merchantSlug = await ensureMerchantSlug(m.merchantId, row?.name ?? "merchant");
       return {
         merchantId: m.merchantId,
+        merchantSlug,
         scopes: m.scopes,
         environment: m.environment,
       };

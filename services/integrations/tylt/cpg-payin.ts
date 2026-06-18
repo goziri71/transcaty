@@ -455,6 +455,8 @@ export async function applyTyltCpgPayinWebhookPayload(
         merchantId: tx.merchantId,
         transactionId: tx.id,
         environment: tx.environment,
+        currency: tx.currency,
+        provider: tx.provider,
         amount: String(paidAmount),
         feeType: "payin",
       },

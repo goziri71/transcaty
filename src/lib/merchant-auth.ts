@@ -169,6 +169,22 @@ export async function merchantAuth(
     });
   }
 
+  const { getTrustedClientIp } = await import("./client-ip.js");
+  const { assertMerchantIpAllowed } = await import("./merchant-ip-whitelist.js");
+  const clientIp = getTrustedClientIp(request);
+  const ipCheck = await assertMerchantIpAllowed({
+    merchantId: entry.merchantId,
+    environment: entry.environment,
+    clientIp,
+  });
+  if (!ipCheck.allowed) {
+    return reply.status(403).send({
+      error: "Forbidden",
+      code: "ip_not_allowed",
+      message: "Request origin IP is not on the merchant allowlist",
+    });
+  }
+
   request.merchant = {
     merchantId: entry.merchantId,
     keyId: entry.keyId,

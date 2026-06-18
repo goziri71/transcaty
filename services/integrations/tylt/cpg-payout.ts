@@ -6,6 +6,8 @@ import { db } from "../../../src/db/index.js";
 import { transactions, wallets, ledgerEntries } from "../../../src/db/schema/index.js";
 import { audit } from "../../../src/lib/audit.js";
 import { tryApplyTransactionFee } from "../../../src/lib/billing/index.js";
+import { resolveFxSpread } from "../../../src/lib/fx/rate-resolver.js";
+import { applySpreadToCryptoAmount } from "../../../src/lib/fx/spread.js";
 import { addAmount, assertPositive, cmpAmount, subAmount } from "../../../src/lib/money.js";
 import type { WebhookEvent } from "../../../src/lib/merchant-webhook.js";
 import { PayoutCreationError } from "../../domestic/bangladesh/payout.js";
@@ -199,11 +201,29 @@ export async function createTyltCpgPayoutRequest(params: {
 
   assertPositive(params.amount);
 
+  const fxSpread = await resolveFxSpread({
+    merchantId: params.merchantId,
+    environment: params.environment,
+    product: "cpg_payout",
+    settledCurrency: params.settledCurrency,
+    networkSymbol: params.networkSymbol,
+  });
+  if (fxSpread?.disabled) {
+    throw new Error("Crypto send-out is disabled for this merchant");
+  }
+  const spreadParts = applySpreadToCryptoAmount(params.amount, fxSpread?.spreadBps ?? 0);
+  const debitAmount = spreadParts.totalDebit;
+
   const metadata = {
     rail: RAIL,
     tyltProduct: TYLT_PRODUCT_CPG_PAYOUT,
     settledCurrency: params.settledCurrency,
     networkSymbol: params.networkSymbol,
+    payoutSendAmount: params.amount,
+    fxSpreadBps: fxSpread?.spreadBps ?? 0,
+    fxSpreadAmount: spreadParts.spreadAmount,
+    debitAmount,
+    fxRateProfileId: fxSpread?.rateProfileId ?? null,
   };
 
   // tx1: lock the merchant wallet, validate balance, insert pending tx, debit
@@ -238,7 +258,7 @@ export async function createTyltCpgPayoutRequest(params: {
     if (!wallet) {
       throw new Error("Merchant wallet not found");
     }
-    if (cmpAmount(wallet.balance, params.amount) < 0) {
+    if (cmpAmount(wallet.balance, debitAmount) < 0) {
       throw new Error("Insufficient balance");
     }
 
@@ -249,7 +269,7 @@ export async function createTyltCpgPayoutRequest(params: {
         environment: params.environment,
         type: "payout",
         status: "pending",
-        amount: params.amount,
+        amount: debitAmount,
         currency: params.settledCurrency,
         provider: "tylt-cpg-payout",
         metadata: JSON.stringify(metadata),
@@ -261,7 +281,7 @@ export async function createTyltCpgPayoutRequest(params: {
     await txDb.insert(ledgerEntries).values({
       walletId: wallet.id,
       environment: params.environment,
-      amount: params.amount,
+      amount: debitAmount,
       direction: "debit",
       type: "payout",
       referenceId: tx.id,
@@ -270,7 +290,7 @@ export async function createTyltCpgPayoutRequest(params: {
     await txDb
       .update(wallets)
       .set({
-        balance: subAmount(wallet.balance, params.amount),
+        balance: subAmount(wallet.balance, debitAmount),
         updatedAt: new Date(),
       })
       .where(eq(wallets.id, wallet.id));
@@ -579,16 +599,18 @@ export async function applyTyltCpgPayoutWebhookPayload(
 
     if (!updated) return false;
 
-    await tryApplyTransactionFee(
-      {
-        merchantId: tx.merchantId,
-        transactionId: tx.id,
-        environment: tx.environment,
-        amount: String(tx.amount),
-        feeType: "payout",
-      },
-      txDb
-    );
+      await tryApplyTransactionFee(
+        {
+          merchantId: tx.merchantId,
+          transactionId: tx.id,
+          environment: tx.environment,
+          currency: tx.currency,
+          provider: tx.provider,
+          amount: String(tx.amount),
+          feeType: "payout",
+        },
+        txDb
+      );
 
     return true;
   });

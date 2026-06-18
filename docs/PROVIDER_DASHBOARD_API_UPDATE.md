@@ -2,6 +2,8 @@
 
 This file is the single source of truth for the latest provider/super-admin dashboard backend updates.
 
+**June 2026 additions** (reconciliation export, fee schedules, FX spread, merchant slug on portal): see **[FRONTEND_HANDOFF_JUNE_2026.md](./FRONTEND_HANDOFF_JUNE_2026.md)**.
+
 ## Base
 
 - Auth: provider JWT (`Authorization: Bearer <token>`)

@@ -8,6 +8,8 @@ import { audit } from "../../../src/lib/audit.js";
 import { addAmount, assertPositive, cmpAmount, normalizeMoneyAmountToTwoDecimals, subAmount } from "../../../src/lib/money.js";
 import type { WebhookEvent } from "../../../src/lib/merchant-webhook.js";
 import { PayoutCreationError } from "../../domestic/bangladesh/payout.js";
+import { applySpreadToCryptoAmount, applySpreadToRate } from "../../../src/lib/fx/spread.js";
+import { resolveFxSpread } from "../../../src/lib/fx/rate-resolver.js";
 import { UpstreamProviderClientError } from "../../../src/lib/merchant-facing-errors.js";
 import { tyltSignedPostJson } from "./client.js";
 import { pickTyltJsonPrimaryMessage } from "./h2h-upi.js";
@@ -186,9 +188,26 @@ export async function createTyltEurPayoutInstance(params: {
     );
   }
 
-  const debitAmount = normalizeMoneyAmountToTwoDecimals(
+  const debitAmountRaw = normalizeMoneyAmountToTwoDecimals(
     parsed.cryptoAmount && Number.isFinite(parseFloat(parsed.cryptoAmount)) ? parsed.cryptoAmount : params.amount
   );
+
+  const fxSpread = await resolveFxSpread({
+    merchantId: params.merchantId,
+    environment: params.environment,
+    product: "eur_payout",
+    settledCurrency: SETTLEMENT_CURRENCY,
+  });
+  if (fxSpread?.disabled) {
+    await db.update(transactions).set({ status: "failed", updatedAt: new Date() }).where(eq(transactions.id, tx.id));
+    throw new PayoutCreationError("EUR crypto send-out is disabled for this merchant", tx.id, null, "disabled");
+  }
+  const spreadParts = applySpreadToCryptoAmount(debitAmountRaw, fxSpread?.spreadBps ?? 0);
+  const debitAmount = spreadParts.totalDebit;
+  const merchantRate =
+    parsed.rate != null && Number.isFinite(parsed.rate)
+      ? applySpreadToRate(parsed.rate, fxSpread?.spreadBps ?? 0)
+      : parsed.rate;
 
   try {
     await db.transaction(async (txDb) => {
@@ -244,8 +263,13 @@ export async function createTyltEurPayoutInstance(params: {
       metadata: mergeMeta(tx.metadata, {
         checkoutUrl: parsed.checkoutUrl,
         debitAmount,
+        payoutSendAmount: debitAmountRaw,
+        fxSpreadBps: fxSpread?.spreadBps ?? 0,
+        fxSpreadAmount: spreadParts.spreadAmount,
+        fxRateProfileId: fxSpread?.rateProfileId ?? null,
         quoteCryptoAmount: parsed.cryptoAmount,
         quoteRate: parsed.rate,
+        merchantRate,
         fiatAmount: params.amount,
       }),
       updatedAt: new Date(),
@@ -267,7 +291,7 @@ export async function createTyltEurPayoutInstance(params: {
     instanceId: parsed.instanceId,
     checkoutUrl: parsed.checkoutUrl,
     cryptoAmount: parsed.cryptoAmount,
-    rate: parsed.rate,
+    rate: merchantRate,
   };
 }
 

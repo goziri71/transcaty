@@ -668,8 +668,11 @@ export async function registerProviderAuthRoutes(app: FastifyInstance) {
   const STEP_UP_ACTIONS = [
     "wallet.adjust",
     "tx.status.write",
-    "merchant.kyc.write",
-    "any",
+  "merchant.kyc.write",
+  "merchant.pricing.write",
+  "merchant.rates.write",
+  "merchant.ip_whitelist.write",
+  "any",
   ] as const satisfies readonly ProviderStepUpAction[];
 
   app.post(

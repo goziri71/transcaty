@@ -322,6 +322,8 @@ export async function applyTyltEurPayinWebhookPayload(
         merchantId: tx.merchantId,
         transactionId: tx.id,
         environment: tx.environment,
+        currency: tx.currency,
+        provider: tx.provider,
         amount: paidAmount,
         feeType: "payin",
       },
