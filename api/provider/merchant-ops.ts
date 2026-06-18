@@ -18,6 +18,7 @@ import { createKycDownloadUrl } from "../../src/lib/kyc-storage.js";
 import { invalidateMerchantApiKeyCache } from "../../src/lib/merchant-key-cache.js";
 import { providerMerchantAudit } from "../../src/lib/provider-audit.js";
 import { canProviderActionContext } from "../../src/lib/provider-auth.js";
+import { merchantRefParamSchema, resolveMerchantId } from "../../src/lib/merchant-ref.js";
 
 const errorResponse = z.object({
   error: z.string(),
@@ -48,9 +49,13 @@ function ensurePermission(
   return true;
 }
 
-async function merchantExists(merchantId: string): Promise<boolean> {
-  const [row] = await db.select({ id: merchants.id }).from(merchants).where(eq(merchants.id, merchantId)).limit(1);
-  return !!row;
+async function merchantIdFromRef(merchantRef: string, reply: FastifyReply): Promise<string | null> {
+  const merchantId = await resolveMerchantId(merchantRef);
+  if (!merchantId) {
+    reply.status(404).send({ error: "Not found", message: "Merchant not found" });
+    return null;
+  }
+  return merchantId;
 }
 
 function maskApiKeyId(id: string): string {
@@ -62,7 +67,7 @@ export async function registerProviderMerchantOpsRoutes(app: FastifyInstance) {
     "/provider/merchants/:merchantId/kyc/business",
     {
       schema: {
-        params: z.object({ merchantId: z.string().uuid() }),
+        params: z.object({ merchantId: merchantRefParamSchema }),
         response: {
           200: z
             .object({
@@ -93,10 +98,9 @@ export async function registerProviderMerchantOpsRoutes(app: FastifyInstance) {
     },
     async (request, reply) => {
       if (!ensurePermission(request, reply, "merchant.read")) return;
-      const { merchantId } = request.params as { merchantId: string };
-      if (!(await merchantExists(merchantId))) {
-        return reply.status(404).send({ error: "Not found", message: "Merchant not found" });
-      }
+      const { merchantId: merchantRef } = request.params as { merchantId: string };
+      const merchantId = await merchantIdFromRef(merchantRef, reply);
+      if (!merchantId) return;
 
       const [profile] = await db
         .select()
@@ -133,7 +137,7 @@ export async function registerProviderMerchantOpsRoutes(app: FastifyInstance) {
     "/provider/merchants/:merchantId/kyc/persons",
     {
       schema: {
-        params: z.object({ merchantId: z.string().uuid() }),
+        params: z.object({ merchantId: merchantRefParamSchema }),
         response: {
           200: z.object({
             items: z.array(
@@ -160,10 +164,9 @@ export async function registerProviderMerchantOpsRoutes(app: FastifyInstance) {
     },
     async (request, reply) => {
       if (!ensurePermission(request, reply, "merchant.read")) return;
-      const { merchantId } = request.params as { merchantId: string };
-      if (!(await merchantExists(merchantId))) {
-        return reply.status(404).send({ error: "Not found", message: "Merchant not found" });
-      }
+      const { merchantId: merchantRef } = request.params as { merchantId: string };
+      const merchantId = await merchantIdFromRef(merchantRef, reply);
+      if (!merchantId) return;
 
       const rows = await db
         .select()
@@ -194,7 +197,7 @@ export async function registerProviderMerchantOpsRoutes(app: FastifyInstance) {
     "/provider/merchants/:merchantId/kyc/documents",
     {
       schema: {
-        params: z.object({ merchantId: z.string().uuid() }),
+        params: z.object({ merchantId: merchantRefParamSchema }),
         response: {
           200: z.object({
             items: z.array(
@@ -216,10 +219,9 @@ export async function registerProviderMerchantOpsRoutes(app: FastifyInstance) {
     },
     async (request, reply) => {
       if (!ensurePermission(request, reply, "merchant.read")) return;
-      const { merchantId } = request.params as { merchantId: string };
-      if (!(await merchantExists(merchantId))) {
-        return reply.status(404).send({ error: "Not found", message: "Merchant not found" });
-      }
+      const { merchantId: merchantRef } = request.params as { merchantId: string };
+      const merchantId = await merchantIdFromRef(merchantRef, reply);
+      if (!merchantId) return;
 
       const rows = await db
         .select({
@@ -254,7 +256,7 @@ export async function registerProviderMerchantOpsRoutes(app: FastifyInstance) {
     {
       schema: {
         params: z.object({
-          merchantId: z.string().uuid(),
+          merchantId: merchantRefParamSchema,
           documentId: z.string().uuid(),
         }),
         response: {
@@ -270,7 +272,9 @@ export async function registerProviderMerchantOpsRoutes(app: FastifyInstance) {
     },
     async (request, reply) => {
       if (!ensurePermission(request, reply, "merchant.kyc.write")) return;
-      const { merchantId, documentId } = request.params as { merchantId: string; documentId: string };
+      const { merchantId: merchantRef, documentId } = request.params as { merchantId: string; documentId: string };
+      const merchantId = await merchantIdFromRef(merchantRef, reply);
+      if (!merchantId) return;
 
       const [doc] = await db
         .select({
@@ -304,7 +308,7 @@ export async function registerProviderMerchantOpsRoutes(app: FastifyInstance) {
     "/provider/merchants/:merchantId/audit-log",
     {
       schema: {
-        params: z.object({ merchantId: z.string().uuid() }),
+        params: z.object({ merchantId: merchantRefParamSchema }),
         querystring: z.object({
           limit: z.coerce.number().min(1).max(100).default(20),
           offset: z.coerce.number().min(0).default(0),
@@ -333,16 +337,15 @@ export async function registerProviderMerchantOpsRoutes(app: FastifyInstance) {
     },
     async (request, reply) => {
       if (!ensurePermission(request, reply, "merchant.read")) return;
-      const { merchantId } = request.params as { merchantId: string };
+      const { merchantId: merchantRef } = request.params as { merchantId: string };
       const { limit, offset, action } = request.query as {
         limit: number;
         offset: number;
         action?: string;
       };
 
-      if (!(await merchantExists(merchantId))) {
-        return reply.status(404).send({ error: "Not found", message: "Merchant not found" });
-      }
+      const merchantId = await merchantIdFromRef(merchantRef, reply);
+      if (!merchantId) return;
 
       const conditions = [eq(merchantAuditLog.merchantId, merchantId)];
       if (action) conditions.push(eq(merchantAuditLog.action, action));
@@ -380,7 +383,7 @@ export async function registerProviderMerchantOpsRoutes(app: FastifyInstance) {
     "/provider/merchants/:merchantId/webhook",
     {
       schema: {
-        params: z.object({ merchantId: z.string().uuid() }),
+        params: z.object({ merchantId: merchantRefParamSchema }),
         response: {
           200: z.object({
             webhookUrl: z.string().nullable(),
@@ -393,7 +396,10 @@ export async function registerProviderMerchantOpsRoutes(app: FastifyInstance) {
     },
     async (request, reply) => {
       if (!ensurePermission(request, reply, "merchant.read")) return;
-      const { merchantId } = request.params as { merchantId: string };
+      const { merchantId: merchantRef } = request.params as { merchantId: string };
+
+      const merchantId = await merchantIdFromRef(merchantRef, reply);
+      if (!merchantId) return;
 
       const [m] = await db
         .select({
@@ -419,7 +425,7 @@ export async function registerProviderMerchantOpsRoutes(app: FastifyInstance) {
     "/provider/merchants/:merchantId/users",
     {
       schema: {
-        params: z.object({ merchantId: z.string().uuid() }),
+        params: z.object({ merchantId: merchantRefParamSchema }),
         response: {
           200: z.object({
             items: z.array(
@@ -440,10 +446,9 @@ export async function registerProviderMerchantOpsRoutes(app: FastifyInstance) {
     },
     async (request, reply) => {
       if (!ensurePermission(request, reply, "merchant.read")) return;
-      const { merchantId } = request.params as { merchantId: string };
-      if (!(await merchantExists(merchantId))) {
-        return reply.status(404).send({ error: "Not found", message: "Merchant not found" });
-      }
+      const { merchantId: merchantRef } = request.params as { merchantId: string };
+      const merchantId = await merchantIdFromRef(merchantRef, reply);
+      if (!merchantId) return;
 
       const rows = await db
         .select({
@@ -475,7 +480,7 @@ export async function registerProviderMerchantOpsRoutes(app: FastifyInstance) {
     "/provider/merchants/:merchantId/api-keys",
     {
       schema: {
-        params: z.object({ merchantId: z.string().uuid() }),
+        params: z.object({ merchantId: merchantRefParamSchema }),
         response: {
           200: z.object({
             items: z.array(
@@ -496,10 +501,9 @@ export async function registerProviderMerchantOpsRoutes(app: FastifyInstance) {
     },
     async (request, reply) => {
       if (!ensurePermission(request, reply, "merchant.read")) return;
-      const { merchantId } = request.params as { merchantId: string };
-      if (!(await merchantExists(merchantId))) {
-        return reply.status(404).send({ error: "Not found", message: "Merchant not found" });
-      }
+      const { merchantId: merchantRef } = request.params as { merchantId: string };
+      const merchantId = await merchantIdFromRef(merchantRef, reply);
+      if (!merchantId) return;
 
       const rows = await db
         .select({
@@ -531,7 +535,7 @@ export async function registerProviderMerchantOpsRoutes(app: FastifyInstance) {
     {
       schema: {
         params: z.object({
-          merchantId: z.string().uuid(),
+          merchantId: merchantRefParamSchema,
           keyId: z.string().uuid(),
         }),
         body: z.object({
@@ -547,7 +551,9 @@ export async function registerProviderMerchantOpsRoutes(app: FastifyInstance) {
     },
     async (request, reply) => {
       if (!ensurePermission(request, reply, "merchant.status.write")) return;
-      const { merchantId, keyId } = request.params as { merchantId: string; keyId: string };
+      const { merchantId: merchantRef, keyId } = request.params as { merchantId: string; keyId: string };
+      const merchantId = await merchantIdFromRef(merchantRef, reply);
+      if (!merchantId) return;
 
       const [key] = await db
         .select()

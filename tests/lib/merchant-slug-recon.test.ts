@@ -1,11 +1,25 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { slugifyMerchantName } from "../../src/lib/merchant-slug.js";
+import {
+  MERCHANT_SLUG_MAX_LENGTH,
+  slugifyMerchantName,
+  isMerchantUuid,
+} from "../../src/lib/merchant-slug.js";
 import { reconciliationReportToCsv } from "../../src/lib/reconciliation-report.js";
 
 test("slugifyMerchantName produces readable slug", () => {
   assert.equal(slugifyMerchantName("Acme Payments Ltd."), "acme-payments-ltd");
   assert.equal(slugifyMerchantName("  Hello   World  "), "hello-world");
+});
+
+test("slugifyMerchantName respects max base length", () => {
+  const longName = "A".repeat(100);
+  assert.ok(slugifyMerchantName(longName).length <= MERCHANT_SLUG_MAX_LENGTH);
+});
+
+test("isMerchantUuid detects uuid", () => {
+  assert.equal(isMerchantUuid("7f2ef700-920e-4e67-bbc9-7a9d6dfee81c"), true);
+  assert.equal(isMerchantUuid("acme-payments"), false);
 });
 
 test("reconciliationReportToCsv includes header and row", () => {

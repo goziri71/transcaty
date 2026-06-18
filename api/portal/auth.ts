@@ -38,6 +38,15 @@ const errorResponse = z.object({
   message: z.string().optional(),
 });
 
+const portalMerchantSchema = z.object({
+  id: z.string(),
+  slug: z.string(),
+  businessName: z.string(),
+  name: z.string(),
+  status: z.string(),
+  kycStatus: z.string(),
+});
+
 export async function registerPortalAuthRoutes(app: FastifyInstance) {
   app.post(
     "/portal/auth/signup",
@@ -52,14 +61,11 @@ export async function registerPortalAuthRoutes(app: FastifyInstance) {
           201: z.object({
             token: z.string(),
             merchantId: z.string(),
+            merchantSlug: z.string(),
             email: z.string(),
             role: z.string(),
             needsActivation: z.boolean(),
-            merchant: z.object({
-              name: z.string(),
-              status: z.string(),
-              kycStatus: z.string(),
-            }),
+            merchant: portalMerchantSchema,
           }),
           400: errorResponse,
           500: errorResponse,
@@ -162,6 +168,9 @@ export async function registerPortalAuthRoutes(app: FastifyInstance) {
         role: "admin",
         needsActivation: true,
         merchant: {
+          id: merchant.id,
+          slug: merchant.slug ?? slug,
+          businessName: body.businessName.trim(),
           name: body.businessName.trim(),
           status: "pending",
           kycStatus: "pending",
@@ -187,13 +196,8 @@ export async function registerPortalAuthRoutes(app: FastifyInstance) {
             email: z.string(),
             role: z.string().optional(),
             needsActivation: z.boolean().optional(),
-            merchant: z
-              .object({
-                name: z.string(),
-                status: z.string(),
-                kycStatus: z.string(),
-              })
-              .optional(),
+            merchantSlug: z.string().optional(),
+            merchant: portalMerchantSchema.optional(),
           }),
           401: errorResponse,
           500: errorResponse,
@@ -254,6 +258,8 @@ export async function registerPortalAuthRoutes(app: FastifyInstance) {
 
       const [merchant] = await db
         .select({
+          id: merchants.id,
+          slug: merchants.slug,
           name: merchants.name,
           status: merchants.status,
           kycStatus: merchants.kycStatus,
@@ -270,6 +276,16 @@ export async function registerPortalAuthRoutes(app: FastifyInstance) {
       }
 
       const needsActivation = merchant.kycStatus !== "verified";
+      const { ensureMerchantSlug } = await import("../../src/lib/merchant-slug.js");
+      const merchantSlug = await ensureMerchantSlug(merchant.id, merchant.name);
+      const merchantPayload = {
+        id: merchant.id,
+        slug: merchantSlug,
+        businessName: merchant.name,
+        name: merchant.name,
+        status: merchant.status,
+        kycStatus: merchant.kycStatus ?? "pending",
+      };
 
       if (existing.mfaEnabled) {
         const mfaToken = signPortalMfaPendingToken({
@@ -282,6 +298,7 @@ export async function registerPortalAuthRoutes(app: FastifyInstance) {
           requiresMfa: true,
           mfaToken,
           merchantId: existing.merchantId,
+          merchantSlug,
           email: existing.email,
         });
       }
@@ -322,14 +339,11 @@ export async function registerPortalAuthRoutes(app: FastifyInstance) {
       return reply.send({
         token,
         merchantId: existing.merchantId,
+        merchantSlug,
         email: existing.email,
         role: existing.role,
         needsActivation,
-        merchant: {
-          name: merchant.name,
-          status: merchant.status,
-          kycStatus: merchant.kycStatus ?? "pending",
-        },
+        merchant: merchantPayload,
       });
     }
   );
@@ -346,14 +360,11 @@ export async function registerPortalAuthRoutes(app: FastifyInstance) {
           200: z.object({
             token: z.string(),
             merchantId: z.string(),
+            merchantSlug: z.string(),
             email: z.string(),
             role: z.string(),
             needsActivation: z.boolean(),
-            merchant: z.object({
-              name: z.string(),
-              status: z.string(),
-              kycStatus: z.string(),
-            }),
+            merchant: portalMerchantSchema,
           }),
           401: errorResponse,
           500: errorResponse,
@@ -409,6 +420,7 @@ export async function registerPortalAuthRoutes(app: FastifyInstance) {
 
       const [merchant] = await db
         .select({
+          id: merchants.id,
           name: merchants.name,
           status: merchants.status,
           kycStatus: merchants.kycStatus,
@@ -422,6 +434,8 @@ export async function registerPortalAuthRoutes(app: FastifyInstance) {
       }
 
       const needsActivation = merchant.kycStatus !== "verified";
+      const { ensureMerchantSlug } = await import("../../src/lib/merchant-slug.js");
+      const merchantSlug = await ensureMerchantSlug(merchant.id, merchant.name);
       const token = signPortalToken({
         merchantUserId: pending.merchantUserId,
         merchantId: pending.merchantId,
@@ -458,10 +472,14 @@ export async function registerPortalAuthRoutes(app: FastifyInstance) {
       return reply.send({
         token,
         merchantId: pending.merchantId,
+        merchantSlug,
         email: pending.email,
         role: pending.role,
         needsActivation,
         merchant: {
+          id: merchant.id,
+          slug: merchantSlug,
+          businessName: merchant.name,
           name: merchant.name,
           status: merchant.status,
           kycStatus: merchant.kycStatus ?? "pending",

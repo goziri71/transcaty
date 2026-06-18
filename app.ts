@@ -499,6 +499,8 @@ export async function buildApp() {
           200: z.object({
             merchantId: z.string(),
             merchantSlug: z.string(),
+            slug: z.string(),
+            businessName: z.string(),
             scopes: z.array(z.string()),
             environment: z.string(),
           }),
@@ -518,6 +520,8 @@ export async function buildApp() {
       return {
         merchantId: m.merchantId,
         merchantSlug,
+        slug: merchantSlug,
+        businessName: row?.name ?? "merchant",
         scopes: m.scopes,
         environment: m.environment,
       };

@@ -44,7 +44,8 @@ B2B payment platform for domestic and cross-border pay-in and pay-out.
 4. **Run migrations**
 
    ```bash
-   npm run db:push
+   npm run db:check    # confirm host/database before migrating
+   npm run db:migrate
    ```
 
 5. **Start development server**

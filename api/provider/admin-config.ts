@@ -10,7 +10,6 @@ import {
   merchantApiIpRules,
   merchantFeeSchedules,
   merchantFxOverrides,
-  merchants,
 } from "../../src/db/schema/index.js";
 import {
   canProviderAccess,
@@ -23,6 +22,7 @@ import { validateCidrList, normalizeCidrList } from "../../src/lib/ip-cidr.js";
 import { invalidateMerchantIpRuleCache } from "../../src/lib/merchant-ip-whitelist.js";
 import { applySpreadToCryptoAmount } from "../../src/lib/fx/spread.js";
 import { resolveFxSpread } from "../../src/lib/fx/rate-resolver.js";
+import { merchantRefParamSchema, resolveMerchantId } from "../../src/lib/merchant-ref.js";
 
 const errorResponse = z.object({
   error: z.string(),
@@ -58,13 +58,13 @@ function ensurePermission(
   return true;
 }
 
-async function ensureMerchantExists(merchantId: string, reply: FastifyReply): Promise<boolean> {
-  const [m] = await db.select({ id: merchants.id }).from(merchants).where(eq(merchants.id, merchantId)).limit(1);
-  if (!m) {
+async function ensureMerchantFromRef(merchantRef: string, reply: FastifyReply): Promise<string | null> {
+  const merchantId = await resolveMerchantId(merchantRef);
+  if (!merchantId) {
     reply.status(404).send({ error: "Not found", message: "Merchant not found" });
-    return false;
+    return null;
   }
-  return true;
+  return merchantId;
 }
 
 const fxProfileSchema = z.object({
@@ -323,7 +323,7 @@ export async function registerProviderAdminConfigRoutes(app: FastifyInstance) {
     "/provider/merchants/:merchantId/fx-overrides",
     {
       schema: {
-        params: z.object({ merchantId: z.string().uuid() }),
+        params: z.object({ merchantId: merchantRefParamSchema }),
         querystring: z.object({ environment: z.enum(ENV).optional() }),
         response: {
           200: z.object({
@@ -350,8 +350,9 @@ export async function registerProviderAdminConfigRoutes(app: FastifyInstance) {
     },
     async (request, reply) => {
       if (!ensurePermission(request, reply, "merchant.rates.read")) return;
-      const { merchantId } = request.params as { merchantId: string };
-      if (!(await ensureMerchantExists(merchantId, reply))) return;
+      const { merchantId: merchantRef } = request.params as { merchantId: string };
+      const merchantId = await ensureMerchantFromRef(merchantRef, reply);
+      if (!merchantId) return;
       const { environment } = request.query as { environment?: (typeof ENV)[number] };
       const conditions = [eq(merchantFxOverrides.merchantId, merchantId)];
       if (environment) conditions.push(eq(merchantFxOverrides.environment, environment));
@@ -381,7 +382,7 @@ export async function registerProviderAdminConfigRoutes(app: FastifyInstance) {
     "/provider/merchants/:merchantId/fx-overrides",
     {
       schema: {
-        params: z.object({ merchantId: z.string().uuid() }),
+        params: z.object({ merchantId: merchantRefParamSchema }),
         body: z.object({
           environment: z.enum(ENV),
           product: z.enum(FX_PRODUCT),
@@ -399,8 +400,9 @@ export async function registerProviderAdminConfigRoutes(app: FastifyInstance) {
     async (request, reply) => {
       if (!ensurePermission(request, reply, "merchant.rates.write")) return;
       if (!(await requireProviderStepUp(request, reply, "merchant.rates.write"))) return;
-      const { merchantId } = request.params as { merchantId: string };
-      if (!(await ensureMerchantExists(merchantId, reply))) return;
+      const { merchantId: merchantRef } = request.params as { merchantId: string };
+      const merchantId = await ensureMerchantFromRef(merchantRef, reply);
+      if (!merchantId) return;
       const body = request.body as Record<string, unknown>;
       const currency = String(body.settledCurrency).trim().toUpperCase();
       const network = (body.networkSymbol as string | null | undefined)?.trim() || null;
@@ -489,7 +491,7 @@ export async function registerProviderAdminConfigRoutes(app: FastifyInstance) {
     "/provider/merchants/:merchantId/fee-schedules",
     {
       schema: {
-        params: z.object({ merchantId: z.string().uuid() }),
+        params: z.object({ merchantId: merchantRefParamSchema }),
         querystring: z.object({ environment: z.enum(ENV).optional(), status: z.string().optional() }),
         response: {
           200: z.object({ items: z.array(feeScheduleSchema) }),
@@ -501,8 +503,9 @@ export async function registerProviderAdminConfigRoutes(app: FastifyInstance) {
     },
     async (request, reply) => {
       if (!ensurePermission(request, reply, "merchant.pricing.read")) return;
-      const { merchantId } = request.params as { merchantId: string };
-      if (!(await ensureMerchantExists(merchantId, reply))) return;
+      const { merchantId: merchantRef } = request.params as { merchantId: string };
+      const merchantId = await ensureMerchantFromRef(merchantRef, reply);
+      if (!merchantId) return;
       const q = request.query as { environment?: (typeof ENV)[number]; status?: string };
       const conditions = [eq(merchantFeeSchedules.merchantId, merchantId)];
       if (q.environment) conditions.push(eq(merchantFeeSchedules.environment, q.environment));
@@ -536,7 +539,7 @@ export async function registerProviderAdminConfigRoutes(app: FastifyInstance) {
     "/provider/merchants/:merchantId/fee-schedules",
     {
       schema: {
-        params: z.object({ merchantId: z.string().uuid() }),
+        params: z.object({ merchantId: merchantRefParamSchema }),
         body: z.object({
           environment: z.enum(ENV),
           rail: z.enum(FEE_RAIL),
@@ -556,8 +559,9 @@ export async function registerProviderAdminConfigRoutes(app: FastifyInstance) {
     async (request, reply) => {
       if (!ensurePermission(request, reply, "merchant.pricing.write")) return;
       if (!(await requireProviderStepUp(request, reply, "merchant.pricing.write"))) return;
-      const { merchantId } = request.params as { merchantId: string };
-      if (!(await ensureMerchantExists(merchantId, reply))) return;
+      const { merchantId: merchantRef } = request.params as { merchantId: string };
+      const merchantId = await ensureMerchantFromRef(merchantRef, reply);
+      if (!merchantId) return;
       const body = request.body as Record<string, unknown>;
       const [row] = await db
         .insert(merchantFeeSchedules)
@@ -605,7 +609,7 @@ export async function registerProviderAdminConfigRoutes(app: FastifyInstance) {
     "/provider/merchants/:merchantId/api-ip-rules",
     {
       schema: {
-        params: z.object({ merchantId: z.string().uuid() }),
+        params: z.object({ merchantId: merchantRefParamSchema }),
         querystring: z.object({ environment: z.enum(ENV) }),
         response: {
           200: z.object({
@@ -626,8 +630,9 @@ export async function registerProviderAdminConfigRoutes(app: FastifyInstance) {
     },
     async (request, reply) => {
       if (!ensurePermission(request, reply, "merchant.ip_whitelist.read")) return;
-      const { merchantId } = request.params as { merchantId: string };
-      if (!(await ensureMerchantExists(merchantId, reply))) return;
+      const { merchantId: merchantRef } = request.params as { merchantId: string };
+      const merchantId = await ensureMerchantFromRef(merchantRef, reply);
+      if (!merchantId) return;
       const { environment } = request.query as { environment: (typeof ENV)[number] };
       const [row] = await db
         .select()
@@ -663,7 +668,7 @@ export async function registerProviderAdminConfigRoutes(app: FastifyInstance) {
     "/provider/merchants/:merchantId/api-ip-rules",
     {
       schema: {
-        params: z.object({ merchantId: z.string().uuid() }),
+        params: z.object({ merchantId: merchantRefParamSchema }),
         body: z.object({
           environment: z.enum(ENV),
           enabled: z.boolean(),
@@ -683,8 +688,9 @@ export async function registerProviderAdminConfigRoutes(app: FastifyInstance) {
     async (request, reply) => {
       if (!ensurePermission(request, reply, "merchant.ip_whitelist.write")) return;
       if (!(await requireProviderStepUp(request, reply, "merchant.ip_whitelist.write"))) return;
-      const { merchantId } = request.params as { merchantId: string };
-      if (!(await ensureMerchantExists(merchantId, reply))) return;
+      const { merchantId: merchantRef } = request.params as { merchantId: string };
+      const merchantId = await ensureMerchantFromRef(merchantRef, reply);
+      if (!merchantId) return;
       const body = request.body as {
         environment: (typeof ENV)[number];
         enabled: boolean;

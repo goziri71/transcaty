@@ -12,7 +12,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
-import { ensureDbSsl, getSecret } from "../src/lib/encryption.js";
+import { resolveDatabaseUrl } from "../src/lib/db-connection.js";
 
 const MIGRATION_FILE = "0021_merchant_markets.sql";
 
@@ -26,15 +26,7 @@ export function loadMerchantMarketsMigrationSql(): string {
 }
 
 function connectionString(): string {
-  const raw = getSecret("DATABASE_URL", "DATABASE_URL_ENC");
-  const base =
-    raw ?? (process.env.RENDER ? "" : "postgresql://localhost:5432/transacty");
-  if (!base) {
-    throw new Error(
-      "DATABASE_URL or DATABASE_URL_ENC must be set (e.g. in .env or Render environment)."
-    );
-  }
-  return ensureDbSsl(base);
+  return resolveDatabaseUrl();
 }
 
 export type RunMerchantMarketsMigrationOptions = {

@@ -39,19 +39,29 @@ Older baseline docs still apply: [PORTAL_FRONTEND_SPEC.md](./PORTAL_FRONTEND_SPE
 
 ## 1. Merchant slug
 
-Human-readable public id (e.g. `acme-payments-ltd`). **UUID `merchantId` stays canonical** for API keys, webhooks, and transaction ids.
+Human-readable public id (e.g. `acme-payments`). **UUID `merchantId` stays canonical** for API keys, webhooks, and transaction ids.
+
+**Max slug length:** 32 characters (auto-generated from business name).
+
+**Provider routes:** `:merchantId` accepts **UUID or slug** (case-insensitive), e.g.  
+`/provider/merchants/acme-payments/overview` and `/provider/merchants/7f2ef700-…/overview`.
 
 ### Portal
 
-**Signup response** (`201`):
+**Signup / login / MFA** — `merchant` object and top-level fields:
 
 ```json
 {
-  "token": "…",
   "merchantId": "uuid",
-  "merchantSlug": "acme-payments-ltd",
-  "email": "ops@acme.com",
-  "needsActivation": true
+  "merchantSlug": "acme-payments",
+  "merchant": {
+    "id": "uuid",
+    "slug": "acme-payments",
+    "businessName": "Acme Payments Ltd",
+    "name": "Acme Payments Ltd",
+    "status": "pending",
+    "kycStatus": "pending"
+  }
 }
 ```
 
@@ -60,18 +70,32 @@ Human-readable public id (e.g. `acme-payments-ltd`). **UUID `merchantId` stays c
 ```json
 {
   "merchantId": "uuid",
-  "merchantSlug": "acme-payments-ltd",
+  "merchantSlug": "acme-payments",
+  "slug": "acme-payments",
   "businessName": "Acme Payments Ltd",
-  "email": "…",
-  "kycStatus": "pending",
-  "needsActivation": true,
-  "canCreateApiKeys": false,
-  …
+  ...
 }
 ```
 
-- `merchantSlug` is auto-created on signup.
-- Legacy merchants without slug: first `GET /portal/me` backfills slug server-side.
+### Provider admin
+
+**Merchant list** `GET /provider/merchants` and **overview** `GET /provider/merchants/:merchantId/overview`:
+
+```json
+{
+  "merchant": {
+    "id": "uuid",
+    "slug": "acme-payments",
+    "businessName": "Acme Payments Ltd",
+    "name": "Acme Payments Ltd",
+    "status": "active",
+    "kycStatus": "verified",
+    "createdAt": "2026-06-12T12:27:45.846Z"
+  }
+}
+```
+
+Search `?q=` matches **business name**, **slug**, or **UUID**.
 
 ### Merchant API
 
@@ -80,7 +104,9 @@ Human-readable public id (e.g. `acme-payments-ltd`). **UUID `merchantId` stays c
 ```json
 {
   "merchantId": "uuid",
-  "merchantSlug": "acme-payments-ltd",
+  "merchantSlug": "acme-payments",
+  "slug": "acme-payments",
+  "businessName": "Acme Payments Ltd",
   "scopes": ["payin:create", "…"],
   "environment": "test"
 }
@@ -88,9 +114,9 @@ Human-readable public id (e.g. `acme-payments-ltd`). **UUID `merchantId` stays c
 
 ### UI guidance
 
-- Display as **Merchant ID** or **Account slug** (not “username”).
-- Support copy-to-clipboard for support tickets.
-- Do **not** use slug in API paths yet — still use UUID `transactionId` everywhere.
+- Show all three: **Merchant ID** (UUID, copy), **Slug** (copy), **Business name** (display).
+- Provider deep links may use slug in the URL path.
+- Do **not** use slug in transaction API paths — still use UUID `transactionId`.
 
 ---
 

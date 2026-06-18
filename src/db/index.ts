@@ -1,19 +1,9 @@
 import { drizzle } from "drizzle-orm/node-postgres";
 import pg from "pg";
 import * as schema from "./schema/index.js";
-import { ensureDbSsl, getSecret } from "../lib/encryption.js";
+import { resolveDatabaseUrl } from "../lib/db-connection.js";
 
-const raw = getSecret("DATABASE_URL", "DATABASE_URL_ENC");
-const connectionString = ensureDbSsl(
-  raw ?? (process.env.RENDER ? "" : "postgresql://localhost:5432/transacty")
-);
-
-if (!connectionString) {
-  throw new Error(
-    "DATABASE_URL or DATABASE_URL_ENC must be set. " +
-      "On Render: add env vars in Dashboard → Environment, or link a PostgreSQL service."
-  );
-}
+const connectionString = resolveDatabaseUrl();
 
 function envInt(name: string, fallback: number, min = 0): number {
   const raw = process.env[name];

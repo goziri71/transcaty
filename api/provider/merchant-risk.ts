@@ -1,13 +1,14 @@
 /**
  * Provider admin: merchant fraud blacklist (phone / account / email).
  */
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
 import { and, desc, eq } from "drizzle-orm";
 import { db } from "../../src/db/index.js";
 import { merchantBlacklist } from "../../src/db/schema/index.js";
 import { audit } from "../../src/lib/audit.js";
 import { canProviderAccess } from "../../src/lib/provider-auth.js";
+import { merchantRefParamSchema, resolveMerchantId } from "../../src/lib/merchant-ref.js";
 
 const errorResponse = z.object({
   error: z.string(),
@@ -18,12 +19,21 @@ function normalizeBlacklistValue(value: string): string {
   return value.trim().toLowerCase().replace(/\s+/g, "");
 }
 
+async function merchantIdFromRef(merchantRef: string, reply: FastifyReply): Promise<string | null> {
+  const merchantId = await resolveMerchantId(merchantRef);
+  if (!merchantId) {
+    reply.status(404).send({ error: "Not found", message: "Merchant not found" });
+    return null;
+  }
+  return merchantId;
+}
+
 export async function registerProviderMerchantRiskRoutes(app: FastifyInstance) {
   app.get(
     "/provider/merchants/:merchantId/blacklist",
     {
       schema: {
-        params: z.object({ merchantId: z.string().uuid() }),
+        params: z.object({ merchantId: merchantRefParamSchema }),
         querystring: z.object({
           environment: z.enum(["test", "live"]).default("test"),
         }),
@@ -50,7 +60,9 @@ export async function registerProviderMerchantRiskRoutes(app: FastifyInstance) {
       if (!canProviderAccess(actor.role, "merchant.status.write")) {
         return reply.status(403).send({ error: "Forbidden", message: "Insufficient role" });
       }
-      const { merchantId } = request.params as { merchantId: string };
+      const { merchantId: merchantRef } = request.params as { merchantId: string };
+      const merchantId = await merchantIdFromRef(merchantRef, reply);
+      if (!merchantId) return;
       const { environment } = request.query as { environment: "test" | "live" };
       const rows = await db
         .select()
@@ -75,7 +87,7 @@ export async function registerProviderMerchantRiskRoutes(app: FastifyInstance) {
     "/provider/merchants/:merchantId/blacklist",
     {
       schema: {
-        params: z.object({ merchantId: z.string().uuid() }),
+        params: z.object({ merchantId: merchantRefParamSchema }),
         body: z.object({
           environment: z.enum(["test", "live"]).default("test"),
           entryType: z.enum(["phone", "account", "email"]),
@@ -96,7 +108,9 @@ export async function registerProviderMerchantRiskRoutes(app: FastifyInstance) {
       if (!canProviderAccess(actor.role, "merchant.status.write")) {
         return reply.status(403).send({ error: "Forbidden", message: "Insufficient role" });
       }
-      const { merchantId } = request.params as { merchantId: string };
+      const { merchantId: merchantRef } = request.params as { merchantId: string };
+      const merchantId = await merchantIdFromRef(merchantRef, reply);
+      if (!merchantId) return;
       const body = request.body as {
         environment: "test" | "live";
         entryType: "phone" | "account" | "email";
@@ -147,7 +161,7 @@ export async function registerProviderMerchantRiskRoutes(app: FastifyInstance) {
     {
       schema: {
         params: z.object({
-          merchantId: z.string().uuid(),
+          merchantId: merchantRefParamSchema,
           entryId: z.string().uuid(),
         }),
         response: {
@@ -164,7 +178,9 @@ export async function registerProviderMerchantRiskRoutes(app: FastifyInstance) {
       if (!canProviderAccess(actor.role, "merchant.status.write")) {
         return reply.status(403).send({ error: "Forbidden", message: "Insufficient role" });
       }
-      const { merchantId, entryId } = request.params as { merchantId: string; entryId: string };
+      const { merchantId: merchantRef, entryId } = request.params as { merchantId: string; entryId: string };
+      const merchantId = await merchantIdFromRef(merchantRef, reply);
+      if (!merchantId) return;
       const [deleted] = await db
         .delete(merchantBlacklist)
         .where(and(eq(merchantBlacklist.id, entryId), eq(merchantBlacklist.merchantId, merchantId)))

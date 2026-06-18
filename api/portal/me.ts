@@ -70,6 +70,7 @@ export async function registerPortalMeRoutes(app: FastifyInstance) {
           200: z.object({
             merchantId: z.string(),
             merchantSlug: z.string(),
+            slug: z.string(),
             businessName: z.string(),
             email: z.string(),
             role: z.string(),
@@ -155,6 +156,7 @@ export async function registerPortalMeRoutes(app: FastifyInstance) {
       return reply.send({
         merchantId: merchant.id,
         merchantSlug,
+        slug: merchantSlug,
         businessName: merchant.name,
         email: user.email,
         role: user.role,

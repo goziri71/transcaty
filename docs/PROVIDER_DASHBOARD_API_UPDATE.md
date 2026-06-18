@@ -73,12 +73,16 @@ Response (shape):
 
 Returns all key merchant-level sections for one-screen drill view.
 
+**`:merchantId`** accepts merchant **UUID** or **slug** (max 32 chars, e.g. `acme-payments`).
+
 Response (shape):
 
 ```json
 {
   "merchant": {
     "id": "uuid",
+    "slug": "acme-payments",
+    "businessName": "string",
     "name": "string",
     "status": "pending|active|suspended|closed",
     "kycStatus": "pending|verified|rejected",
