@@ -299,7 +299,7 @@ We separate **“which countries a merchant may use”** from **“which process
 | Market | Settlement currencies (wallets provisioned on approval) |
 |--------|--------------------------------------------------------|
 | Bangladesh | BDT |
-| India | INR, USDT (UPI settlement credits USDT) |
+| India | USDT (UPI settlement credits USDT; payer may pay INR fiat) |
 | Europe | USDC |
 
 **Table:** `merchant_markets` — states: `disabled` → `requested` → `kyb_in_review` → `approved` / `suspended`.

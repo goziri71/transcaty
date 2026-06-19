@@ -39,12 +39,21 @@ test("isTyltManualSettlementSuccessWebhook requires success event + manual flag"
   assert.equal(parseCrossRampEventId(MANUAL_SUCCESS_PAYLOAD), 4);
 });
 
-test("parseUpiPayinSettlementCurrency defaults to USDT for India UPI webhooks", () => {
+test("parseUpiPayinSettlementCurrency always returns USDT for India UPI", () => {
   assert.equal(
     parseUpiPayinSettlementCurrency({
       data: {
         trade: { cryptoCurrency: { symbol: "USDT" } },
         accounts: { cryptoCurrencySymbol: "USDT", merchantAccountCredited: 4.82 },
+      },
+    }),
+    "USDT"
+  );
+  assert.equal(
+    parseUpiPayinSettlementCurrency({
+      data: {
+        trade: { cryptoCurrency: { symbol: "INR" } },
+        accounts: { cryptoCurrencySymbol: "INR", merchantAccountCredited: 500 },
       },
     }),
     "USDT"

@@ -5,7 +5,7 @@ import { eq, and } from "drizzle-orm";
 import { db } from "../../../src/db/index.js";
 import { transactions, wallets, ledgerEntries } from "../../../src/db/schema/index.js";
 import { audit } from "../../../src/lib/audit.js";
-import { tryApplyTransactionFee } from "../../../src/lib/billing/index.js";
+import { previewTransactionFee, payoutTotalWalletDebit, ensurePayoutFeeCollected } from "../../../src/lib/billing/index.js";
 import { resolveFxSpread } from "../../../src/lib/fx/rate-resolver.js";
 import { applySpreadToCryptoAmount } from "../../../src/lib/fx/spread.js";
 import { addAmount, assertPositive, cmpAmount, subAmount } from "../../../src/lib/money.js";
@@ -214,6 +214,16 @@ export async function createTyltCpgPayoutRequest(params: {
   const spreadParts = applySpreadToCryptoAmount(params.amount, fxSpread?.spreadBps ?? 0);
   const debitAmount = spreadParts.totalDebit;
 
+  const payoutFeePreview = await previewTransactionFee({
+    merchantId: params.merchantId,
+    environment: params.environment,
+    currency: params.settledCurrency,
+    provider: "tylt-cpg-payout",
+    amount: debitAmount,
+    feeType: "payout",
+  });
+  const totalWalletDebit = payoutTotalWalletDebit(debitAmount, payoutFeePreview);
+
   const metadata = {
     rail: RAIL,
     tyltProduct: TYLT_PRODUCT_CPG_PAYOUT,
@@ -258,7 +268,7 @@ export async function createTyltCpgPayoutRequest(params: {
     if (!wallet) {
       throw new Error("Merchant wallet not found");
     }
-    if (cmpAmount(wallet.balance, debitAmount) < 0) {
+    if (cmpAmount(wallet.balance, totalWalletDebit) < 0) {
       throw new Error("Insufficient balance");
     }
 
@@ -324,7 +334,7 @@ export async function createTyltCpgPayoutRequest(params: {
       id: tx.id,
       merchantId: params.merchantId,
       environment: params.environment,
-      amount: params.amount,
+      amount: debitAmount,
       currency: params.settledCurrency,
       reason: err instanceof Error ? err.message : String(err),
     });
@@ -338,7 +348,7 @@ export async function createTyltCpgPayoutRequest(params: {
       id: tx.id,
       merchantId: params.merchantId,
       environment: params.environment,
-      amount: params.amount,
+      amount: debitAmount,
       currency: params.settledCurrency,
       reason: JSON.stringify(json),
       externalId: platformOrderId ?? null,
@@ -599,7 +609,7 @@ export async function applyTyltCpgPayoutWebhookPayload(
 
     if (!updated) return false;
 
-      await tryApplyTransactionFee(
+      await ensurePayoutFeeCollected(
         {
           merchantId: tx.merchantId,
           transactionId: tx.id,

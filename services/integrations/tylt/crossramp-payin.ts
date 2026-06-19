@@ -246,18 +246,8 @@ export function isTyltManualSettlementSuccessWebhook(parsed: unknown): boolean {
   return parseManualSettlement(parsed);
 }
 
-/** Merchant wallet currency for India UPI pay-in success (INR payer leg → USDT settlement). */
-export function parseUpiPayinSettlementCurrency(payload: unknown): "USDT" | "INR" {
-  const data = extractTyltPayinDataEnvelope(payload);
-  if (!data) return "USDT";
-  const accounts = data.accounts as Record<string, unknown> | undefined;
-  const trade = data.trade as Record<string, unknown> | undefined;
-  const crypto = trade?.cryptoCurrency as Record<string, unknown> | undefined;
-  const sym = String(accounts?.cryptoCurrencySymbol ?? crypto?.symbol ?? "")
-    .trim()
-    .toUpperCase();
-  if (sym === "USDT") return "USDT";
-  if (sym === "INR") return "INR";
+/** India UPI merchant ledger always settles USDT (payer may pay INR fiat). */
+export function parseUpiPayinSettlementCurrency(_payload: unknown): "USDT" {
   return "USDT";
 }
 
@@ -633,10 +623,7 @@ export async function applyTyltCrossRampWebhookPayload(
     return null;
   }
 
-  const settlementCurrency =
-    eventId != null && SUCCESS_EVENT_IDS.has(eventId)
-      ? parseUpiPayinSettlementCurrency(parsed)
-      : tx.currency;
+  const settlementCurrency = "USDT" as const;
 
   const existingCredit =
     eventId != null && SUCCESS_EVENT_IDS.has(eventId)

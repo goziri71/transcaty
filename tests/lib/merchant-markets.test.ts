@@ -15,7 +15,7 @@ describe("merchant-markets", () => {
 
   it("defines settlement currencies per market", () => {
     assert.deepEqual(MARKET_SETTLEMENT_CURRENCIES.bangladesh, ["BDT"]);
-    assert.deepEqual(MARKET_SETTLEMENT_CURRENCIES.india, ["INR", "USDT"]);
+    assert.deepEqual(MARKET_SETTLEMENT_CURRENCIES.india, ["USDT"]);
     assert.deepEqual(MARKET_SETTLEMENT_CURRENCIES.europe, ["USDC"]);
   });
 

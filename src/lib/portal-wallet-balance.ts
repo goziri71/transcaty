@@ -49,7 +49,8 @@ type PayinPayoutLimits = z.infer<typeof portalWalletLimitsSchema>;
 export function merchantWalletRegionForCurrency(currency: string): PortalWalletRegion {
   const c = currency.trim().toUpperCase();
   if (c === "BDT") return "bangladesh";
-  if (c === "INR" || c === "USDT") return "india";
+  if (c === "USDT") return "india";
+  if (c === "INR") return "other";
   if (c === "USDC" || c === "EUR" || c === "GBP") return "europe";
   return "other";
 }
@@ -60,7 +61,7 @@ export function merchantWalletRegionLabel(region: PortalWalletRegion, currency: 
     case "bangladesh":
       return "Bangladesh";
     case "india":
-      return c === "INR" ? "India (INR)" : "India (USDT)";
+      return "India (USDT)";
     case "europe":
       if (c === "USDC") return "Europe (USDC)";
       if (c === "EUR") return "Europe (EUR)";

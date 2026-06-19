@@ -4,6 +4,7 @@
 import { and, eq } from "drizzle-orm";
 import { db } from "../../../src/db/index.js";
 import { transactions, wallets, ledgerEntries } from "../../../src/db/schema/index.js";
+import { previewTransactionFee, payoutTotalWalletDebit, ensurePayoutFeeCollected } from "../../../src/lib/billing/index.js";
 import { audit } from "../../../src/lib/audit.js";
 import { addAmount, assertPositive, cmpAmount, normalizeMoneyAmountToTwoDecimals, subAmount } from "../../../src/lib/money.js";
 import type { WebhookEvent } from "../../../src/lib/merchant-webhook.js";
@@ -204,6 +205,15 @@ export async function createTyltEurPayoutInstance(params: {
   }
   const spreadParts = applySpreadToCryptoAmount(debitAmountRaw, fxSpread?.spreadBps ?? 0);
   const debitAmount = spreadParts.totalDebit;
+  const payoutFeePreview = await previewTransactionFee({
+    merchantId: params.merchantId,
+    environment: params.environment,
+    currency: SETTLEMENT_CURRENCY,
+    provider: "tylt-eur-payout",
+    amount: debitAmount,
+    feeType: "payout",
+  });
+  const totalWalletDebit = payoutTotalWalletDebit(debitAmount, payoutFeePreview);
   const merchantRate =
     parsed.rate != null && Number.isFinite(parsed.rate)
       ? applySpreadToRate(parsed.rate, fxSpread?.spreadBps ?? 0)
@@ -229,7 +239,7 @@ export async function createTyltEurPayoutInstance(params: {
       if (!wallet) {
         throw new PayoutCreationError("Merchant USDC wallet not found", tx.id, null, "wallet_not_found");
       }
-      if (cmpAmount(wallet.balance, debitAmount) < 0) {
+      if (cmpAmount(wallet.balance, totalWalletDebit) < 0) {
         throw new PayoutCreationError("Insufficient USDC balance", tx.id, null, "insufficient_balance");
       }
 
@@ -442,17 +452,36 @@ export async function applyTyltEurPayoutWebhookPayload(
     };
   }
 
-  const [updated] = await db
-    .update(transactions)
-    .set({
-      status: "success",
-      metadata: mergeMeta(tx.metadata, { lastEventId: eventId ?? 5 }),
-      updatedAt: new Date(),
-    })
-    .where(and(eq(transactions.id, tx.id), eq(transactions.status, "pending")))
-    .returning();
+  const transitioned = await db.transaction(async (txDb) => {
+    const [updated] = await txDb
+      .update(transactions)
+      .set({
+        status: "success",
+        metadata: mergeMeta(tx.metadata, { lastEventId: eventId ?? 5 }),
+        updatedAt: new Date(),
+      })
+      .where(and(eq(transactions.id, tx.id), eq(transactions.status, "pending")))
+      .returning({ id: transactions.id });
 
-  if (!updated) return null;
+    if (!updated) return false;
+
+    await ensurePayoutFeeCollected(
+      {
+        merchantId: tx.merchantId,
+        transactionId: tx.id,
+        environment: tx.environment,
+        currency: tx.currency,
+        provider: tx.provider,
+        amount: String(meta.debitAmount ?? tx.amount),
+        feeType: "payout",
+      },
+      txDb
+    );
+
+    return true;
+  });
+
+  if (!transitioned) return null;
 
   audit({
     action: "payout.completed",

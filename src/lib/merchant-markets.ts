@@ -42,7 +42,7 @@ export type WalletActivationStatus = (typeof WALLET_ACTIVATION_STATUSES)[number]
 /** Settlement currencies provisioned when a market is approved. */
 export const MARKET_SETTLEMENT_CURRENCIES: Record<MerchantMarket, readonly string[]> = {
   bangladesh: ["BDT"],
-  india: ["INR", "USDT"],
+  india: ["USDT"],
   europe: ["USDC"],
 };
 

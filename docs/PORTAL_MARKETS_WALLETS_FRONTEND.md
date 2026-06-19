@@ -48,7 +48,7 @@ Merchants no longer get a single implicit “Bangladesh-only” wallet on signup
 | Market ID     | Display name | Settlement pockets (currencies) | Typical rails (API, not portal)      |
 |---------------|--------------|----------------------------------|--------------------------------------|
 | `bangladesh`  | Bangladesh   | `BDT`                            | Payok pay-in / pay-out               |
-| `india`       | India        | `INR`, `USDT`                    | H2H, CPG, internal transfer          |
+| `india`       | India        | `USDT`                           | H2H, CPG, internal transfer          |
 | `europe`      | Europe       | `USDC`                           | EUR open banking pay-in / EUR payout |
 
 - **New signups:** all three markets start **`disabled`**; no wallets until a market is **approved**.
@@ -112,7 +112,7 @@ All require portal auth: `Authorization: Bearer <session_jwt>` (see main spec).
       "kybStatus": "not_started",
       "requestedAt": null,
       "approvedAt": null,
-      "settlementCurrencies": ["INR", "USDT"]
+      "settlementCurrencies": ["USDT"]
     },
     {
       "market": "europe",

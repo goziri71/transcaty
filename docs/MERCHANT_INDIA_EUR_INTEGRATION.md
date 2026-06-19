@@ -55,7 +55,7 @@ All portal routes require `Authorization: Bearer <portal_jwt>` (or `X-Portal-Tok
 
 | Endpoint | Use in UI |
 |----------|-----------|
-| `GET /portal/me/wallets?environment=` | **Primary.** One card per settlement pocket per market (`BDT`, `INR`, `USDT`, `USDC`), including **`activationStatus`**: `active`, `not_enabled`, `pending_kyb`, `suspended`. |
+| `GET /portal/me/wallets?environment=` | **Primary.** One card per settlement pocket per market (`BDT`, `USDT`, `USDC`), including **`activationStatus`**: `active`, `not_enabled`, `pending_kyb`, `suspended`. |
 | `GET /portal/me/markets` | Market entitlements: `bangladesh` / `india` / `europe` and KYB status per market. |
 | `POST /portal/me/markets/:market/request` | Merchant requests a new market (`europe`, `india`, `bangladesh`). |
 | `GET /portal/me/balance?environment=` | Legacy headline row (BDT-first) **plus** same data in `items[]`. Prefer **wallets** for India/EU cards. |
@@ -67,7 +67,7 @@ All portal routes require `Authorization: Bearer <portal_jwt>` (or `X-Portal-Tok
 | `region` | Typical `currency` | Suggested card title |
 |----------|-------------------|----------------------|
 | `bangladesh` | BDT | Bangladesh |
-| `india` | USDT or INR | India (USDT) / India (INR) |
+| `india` | USDT | India (USDT) |
 | `europe` | USDC | Europe (USDC) |
 
 - **`availableBalance`** = settled ledger balance (spendable for payout).
@@ -157,7 +157,7 @@ Details: `docs/POSTMAN_MERCHANT_API_GUIDE.md` § HMAC.
 
 ### 4.1 Merchant-facing summary (help center copy)
 
-> **India UPI pay-in** lets your customers pay in **INR** via UPI. You build the payment screen (QR / UPI ID). Your **server** creates a pay-in, shows payment details, collects the bank **UTR** after payment, and confirms with Transacty. When the payment completes, we credit your **INR or USDT** wallet (chosen at create) and notify your webhook.
+> **India UPI pay-in** lets your customers pay in **INR** via UPI. You build the payment screen (QR / UPI ID). Your **server** creates a pay-in, shows payment details, collects the bank **UTR** after payment, and confirms with Transacty. When the payment completes, we credit your **USDT** settlement wallet and notify your webhook (`currencySymbol: INR` on create means the **payer pays INR**, not that you settle in INR).
 
 **Supported on merchant API:** **H2H UPI only** (`/v1/h2h/*`). There is no hosted CrossRamp “pay button” create on `/v1`.
 
@@ -310,7 +310,7 @@ Show an **Approve payout** button in the merchant’s **admin UI** (their produc
 |--|------------|---------------|
 | Success pay-in signal | `eventDetails.eventId` **5** | `trade.event.id` **4** or **6** |
 | Dispute | Use TL Pay / support runbooks | `trade.event.id` **5** |
-| Settlement wallet | **USDC** | **INR** or **USDT** |
+| Settlement wallet | **USDC** | **USDT** |
 | Checkout | **Redirect** `checkoutUrl` | **Merchant-built** UPI UI |
 
 ### 5.5 Europe API reference (merchant server)
@@ -335,7 +335,7 @@ Use this as a sitemap for frontend + in-app docs links.
 
 | Page | Data source | India / EU notes |
 |------|-------------|------------------|
-| **Overview / Balances** | `GET /portal/me/wallets` | Cards for USDT/INR (India), USDC (Europe), BDT (BD). Show `pendingBalance`. |
+| **Overview / Balances** | `GET /portal/me/wallets` | Cards for USDT (India), USDC (Europe), BDT (BD). Show `pendingBalance`. |
 | **Transactions** | `GET /portal/me/transactions?rail=` | Filters: All, Bangladesh, **India**, **Europe**. Columns: date, type, amount, currency, **railLabel**, status. |
 | **Transaction detail** | `GET /portal/me/transactions/:id` | Badge from `railLabel`; optional “Technical” panel for `metadata`. |
 | **API keys** | `/portal/me/api-keys` | Explain scopes; link to **Integration guide** (this doc). |
@@ -405,7 +405,7 @@ Always show a clear **environment switch** in the dashboard so merchants do not 
 A: No. Create pay-ins and payouts from your **server** only. The dashboard uses a separate login (JWT).
 
 **Q: Which wallet receives India payments?**  
-A: The pocket matching `currencySymbol` at create (**INR** or **USDT**). See **Balances**.
+A: **USDT** only. `currencySymbol: INR` at create means the end customer pays in INR via UPI; your ledger credits **USDT**.
 
 **Q: Which wallet receives EU payments?**  
 A: **USDC** (Europe region card).
