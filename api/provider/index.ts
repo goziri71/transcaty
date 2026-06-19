@@ -28,6 +28,7 @@ import {
   requireProviderStepUp,
 } from "../../src/lib/provider-auth.js";
 import { getDefaultPayokEnvironment, type PayokEnvironment } from "../../services/domestic/bangladesh/provider/config.js";
+import { pickPrimaryMerchantWallet, primaryMerchantBalanceByMerchantId } from "../../src/lib/provider-merchant-balance.js";
 import { reconcilePayokPayinByTransactionId } from "../../services/domestic/bangladesh/payin-reconcile.js";
 import { reconcileCrossRampPayinByTransactionId } from "../../services/integrations/tylt/index.js";
 import { ProviderCircuitOpenError } from "../../src/lib/provider-circuit-breaker.js";
@@ -811,6 +812,8 @@ export async function registerProviderRoutes(app: FastifyInstance) {
           status: z.enum(MERCHANT_STATUS).optional(),
           kycStatus: z.enum(KYC_STATUS).optional(),
           q: z.string().min(1).max(200).optional(),
+          /** When set, balance is taken only from this environment; otherwise live wallet is preferred over test. */
+          environment: z.enum(["test", "live"]).optional(),
         }),
         response: {
           200: z.object({
@@ -823,6 +826,8 @@ export async function registerProviderRoutes(app: FastifyInstance) {
                 status: z.string(),
                 kycStatus: z.string(),
                 merchantBalance: z.string().nullable(),
+                merchantBalanceCurrency: z.string().nullable(),
+                merchantBalanceEnvironment: z.enum(["test", "live"]).nullable(),
                 createdAt: z.string(),
               })
             ),
@@ -836,12 +841,13 @@ export async function registerProviderRoutes(app: FastifyInstance) {
     },
     async (request, reply) => {
       if (!ensureProviderPermission(request, reply, "merchant.read")) return;
-      const { limit, offset, status, kycStatus, q } = request.query as {
+      const { limit, offset, status, kycStatus, q, environment } = request.query as {
         limit: number;
         offset: number;
         status?: (typeof MERCHANT_STATUS)[number];
         kycStatus?: (typeof KYC_STATUS)[number];
         q?: string;
+        environment?: "test" | "live";
       };
 
       const conditions = [];
@@ -886,12 +892,14 @@ export async function registerProviderRoutes(app: FastifyInstance) {
         ? await db
             .select({
               merchantId: wallets.merchantId,
+              environment: wallets.environment,
+              currency: wallets.currency,
               balance: wallets.balance,
             })
             .from(wallets)
-            .where(and(eq(wallets.type, "merchant"), eq(wallets.environment, "live"), inArray(wallets.merchantId, merchantIds)))
+            .where(and(eq(wallets.type, "merchant"), inArray(wallets.merchantId, merchantIds)))
         : [];
-      const balanceMap = new Map(walletRows.map((w) => [w.merchantId, String(w.balance)]));
+      const balanceMap = primaryMerchantBalanceByMerchantId(walletRows, merchantIds, environment);
 
       const { ensureMerchantSlug } = await import("../../src/lib/merchant-slug.js");
 
@@ -899,6 +907,7 @@ export async function registerProviderRoutes(app: FastifyInstance) {
         items: await Promise.all(
           rows.map(async (r) => {
             const slug = r.slug ?? (await ensureMerchantSlug(r.id, r.name));
+            const primaryBalance = balanceMap.get(r.id);
             return {
               id: r.id,
               slug,
@@ -906,7 +915,9 @@ export async function registerProviderRoutes(app: FastifyInstance) {
               name: r.name,
               status: r.status,
               kycStatus: r.kycStatus ?? "pending",
-              merchantBalance: balanceMap.get(r.id) ?? null,
+              merchantBalance: primaryBalance?.balance ?? null,
+              merchantBalanceCurrency: primaryBalance?.currency ?? null,
+              merchantBalanceEnvironment: primaryBalance?.environment ?? null,
               createdAt: r.createdAt.toISOString(),
             };
           })
@@ -935,6 +946,8 @@ export async function registerProviderRoutes(app: FastifyInstance) {
               .object({
                 id: z.string(),
                 balance: z.string(),
+                currency: z.string(),
+                environment: z.enum(["test", "live"]),
                 status: z.string(),
               })
               .nullable(),
@@ -963,11 +976,21 @@ export async function registerProviderRoutes(app: FastifyInstance) {
       if (!resolved) return;
       const { merchantId, merchant } = resolved;
 
-      const [merchantWallet] = await db
+      const merchantWalletRows = await db
         .select()
         .from(wallets)
-        .where(and(eq(wallets.merchantId, merchantId), eq(wallets.environment, "live"), eq(wallets.type, "merchant")))
-        .limit(1);
+        .where(and(eq(wallets.merchantId, merchantId), eq(wallets.type, "merchant")));
+
+      const primaryWallet = pickPrimaryMerchantWallet(merchantWalletRows);
+      const merchantWallet = primaryWallet
+        ? {
+            id: primaryWallet.id,
+            balance: String(primaryWallet.balance),
+            currency: primaryWallet.currency,
+            environment: primaryWallet.environment,
+            status: primaryWallet.status,
+          }
+        : null;
 
       const [profile] = await db
         .select()
@@ -990,7 +1013,9 @@ export async function registerProviderRoutes(app: FastifyInstance) {
         merchantWallet: merchantWallet
           ? {
               id: merchantWallet.id,
-              balance: String(merchantWallet.balance),
+              balance: merchantWallet.balance,
+              currency: merchantWallet.currency,
+              environment: merchantWallet.environment,
               status: merchantWallet.status,
             }
           : null,
