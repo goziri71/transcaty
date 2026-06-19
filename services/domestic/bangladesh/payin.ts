@@ -7,6 +7,11 @@ import { transactions, wallets, ledgerEntries } from "../../../src/db/schema/ind
 import { payokPayinCreateOrder } from "./provider/client.js";
 import { audit } from "../../../src/lib/audit.js";
 import { tryApplyTransactionFee } from "../../../src/lib/billing/index.js";
+import {
+  buildTransactionFeeBreakdown,
+  feeBreakdownToWebhookFields,
+  formatTransactionFeeBreakdown,
+} from "../../../src/lib/billing/transaction-fee-breakdown.js";
 import { addAmount } from "../../../src/lib/money.js";
 import type { PayokEnvironment } from "./provider/config.js";
 import { assertPayinAllowed } from "../../../src/lib/fraud-policy.js";
@@ -242,10 +247,54 @@ export async function handlePayinCallback(body: {
     });
   }
 
+  const failedFeeFields = feeBreakdownToWebhookFields(
+    formatTransactionFeeBreakdown({
+      type: "payin",
+      status: "failed",
+      amount: String(tx.amount),
+      paidAmount: null,
+      currency: tx.currency,
+      platformFee: "0.00",
+      feeStatus: "none",
+    })
+  );
+
+  if (isSuccess) {
+    const breakdown = await buildTransactionFeeBreakdown({
+      merchantId: tx.merchantId,
+      environment: tx.environment,
+      transactionId: tx.id,
+      type: "payin",
+      status: "success",
+      amount: String(tx.amount),
+      paidAmount,
+      currency: tx.currency,
+      provider: tx.provider,
+      metadata: tx.metadata,
+    });
+    return {
+      merchantId: tx.merchantId,
+      event: {
+        type: "payin.completed" as const,
+        transactionId: tx.id,
+        status: "success",
+        amount: String(tx.amount),
+        paidAmount,
+        platformOrderId,
+        ...feeBreakdownToWebhookFields(breakdown),
+      },
+    };
+  }
+
   return {
     merchantId: tx.merchantId,
-    event: isSuccess
-      ? { type: "payin.completed" as const, transactionId: tx.id, status: "success", amount: String(tx.amount), paidAmount, platformOrderId }
-      : { type: "payin.failed" as const, transactionId: tx.id, status: "failed", amount: String(tx.amount), platformOrderId },
+    event: {
+      type: "payin.failed" as const,
+      transactionId: tx.id,
+      status: "failed",
+      amount: String(tx.amount),
+      platformOrderId,
+      ...failedFeeFields,
+    },
   };
 }

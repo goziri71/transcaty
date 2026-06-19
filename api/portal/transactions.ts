@@ -23,6 +23,15 @@ import {
   sendPortalOperationReply,
 } from "../../src/lib/merchant-facing-errors.js";
 import { presentTransactionRail } from "../../src/lib/transaction-rail-label.js";
+import {
+  transactionFeeBreakdownFieldsSchema,
+  transactionFeeSummaryFieldsSchema,
+  buildTransactionFeeBreakdown,
+  buildTransactionFeeBreakdownBatch,
+  attachFeeBreakdown,
+  feeSummaryFromBreakdown,
+  type TransactionFeeBreakdownInput,
+} from "../../src/lib/billing/transaction-fee-breakdown.js";
 
 const transactionRailFieldsSchema = z.object({
   currency: z.string(),
@@ -100,6 +109,7 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
                   completedAt: z.string().nullable(),
                 })
                 .merge(transactionRailFieldsSchema)
+                .merge(transactionFeeSummaryFieldsSchema.partial())
             ),
             total: z.number(),
             limit: z.number(),
@@ -168,7 +178,24 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
         .limit(limit)
         .offset(offset);
 
-      const items = rows.map((r) => {
+      const breakdowns = await buildTransactionFeeBreakdownBatch(
+        rows.map(
+          (r): TransactionFeeBreakdownInput => ({
+            merchantId: user.merchantId,
+            environment,
+            transactionId: r.id,
+            type: r.type,
+            status: r.status,
+            amount: String(r.amount),
+            paidAmount: r.paidAmount ? String(r.paidAmount) : null,
+            currency: r.currency,
+            provider: r.provider,
+            metadata: r.metadata,
+          })
+        )
+      );
+
+      const items = rows.map((r, index) => {
         let refundOfTransactionId: string | null = null;
         if (r.metadata) {
           try {
@@ -190,6 +217,7 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
           createdAt: r.createdAt.toISOString(),
           completedAt: r.status === "success" ? r.updatedAt.toISOString() : null,
           ...portalTransactionRailFields(r),
+          ...feeSummaryFromBreakdown(breakdowns[index] ?? null),
         };
       });
 
@@ -225,7 +253,8 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
               createdAt: z.string(),
               completedAt: z.string().nullable(),
             })
-            .merge(transactionRailFieldsSchema),
+            .merge(transactionRailFieldsSchema)
+            .merge(transactionFeeSummaryFieldsSchema.partial()),
           401: errorResponse,
           404: errorResponse,
         },
@@ -264,6 +293,19 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
         }
       }
 
+      const breakdown = await buildTransactionFeeBreakdown({
+        merchantId: user.merchantId,
+        environment,
+        transactionId: tx.id,
+        type: tx.type,
+        status: tx.status,
+        amount: String(tx.amount),
+        paidAmount: tx.paidAmount ? String(tx.paidAmount) : null,
+        currency: tx.currency,
+        provider: tx.provider,
+        metadata: tx.metadata,
+      });
+
       return {
         id: tx.id,
         type: tx.type,
@@ -281,6 +323,7 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
           currency: tx.currency,
           metadata: tx.metadata,
         }),
+        ...feeSummaryFromBreakdown(breakdown),
       };
     }
   );
@@ -307,16 +350,18 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
           }),
         }),
         response: {
-          201: z.object({
-            transactionId: z.string(),
-            reference: z.string(),
-            status: z.string(),
-            amount: z.string(),
-            platformOrderId: z.string().nullable(),
-            environment: z.enum(["test", "live"]),
-            recipient: z.object({ masked: z.string() }),
-            estimatedCompletion: z.string().nullable(),
-          }),
+          201: z
+            .object({
+              transactionId: z.string(),
+              reference: z.string(),
+              status: z.string(),
+              amount: z.string(),
+              platformOrderId: z.string().nullable(),
+              environment: z.enum(["test", "live"]),
+              recipient: z.object({ masked: z.string() }),
+              estimatedCompletion: z.string().nullable(),
+            })
+            .merge(transactionFeeBreakdownFieldsSchema.partial()),
           400: payoutErrorResponse,
           401: errorResponse,
           403: errorResponse,
@@ -392,16 +437,32 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
           recipientMasked: maskRecipient(body.benificiaryAccountInfo.number),
         }).catch(() => {});
 
-        return reply.status(201).send({
-          transactionId: result.transactionId,
-          reference: result.transactionId,
-          status: result.status ?? "pending",
-          amount: body.amount,
-          platformOrderId: result.platformOrderId ?? null,
+        const breakdown = await buildTransactionFeeBreakdown({
+          merchantId: user.merchantId,
           environment: body.environment,
-          recipient: { masked: maskRecipient(body.benificiaryAccountInfo.number) },
-          estimatedCompletion: null,
+          transactionId: result.transactionId,
+          type: "payout",
+          status: "pending",
+          amount: body.amount,
+          currency: "BDT",
+          provider: "payok-bd-payout",
         });
+
+        return reply.status(201).send(
+          attachFeeBreakdown(
+            {
+              transactionId: result.transactionId,
+              reference: result.transactionId,
+              status: result.status ?? "pending",
+              amount: body.amount,
+              platformOrderId: result.platformOrderId ?? null,
+              environment: body.environment,
+              recipient: { masked: maskRecipient(body.benificiaryAccountInfo.number) },
+              estimatedCompletion: null,
+            },
+            breakdown
+          )
+        );
       } catch (err) {
         const rawMsg = err instanceof Error ? err.message : String(err);
         audit({

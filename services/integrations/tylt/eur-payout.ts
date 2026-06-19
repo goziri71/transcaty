@@ -5,6 +5,10 @@ import { and, eq } from "drizzle-orm";
 import { db } from "../../../src/db/index.js";
 import { transactions, wallets, ledgerEntries } from "../../../src/db/schema/index.js";
 import { previewTransactionFee, payoutTotalWalletDebit, ensurePayoutFeeCollected } from "../../../src/lib/billing/index.js";
+import {
+  buildTransactionFeeBreakdown,
+  feeBreakdownToWebhookFields,
+} from "../../../src/lib/billing/transaction-fee-breakdown.js";
 import { audit } from "../../../src/lib/audit.js";
 import { addAmount, assertPositive, cmpAmount, normalizeMoneyAmountToTwoDecimals, subAmount } from "../../../src/lib/money.js";
 import type { WebhookEvent } from "../../../src/lib/merchant-webhook.js";
@@ -490,14 +494,28 @@ export async function applyTyltEurPayoutWebhookPayload(
     meta: { product: TYLT_PRODUCT_EUR_PAYOUT, eventId, debitAmount },
   });
 
+  const payoutAmount = String(meta.fiatAmount ?? tx.amount);
+  const feeBaseAmount = String(meta.debitAmount ?? tx.amount);
+  const breakdown = await buildTransactionFeeBreakdown({
+    merchantId: tx.merchantId,
+    environment: tx.environment,
+    transactionId: tx.id,
+    type: "payout",
+    status: "success",
+    amount: feeBaseAmount,
+    currency: tx.currency,
+    provider: tx.provider,
+  });
+
   return {
     merchantId: tx.merchantId,
     event: {
       type: "payout.completed",
       transactionId: tx.id,
       status: "success",
-      amount: String(meta.fiatAmount ?? tx.amount),
+      amount: payoutAmount,
       platformOrderId: tx.externalId ?? null,
+      ...feeBreakdownToWebhookFields(breakdown),
     },
   };
 }

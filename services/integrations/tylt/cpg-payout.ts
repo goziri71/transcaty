@@ -6,6 +6,10 @@ import { db } from "../../../src/db/index.js";
 import { transactions, wallets, ledgerEntries } from "../../../src/db/schema/index.js";
 import { audit } from "../../../src/lib/audit.js";
 import { previewTransactionFee, payoutTotalWalletDebit, ensurePayoutFeeCollected } from "../../../src/lib/billing/index.js";
+import {
+  buildTransactionFeeBreakdown,
+  feeBreakdownToWebhookFields,
+} from "../../../src/lib/billing/transaction-fee-breakdown.js";
 import { resolveFxSpread } from "../../../src/lib/fx/rate-resolver.js";
 import { applySpreadToCryptoAmount } from "../../../src/lib/fx/spread.js";
 import { addAmount, assertPositive, cmpAmount, subAmount } from "../../../src/lib/money.js";
@@ -634,6 +638,17 @@ export async function applyTyltCpgPayoutWebhookPayload(
     meta: { platformOrderId: tx.externalId, product: TYLT_PRODUCT_CPG_PAYOUT, cpgStatus: fields.statusRaw },
   });
 
+  const breakdown = await buildTransactionFeeBreakdown({
+    merchantId: tx.merchantId,
+    environment: tx.environment,
+    transactionId: tx.id,
+    type: "payout",
+    status: "success",
+    amount: String(tx.amount),
+    currency: tx.currency,
+    provider: tx.provider,
+  });
+
   return {
     merchantId: tx.merchantId,
     event: {
@@ -642,6 +657,7 @@ export async function applyTyltCpgPayoutWebhookPayload(
       status: "success",
       amount: String(tx.amount),
       platformOrderId: tx.externalId ?? null,
+      ...feeBreakdownToWebhookFields(breakdown),
     },
   };
 }

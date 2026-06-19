@@ -11,6 +11,11 @@ import { LIMITS } from "../../src/lib/limits.js";
 import { validateMerchantReturnUrl } from "../../src/lib/merchant-return-url.js";
 import { audit } from "../../src/lib/audit.js";
 import { merchantPaymentFlowErrorResponse, sendMerchantFacingReply } from "../../src/lib/merchant-facing-errors.js";
+import {
+  transactionFeeBreakdownFieldsSchema,
+  buildTransactionFeeBreakdown,
+  attachFeeBreakdown,
+} from "../../src/lib/billing/transaction-fee-breakdown.js";
 
 const errorResponse = z.object({
   error: z.string(),
@@ -45,15 +50,17 @@ export async function registerPortalPayinsRoutes(app: FastifyInstance) {
           }),
         }),
         response: {
-          200: z.object({
-            transactionId: z.string(),
-            status: z.string(),
-            amount: z.string(),
-            platformOrderId: z.string().optional(),
-            paymentInfo: z.unknown().optional(),
-            expiresAt: z.string().nullable().optional(),
-            environment: z.enum(["test", "live"]),
-          }),
+          200: z
+            .object({
+              transactionId: z.string(),
+              status: z.string(),
+              amount: z.string(),
+              platformOrderId: z.string().optional(),
+              paymentInfo: z.unknown().optional(),
+              expiresAt: z.string().nullable().optional(),
+              environment: z.enum(["test", "live"]),
+            })
+            .merge(transactionFeeBreakdownFieldsSchema.partial()),
           400: errorResponse,
           401: errorResponse,
           403: errorResponse,
@@ -145,13 +152,26 @@ export async function registerPortalPayinsRoutes(app: FastifyInstance) {
           portalActor: { merchantUserId: user.merchantUserId, email: user.email },
         });
         const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
-        const response = {
-          ...result,
+        const breakdown = await buildTransactionFeeBreakdown({
+          merchantId: user.merchantId,
+          environment: body.environment,
+          transactionId: result.transactionId,
+          type: "payin",
           status: "pending",
           amount: body.amount,
-          expiresAt,
-          environment: body.environment,
-        };
+          currency: "BDT",
+          provider: "payok-bd-payin",
+        });
+        const response = attachFeeBreakdown(
+          {
+            ...result,
+            status: "pending",
+            amount: body.amount,
+            expiresAt,
+            environment: body.environment,
+          },
+          breakdown
+        );
         if (idemKey?.trim()) {
           try {
             await db.insert(idempotencyKeys).values({

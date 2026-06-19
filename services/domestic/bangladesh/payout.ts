@@ -15,6 +15,11 @@ import { transactions, wallets, ledgerEntries } from "../../../src/db/schema/ind
 import { payokPayoutAccountInquiry, payokPayoutCreate } from "./provider/client.js";
 import { audit } from "../../../src/lib/audit.js";
 import { previewTransactionFee, payoutTotalWalletDebit, ensurePayoutFeeCollected } from "../../../src/lib/billing/index.js";
+import {
+  buildTransactionFeeBreakdown,
+  feeBreakdownToWebhookFields,
+  formatTransactionFeeBreakdown,
+} from "../../../src/lib/billing/transaction-fee-breakdown.js";
 import { addAmount, assertPositive, cmpAmount, subAmount } from "../../../src/lib/money.js";
 import type { PayokEnvironment } from "./provider/config.js";
 import { assertPayoutAllowed } from "../../../src/lib/fraud-policy.js";
@@ -454,10 +459,51 @@ export async function handlePayoutCallback(body: {
     });
   }
 
+  const failedFeeFields = feeBreakdownToWebhookFields(
+    formatTransactionFeeBreakdown({
+      type: "payout",
+      status: "failed",
+      amount: String(tx.amount),
+      currency: tx.currency,
+      platformFee: "0.00",
+      feeStatus: "none",
+    })
+  );
+
+  if (isSuccess) {
+    const breakdown = await buildTransactionFeeBreakdown({
+      merchantId: tx.merchantId,
+      environment: tx.environment,
+      transactionId: tx.id,
+      type: "payout",
+      status: "success",
+      amount: String(tx.amount),
+      currency: tx.currency,
+      provider: tx.provider,
+      metadata: tx.metadata,
+    });
+    return {
+      merchantId: tx.merchantId,
+      event: {
+        type: "payout.completed" as const,
+        transactionId: tx.id,
+        status: "success",
+        amount: String(tx.amount),
+        platformOrderId,
+        ...feeBreakdownToWebhookFields(breakdown),
+      },
+    };
+  }
+
   return {
     merchantId: tx.merchantId,
-    event: isSuccess
-      ? { type: "payout.completed" as const, transactionId: tx.id, status: "success", amount: String(tx.amount), platformOrderId }
-      : { type: "payout.failed" as const, transactionId: tx.id, status: "failed", amount: String(tx.amount), platformOrderId },
+    event: {
+      type: "payout.failed" as const,
+      transactionId: tx.id,
+      status: "failed",
+      amount: String(tx.amount),
+      platformOrderId,
+      ...failedFeeFields,
+    },
   };
 }

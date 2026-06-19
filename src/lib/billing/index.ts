@@ -19,3 +19,18 @@ export {
   type TryApplyTransactionFeeInput,
   type TransactionFeePreviewInput,
 } from "./apply-transaction-fee.js";
+export {
+  transactionFeesSchema,
+  transactionFeeBreakdownFieldsSchema,
+  transactionFeeSummaryFieldsSchema,
+  buildTransactionFeeBreakdown,
+  buildTransactionFeeBreakdownBatch,
+  formatTransactionFeeBreakdown,
+  attachFeeBreakdown,
+  feeBreakdownToWebhookFields,
+  feeSummaryFromBreakdown,
+  getAppliedTransactionFeeAmount,
+  type TransactionFeeBreakdownFields,
+  type TransactionFeeBreakdownInput,
+  type TransactionFeeSummaryFields,
+} from "./transaction-fee-breakdown.js";

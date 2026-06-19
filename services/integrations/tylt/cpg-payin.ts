@@ -6,6 +6,10 @@ import { db } from "../../../src/db/index.js";
 import { transactions, wallets, ledgerEntries } from "../../../src/db/schema/index.js";
 import { audit } from "../../../src/lib/audit.js";
 import { tryApplyTransactionFee } from "../../../src/lib/billing/index.js";
+import {
+  buildTransactionFeeBreakdown,
+  feeBreakdownToWebhookFields,
+} from "../../../src/lib/billing/transaction-fee-breakdown.js";
 import { addAmount, normalizeMoneyAmountToTwoDecimals } from "../../../src/lib/money.js";
 import type { WebhookEvent } from "../../../src/lib/merchant-webhook.js";
 import { getOrCreateMerchantWallet, parseTransactionMetadata } from "./crossramp-payin.js";
@@ -480,6 +484,18 @@ export async function applyTyltCpgPayinWebhookPayload(
     },
   });
 
+  const breakdown = await buildTransactionFeeBreakdown({
+    merchantId: tx.merchantId,
+    environment: tx.environment,
+    transactionId: tx.id,
+    type: "payin",
+    status: "success",
+    amount: String(tx.amount),
+    paidAmount: String(paidAmount),
+    currency: tx.currency,
+    provider: tx.provider,
+  });
+
   return {
     merchantId: tx.merchantId,
     event: {
@@ -489,6 +505,7 @@ export async function applyTyltCpgPayinWebhookPayload(
       amount: String(tx.amount),
       paidAmount: String(paidAmount),
       platformOrderId: tx.externalId ?? null,
+      ...feeBreakdownToWebhookFields(breakdown),
     },
   };
 }

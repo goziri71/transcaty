@@ -6,6 +6,10 @@ import { db } from "../../../src/db/index.js";
 import { transactions, wallets, ledgerEntries } from "../../../src/db/schema/index.js";
 import { audit } from "../../../src/lib/audit.js";
 import { tryApplyTransactionFee } from "../../../src/lib/billing/index.js";
+import {
+  buildTransactionFeeBreakdown,
+  feeBreakdownToWebhookFields,
+} from "../../../src/lib/billing/transaction-fee-breakdown.js";
 import { addAmount } from "../../../src/lib/money.js";
 import type { WebhookEvent } from "../../../src/lib/merchant-webhook.js";
 import { tyltSignedPostJson } from "./client.js";
@@ -342,6 +346,18 @@ export async function applyTyltEurPayinWebhookPayload(
     meta: { paidAmount, platformOrderId: tx.externalId, product: TYLT_PRODUCT_EUR_PAYIN, eventId },
   });
 
+  const breakdown = await buildTransactionFeeBreakdown({
+    merchantId: tx.merchantId,
+    environment: tx.environment,
+    transactionId: tx.id,
+    type: "payin",
+    status: "success",
+    amount: String(tx.amount),
+    paidAmount,
+    currency: tx.currency,
+    provider: tx.provider,
+  });
+
   return {
     merchantId: tx.merchantId,
     event: {
@@ -351,6 +367,7 @@ export async function applyTyltEurPayinWebhookPayload(
       amount: String(tx.amount),
       paidAmount,
       platformOrderId: tx.externalId ?? null,
+      ...feeBreakdownToWebhookFields(breakdown),
     },
   };
 }

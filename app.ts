@@ -114,6 +114,15 @@ import {
 import { presentTransactionRail } from "./src/lib/transaction-rail-label.js";
 import { validateMerchantReturnUrl } from "./src/lib/merchant-return-url.js";
 import { queueMerchantWebhook, type WebhookEvent } from "./src/lib/merchant-webhook.js";
+import {
+  transactionFeeBreakdownFieldsSchema,
+  transactionFeeSummaryFieldsSchema,
+  buildTransactionFeeBreakdown,
+  buildTransactionFeeBreakdownBatch,
+  attachFeeBreakdown,
+  feeSummaryFromBreakdown,
+  type TransactionFeeBreakdownInput,
+} from "./src/lib/billing/transaction-fee-breakdown.js";
 import { encrypt, getSecret } from "./src/lib/encryption.js";
 import { pingRedis } from "./src/lib/redis.js";
 import { recordHttpRequest, renderMetrics, getMetricsContentType } from "./src/lib/metrics.js";
@@ -1400,14 +1409,16 @@ export async function buildApp() {
           }),
         }),
         response: {
-          200: z.object({
-            transactionId: z.string(),
-            status: z.string(),
-            amount: z.string(),
-            platformOrderId: z.string().optional(),
-            paymentInfo: z.unknown().optional(),
-            expiresAt: z.string().nullable().optional(),
-          }),
+          200: z
+            .object({
+              transactionId: z.string(),
+              status: z.string(),
+              amount: z.string(),
+              platformOrderId: z.string().optional(),
+              paymentInfo: z.unknown().optional(),
+              expiresAt: z.string().nullable().optional(),
+            })
+            .merge(transactionFeeBreakdownFieldsSchema.partial()),
           400: merchantFacingError,
           401: errorResponse,
           403: errorResponse,
@@ -1453,12 +1464,25 @@ export async function buildApp() {
               goodsInfo: body.goodsInfo,
             });
             const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
-            return {
-              ...result,
+            const breakdown = await buildTransactionFeeBreakdown({
+              merchantId: m.merchantId,
+              environment: m.environment,
+              transactionId: result.transactionId,
+              type: "payin",
               status: "pending",
               amount: body.amount,
-              expiresAt,
-            };
+              currency: "BDT",
+              provider: "payok-bd-payin",
+            });
+            return attachFeeBreakdown(
+              {
+                ...result,
+                status: "pending",
+                amount: body.amount,
+                expiresAt,
+              },
+              breakdown
+            );
           }
         );
         if (response === undefined) return; // 409 conflict already sent
@@ -1510,18 +1534,20 @@ export async function buildApp() {
             path: ["userDetails"],
           }),
         response: {
-          200: z.object({
-            transactionId: z.string(),
-            status: z.literal("pending"),
-            amount: z.string(),
-            currency: z.enum(["USDT", "INR"]),
-            instanceId: z.string(),
-            tradeEventId: z.number().nullable().optional(),
-            paymentDetails: z.record(z.unknown()),
-            paymentInstructions: z.record(z.unknown()).nullable().optional(),
-            detailsSource: z.literal("create").optional(),
-            expiresAt: z.string().nullable().optional(),
-          }),
+          200: z
+            .object({
+              transactionId: z.string(),
+              status: z.literal("pending"),
+              amount: z.string(),
+              currency: z.enum(["USDT", "INR"]),
+              instanceId: z.string(),
+              tradeEventId: z.number().nullable().optional(),
+              paymentDetails: z.record(z.unknown()),
+              paymentInstructions: z.record(z.unknown()).nullable().optional(),
+              detailsSource: z.literal("create").optional(),
+              expiresAt: z.string().nullable().optional(),
+            })
+            .merge(transactionFeeBreakdownFieldsSchema.partial()),
           400: merchantFacingError,
           401: errorResponse,
           403: errorResponse,
@@ -1577,18 +1603,25 @@ export async function buildApp() {
               returnUrl: normalizedReturn,
             });
             const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
-            return {
-              transactionId: result.transactionId,
-              status: "pending" as const,
-              amount: result.amount,
-              currency: result.currency,
-              instanceId: result.instanceId,
-              tradeEventId: result.tradeEventId ?? null,
-              paymentDetails: result.paymentDetails,
-              paymentInstructions: result.paymentInstructions ?? null,
-              detailsSource: "create" as const,
-              expiresAt,
-            };
+            const breakdown = await merchantFeeBreakdownForTransactionId(
+              { merchantId: m.merchantId, environment: m.environment },
+              result.transactionId
+            );
+            return attachFeeBreakdown(
+              {
+                transactionId: result.transactionId,
+                status: "pending" as const,
+                amount: result.amount,
+                currency: result.currency,
+                instanceId: result.instanceId,
+                tradeEventId: result.tradeEventId ?? null,
+                paymentDetails: result.paymentDetails,
+                paymentInstructions: result.paymentInstructions ?? null,
+                detailsSource: "create" as const,
+                expiresAt,
+              },
+              breakdown
+            );
           }
         );
         if (response === undefined) return; // 409 conflict already sent
@@ -1937,13 +1970,15 @@ export async function buildApp() {
           payeeDetails: z.record(z.string(), z.unknown()),
         }),
         response: {
-          200: z.object({
-            transactionId: z.string(),
-            status: z.literal("pending"),
-            amount: z.string(),
-            currency: z.string(),
-            platformOrderId: z.string().nullable(),
-          }),
+          200: z
+            .object({
+              transactionId: z.string(),
+              status: z.literal("pending"),
+              amount: z.string(),
+              currency: z.string(),
+              platformOrderId: z.string().nullable(),
+            })
+            .merge(transactionFeeBreakdownFieldsSchema.partial()),
           400: merchantFacingError,
           401: errorResponse,
           403: errorResponse,
@@ -1996,13 +2031,26 @@ export async function buildApp() {
               payeeDetails: body.payeeDetails,
               settleUnderpayment: body.settleUnderpayment,
             });
-            return {
+            const breakdown = await buildTransactionFeeBreakdown({
+              merchantId: m.merchantId,
+              environment: m.environment,
               transactionId: result.transactionId,
-              status: "pending" as const,
+              type: "payin",
+              status: "pending",
               amount: result.amount,
               currency: result.currency,
-              platformOrderId: result.platformOrderId,
-            };
+              provider: "tylt-cpg-payin",
+            });
+            return attachFeeBreakdown(
+              {
+                transactionId: result.transactionId,
+                status: "pending" as const,
+                amount: result.amount,
+                currency: result.currency,
+                platformOrderId: result.platformOrderId,
+              },
+              breakdown
+            );
           }
         );
         if (response === undefined) return; // 409 conflict already sent
@@ -2099,12 +2147,14 @@ export async function buildApp() {
           destinationDetails: z.record(z.string(), z.unknown()),
         }),
         response: {
-          200: z.object({
-            transactionId: z.string(),
-            status: z.literal("pending"),
-            amount: z.string(),
-            platformOrderId: z.string().nullable(),
-          }),
+          200: z
+            .object({
+              transactionId: z.string(),
+              status: z.literal("pending"),
+              amount: z.string(),
+              platformOrderId: z.string().nullable(),
+            })
+            .merge(transactionFeeBreakdownFieldsSchema.partial()),
           400: merchantFacingError,
           401: errorResponse,
           403: errorResponse,
@@ -2157,12 +2207,25 @@ export async function buildApp() {
               networkSymbol: body.networkSymbol,
               destinationDetails: body.destinationDetails,
             });
-            return {
+            const breakdown = await buildTransactionFeeBreakdown({
+              merchantId: m.merchantId,
+              environment: m.environment,
               transactionId: result.transactionId,
-              status: "pending" as const,
+              type: "payout",
+              status: "pending",
               amount: body.amount,
-              platformOrderId: result.platformOrderId,
-            };
+              currency: body.settledCurrency.trim().toUpperCase(),
+              provider: "tylt-cpg-payout",
+            });
+            return attachFeeBreakdown(
+              {
+                transactionId: result.transactionId,
+                status: "pending" as const,
+                amount: body.amount,
+                platformOrderId: result.platformOrderId,
+              },
+              breakdown
+            );
           }
         );
         if (response === undefined) return; // 409 conflict already sent
@@ -2257,17 +2320,19 @@ export async function buildApp() {
     })
     .optional();
 
-  const eurPayinCreateResponseSchema = z.object({
-    transactionId: z.string(),
-    status: z.literal("pending"),
-    amount: z.string(),
-    fiatCurrency: z.string(),
-    settlementCurrency: z.literal("USDC"),
-    instanceId: z.string(),
-    checkoutUrl: z.string().url(),
-    cryptoAmount: z.string().nullable(),
-    rate: z.number().nullable(),
-  });
+  const eurPayinCreateResponseSchema = z
+    .object({
+      transactionId: z.string(),
+      status: z.literal("pending"),
+      amount: z.string(),
+      fiatCurrency: z.string(),
+      settlementCurrency: z.literal("USDC"),
+      instanceId: z.string(),
+      checkoutUrl: z.string().url(),
+      cryptoAmount: z.string().nullable(),
+      rate: z.number().nullable(),
+    })
+    .merge(transactionFeeBreakdownFieldsSchema.partial());
 
   merchantV1PostPair("/v1/eur/payin-instances", "/v1/tylt/eur/payin-instances", (path) =>
     app.post(path, {
@@ -2335,17 +2400,24 @@ export async function buildApp() {
               merchantDetails: body.merchantDetails,
               cryptoUi: body.cryptoUi,
             });
-            return {
-              transactionId: result.transactionId,
-              status: "pending" as const,
-              amount: result.amount,
-              fiatCurrency: result.fiatCurrency,
-              settlementCurrency: "USDC" as const,
-              instanceId: result.instanceId,
-              checkoutUrl: result.checkoutUrl,
-              cryptoAmount: result.cryptoAmount,
-              rate: result.rate,
-            };
+            const breakdown = await merchantFeeBreakdownForTransactionId(
+              { merchantId: m.merchantId, environment: m.environment },
+              result.transactionId
+            );
+            return attachFeeBreakdown(
+              {
+                transactionId: result.transactionId,
+                status: "pending" as const,
+                amount: result.amount,
+                fiatCurrency: result.fiatCurrency,
+                settlementCurrency: "USDC" as const,
+                instanceId: result.instanceId,
+                checkoutUrl: result.checkoutUrl,
+                cryptoAmount: result.cryptoAmount,
+                rate: result.rate,
+              },
+              breakdown
+            );
           }
         );
         if (response === undefined) return;
@@ -2479,17 +2551,24 @@ export async function buildApp() {
               merchantDetails: body.merchantDetails,
               cryptoUi: body.cryptoUi,
             });
-            return {
-              transactionId: result.transactionId,
-              status: "pending" as const,
-              amount: result.amount,
-              fiatCurrency: result.fiatCurrency,
-              settlementCurrency: "USDC" as const,
-              instanceId: result.instanceId,
-              checkoutUrl: result.checkoutUrl,
-              cryptoAmount: result.cryptoAmount,
-              rate: result.rate,
-            };
+            const breakdown = await merchantFeeBreakdownForTransactionId(
+              { merchantId: m.merchantId, environment: m.environment },
+              result.transactionId
+            );
+            return attachFeeBreakdown(
+              {
+                transactionId: result.transactionId,
+                status: "pending" as const,
+                amount: result.amount,
+                fiatCurrency: result.fiatCurrency,
+                settlementCurrency: "USDC" as const,
+                instanceId: result.instanceId,
+                checkoutUrl: result.checkoutUrl,
+                cryptoAmount: result.cryptoAmount,
+                rate: result.rate,
+              },
+              breakdown
+            );
           }
         );
         if (response === undefined) return;
@@ -2736,14 +2815,16 @@ export async function buildApp() {
           }),
         }),
         response: {
-          200: z.object({
-            transactionId: z.string(),
-            status: z.string(),
-            amount: z.string(),
-            platformOrderId: z.string().optional(),
-            recipient: merchantPayoutRecipientSchema,
-            estimatedCompletion: z.string().nullable().optional(),
-          }),
+          200: z
+            .object({
+              transactionId: z.string(),
+              status: z.string(),
+              amount: z.string(),
+              platformOrderId: z.string().optional(),
+              recipient: merchantPayoutRecipientSchema,
+              estimatedCompletion: z.string().nullable().optional(),
+            })
+            .merge(transactionFeeBreakdownFieldsSchema.partial()),
           400: merchantFacingError,
           401: errorResponse,
           403: errorResponse,
@@ -2777,16 +2858,29 @@ export async function buildApp() {
               cardHolderInfo: body.cardHolderInfo,
             });
             const estimatedCompletion = new Date(Date.now() + 5 * 60 * 1000).toISOString();
-            return {
-              ...result,
-              status: result.status ?? "pending",
+            const breakdown = await buildTransactionFeeBreakdown({
+              merchantId: m.merchantId,
+              environment: m.environment,
+              transactionId: result.transactionId,
+              type: "payout",
+              status: "pending",
               amount: body.amount,
-              recipient: {
-                benificiaryAccountInfo: body.benificiaryAccountInfo,
-                cardHolderInfo: body.cardHolderInfo,
+              currency: "BDT",
+              provider: "payok-bd-payout",
+            });
+            return attachFeeBreakdown(
+              {
+                ...result,
+                status: result.status ?? "pending",
+                amount: body.amount,
+                recipient: {
+                  benificiaryAccountInfo: body.benificiaryAccountInfo,
+                  cardHolderInfo: body.cardHolderInfo,
+                },
+                estimatedCompletion,
               },
-              estimatedCompletion,
-            };
+              breakdown
+            );
           }
         );
         if (response === undefined) return; // 409 conflict already sent
@@ -3047,17 +3141,19 @@ export async function buildApp() {
       schema: {
         params: z.object({ id: z.string().uuid() }),
         response: {
-          200: z.object({
-            id: z.string(),
-            transactionId: z.string(),
-            status: z.string(),
-            amount: z.string(),
-            paidAmount: z.string().nullable(),
-            platformOrderId: z.string().nullable(),
-            paymentMethod: z.string().nullable(),
-            createdAt: z.string(),
-            completedAt: z.string().nullable(),
-          }),
+          200: z
+            .object({
+              id: z.string(),
+              transactionId: z.string(),
+              status: z.string(),
+              amount: z.string(),
+              paidAmount: z.string().nullable(),
+              platformOrderId: z.string().nullable(),
+              paymentMethod: z.string().nullable(),
+              createdAt: z.string(),
+              completedAt: z.string().nullable(),
+            })
+            .merge(transactionFeeBreakdownFieldsSchema.partial()),
           401: errorResponse,
           404: errorResponse,
         },
@@ -3073,6 +3169,8 @@ export async function buildApp() {
           status: transactions.status,
           amount: transactions.amount,
           paidAmount: transactions.paidAmount,
+          currency: transactions.currency,
+          provider: transactions.provider,
           externalId: transactions.externalId,
           metadata: transactions.metadata,
           createdAt: transactions.createdAt,
@@ -3090,17 +3188,32 @@ export async function buildApp() {
         .limit(1);
       if (!tx) return reply.status(404).send({ error: "Not found" });
       const meta = tx.metadata ? (JSON.parse(tx.metadata) as { paymentMethodCode?: string }) : {};
-      return {
-        id: tx.id,
+      const breakdown = await buildTransactionFeeBreakdown({
+        merchantId: m.merchantId,
+        environment: m.environment,
         transactionId: tx.id,
+        type: "payin",
         status: tx.status,
         amount: String(tx.amount),
         paidAmount: tx.paidAmount ? String(tx.paidAmount) : null,
-        platformOrderId: tx.externalId ?? null,
-        paymentMethod: meta.paymentMethodCode ?? null,
-        createdAt: tx.createdAt.toISOString(),
-        completedAt: tx.status === "success" ? tx.updatedAt.toISOString() : null,
-      };
+        currency: tx.currency,
+        provider: tx.provider,
+        metadata: tx.metadata,
+      });
+      return attachFeeBreakdown(
+        {
+          id: tx.id,
+          transactionId: tx.id,
+          status: tx.status,
+          amount: String(tx.amount),
+          paidAmount: tx.paidAmount ? String(tx.paidAmount) : null,
+          platformOrderId: tx.externalId ?? null,
+          paymentMethod: meta.paymentMethodCode ?? null,
+          createdAt: tx.createdAt.toISOString(),
+          completedAt: tx.status === "success" ? tx.updatedAt.toISOString() : null,
+        },
+        breakdown
+      );
     }
   );
 
@@ -3110,16 +3223,18 @@ export async function buildApp() {
       schema: {
         params: z.object({ id: z.string().uuid() }),
         response: {
-          200: z.object({
-            id: z.string(),
-            transactionId: z.string(),
-            status: z.string(),
-            amount: z.string(),
-            platformOrderId: z.string().nullable(),
-            recipient: merchantPayoutRecipientSchema.nullable(),
-            createdAt: z.string(),
-            completedAt: z.string().nullable(),
-          }),
+          200: z
+            .object({
+              id: z.string(),
+              transactionId: z.string(),
+              status: z.string(),
+              amount: z.string(),
+              platformOrderId: z.string().nullable(),
+              recipient: merchantPayoutRecipientSchema.nullable(),
+              createdAt: z.string(),
+              completedAt: z.string().nullable(),
+            })
+            .merge(transactionFeeBreakdownFieldsSchema.partial()),
           401: errorResponse,
           404: errorResponse,
         },
@@ -3134,6 +3249,8 @@ export async function buildApp() {
           id: transactions.id,
           status: transactions.status,
           amount: transactions.amount,
+          currency: transactions.currency,
+          provider: transactions.provider,
           externalId: transactions.externalId,
           metadata: transactions.metadata,
           createdAt: transactions.createdAt,
@@ -3150,47 +3267,121 @@ export async function buildApp() {
         )
         .limit(1);
       if (!tx) return reply.status(404).send({ error: "Not found" });
-      return {
-        id: tx.id,
+      const breakdown = await buildTransactionFeeBreakdown({
+        merchantId: m.merchantId,
+        environment: m.environment,
         transactionId: tx.id,
+        type: "payout",
         status: tx.status,
         amount: String(tx.amount),
-        platformOrderId: tx.externalId ?? null,
-        recipient: parsePayoutRecipientFromMetadata(tx.metadata),
-        createdAt: tx.createdAt.toISOString(),
-        completedAt: tx.status === "success" ? tx.updatedAt.toISOString() : null,
-      };
+        currency: tx.currency,
+        provider: tx.provider,
+        metadata: tx.metadata,
+      });
+      return attachFeeBreakdown(
+        {
+          id: tx.id,
+          transactionId: tx.id,
+          status: tx.status,
+          amount: String(tx.amount),
+          platformOrderId: tx.externalId ?? null,
+          recipient: parsePayoutRecipientFromMetadata(tx.metadata),
+          createdAt: tx.createdAt.toISOString(),
+          completedAt: tx.status === "success" ? tx.updatedAt.toISOString() : null,
+        },
+        breakdown
+      );
     }
   );
 
-  const merchantTransactionItemSchema = z.object({
-    id: z.string(),
-    type: z.string(),
-    status: z.string(),
-    amount: z.string(),
-    paidAmount: z.string().nullable(),
-    currency: z.string(),
-    rail: z.enum(["bangladesh", "india", "europe", "internal", "unknown"]),
-    railLabel: z.string(),
-    platformOrderId: z.string().nullable(),
-    instanceId: z.string().nullable(),
-    createdAt: z.string(),
-    completedAt: z.string().nullable(),
-  });
+  const merchantTransactionItemSchema = z
+    .object({
+      id: z.string(),
+      type: z.string(),
+      status: z.string(),
+      amount: z.string(),
+      paidAmount: z.string().nullable(),
+      currency: z.string(),
+      rail: z.enum(["bangladesh", "india", "europe", "internal", "unknown"]),
+      railLabel: z.string(),
+      platformOrderId: z.string().nullable(),
+      instanceId: z.string().nullable(),
+      createdAt: z.string(),
+      completedAt: z.string().nullable(),
+    })
+    .merge(transactionFeeSummaryFieldsSchema.partial());
 
-  function toMerchantTransactionItem(tx: {
-    id: string;
-    type: string;
-    status: string;
-    amount: string;
-    paidAmount: string | null;
-    currency: string;
-    provider: string | null;
-    metadata: string | null;
-    externalId: string | null;
-    createdAt: Date;
-    updatedAt: Date;
-  }) {
+  function toFeeBreakdownInput(
+    tx: {
+      id: string;
+      type: string;
+      status: string;
+      amount: string;
+      paidAmount: string | null;
+      currency: string;
+      provider: string | null;
+      metadata: string | null;
+    },
+    ctx: { merchantId: string; environment: "test" | "live" }
+  ): TransactionFeeBreakdownInput {
+    return {
+      merchantId: ctx.merchantId,
+      environment: ctx.environment,
+      transactionId: tx.id,
+      type: tx.type,
+      status: tx.status,
+      amount: String(tx.amount),
+      paidAmount: tx.paidAmount ? String(tx.paidAmount) : null,
+      currency: tx.currency,
+      provider: tx.provider,
+      metadata: tx.metadata,
+    };
+  }
+
+  async function merchantFeeBreakdownForTransactionId(
+    ctx: { merchantId: string; environment: "test" | "live" },
+    transactionId: string
+  ) {
+    const [tx] = await db
+      .select({
+        id: transactions.id,
+        type: transactions.type,
+        status: transactions.status,
+        amount: transactions.amount,
+        paidAmount: transactions.paidAmount,
+        currency: transactions.currency,
+        provider: transactions.provider,
+        metadata: transactions.metadata,
+      })
+      .from(transactions)
+      .where(
+        and(
+          eq(transactions.id, transactionId),
+          eq(transactions.merchantId, ctx.merchantId),
+          eq(transactions.environment, ctx.environment)
+        )
+      )
+      .limit(1);
+    if (!tx) return null;
+    return buildTransactionFeeBreakdown(toFeeBreakdownInput(tx, ctx));
+  }
+
+  function toMerchantTransactionItem(
+    tx: {
+      id: string;
+      type: string;
+      status: string;
+      amount: string;
+      paidAmount: string | null;
+      currency: string;
+      provider: string | null;
+      metadata: string | null;
+      externalId: string | null;
+      createdAt: Date;
+      updatedAt: Date;
+    },
+    feeSummary?: ReturnType<typeof feeSummaryFromBreakdown>
+  ) {
     const rail = presentTransactionRail({
       provider: tx.provider,
       currency: tx.currency,
@@ -3209,6 +3400,7 @@ export async function buildApp() {
       instanceId: tx.externalId ?? null,
       createdAt: tx.createdAt.toISOString(),
       completedAt: tx.status === "success" ? tx.updatedAt.toISOString() : null,
+      ...feeSummary,
     };
   }
 
@@ -3252,7 +3444,22 @@ export async function buildApp() {
         )
         .limit(1);
       if (!tx) return reply.status(404).send({ error: "Not found", message: "Transaction not found" });
-      return toMerchantTransactionItem(tx);
+      const [breakdown] = await buildTransactionFeeBreakdownBatch([
+        toFeeBreakdownInput(
+          {
+            id: tx.id,
+            type: tx.type,
+            status: tx.status,
+            amount: String(tx.amount),
+            paidAmount: tx.paidAmount ? String(tx.paidAmount) : null,
+            currency: tx.currency,
+            provider: tx.provider,
+            metadata: tx.metadata,
+          },
+          { merchantId: m.merchantId, environment: m.environment }
+        ),
+      ]);
+      return toMerchantTransactionItem(tx, feeSummaryFromBreakdown(breakdown));
     }
   );
 
@@ -3309,7 +3516,27 @@ export async function buildApp() {
         .limit(limit)
         .offset(offset);
 
-      const items = rows.map((tx) => toMerchantTransactionItem(tx));
+      const breakdowns = await buildTransactionFeeBreakdownBatch(
+        rows.map((tx) =>
+          toFeeBreakdownInput(
+            {
+              id: tx.id,
+              type: tx.type,
+              status: tx.status,
+              amount: String(tx.amount),
+              paidAmount: tx.paidAmount ? String(tx.paidAmount) : null,
+              currency: tx.currency,
+              provider: tx.provider,
+              metadata: tx.metadata,
+            },
+            { merchantId: m.merchantId, environment: m.environment }
+          )
+        )
+      );
+
+      const items = rows.map((tx, index) =>
+        toMerchantTransactionItem(tx, feeSummaryFromBreakdown(breakdowns[index] ?? null))
+      );
 
       return {
         items,

@@ -7,12 +7,48 @@ import { eq } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { merchants } from "../db/schema/index.js";
 import { decrypt } from "./encryption.js";
+import type { transactionFeesSchema } from "./billing/transaction-fee-breakdown.js";
+import type { z } from "zod";
+
+type WebhookFees = z.infer<typeof transactionFeesSchema>;
+
+export type WebhookFeeFields = {
+  currency?: string;
+  fees?: WebhookFees;
+  netAmount?: string;
+  totalWalletDebit?: string;
+};
 
 export type WebhookEvent =
-  | { type: "payin.completed"; transactionId: string; status: string; amount: string; paidAmount: string; platformOrderId: string | null }
-  | { type: "payin.failed"; transactionId: string; status: string; amount: string; platformOrderId: string | null }
-  | { type: "payout.completed"; transactionId: string; status: string; amount: string; platformOrderId: string | null }
-  | { type: "payout.failed"; transactionId: string; status: string; amount: string; platformOrderId: string | null };
+  | ({
+      type: "payin.completed";
+      transactionId: string;
+      status: string;
+      amount: string;
+      paidAmount: string;
+      platformOrderId: string | null;
+    } & WebhookFeeFields)
+  | ({
+      type: "payin.failed";
+      transactionId: string;
+      status: string;
+      amount: string;
+      platformOrderId: string | null;
+    } & WebhookFeeFields)
+  | ({
+      type: "payout.completed";
+      transactionId: string;
+      status: string;
+      amount: string;
+      platformOrderId: string | null;
+    } & WebhookFeeFields)
+  | ({
+      type: "payout.failed";
+      transactionId: string;
+      status: string;
+      amount: string;
+      platformOrderId: string | null;
+    } & WebhookFeeFields);
 
 const JOB_NAME = "merchant-webhook";
 
@@ -56,6 +92,12 @@ export async function sendMerchantWebhook(merchantId: string, event: WebhookEven
     amount: event.amount,
     ...("paidAmount" in event && { paidAmount: event.paidAmount }),
     ...("platformOrderId" in event && { platformOrderId: event.platformOrderId }),
+    ...("currency" in event && event.currency ? { currency: event.currency } : {}),
+    ...("fees" in event && event.fees ? { fees: event.fees } : {}),
+    ...("netAmount" in event && event.netAmount != null ? { netAmount: event.netAmount } : {}),
+    ...("totalWalletDebit" in event && event.totalWalletDebit != null
+      ? { totalWalletDebit: event.totalWalletDebit }
+      : {}),
     timestamp: new Date().toISOString(),
   });
 
