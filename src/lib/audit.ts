@@ -49,7 +49,8 @@ export type AuditAction =
   | "portal.customer.wallet_created"
   | "portal.customer.wallet_status_changed"
   | "portal.api_key.created"
-  | "portal.api_key.revoked";
+  | "portal.api_key.revoked"
+  | "portal.api_ip_rules.updated";
 
 export interface AuditEntry {
   action: AuditAction;

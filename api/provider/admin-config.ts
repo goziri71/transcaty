@@ -7,7 +7,6 @@ import { and, desc, eq, isNull } from "drizzle-orm";
 import { db } from "../../src/db/index.js";
 import {
   fxRateProfiles,
-  merchantApiIpRules,
   merchantFeeSchedules,
   merchantFxOverrides,
 } from "../../src/db/schema/index.js";
@@ -18,11 +17,13 @@ import {
   type ProviderPermission,
 } from "../../src/lib/provider-auth.js";
 import { providerMerchantAudit } from "../../src/lib/provider-audit.js";
-import { validateCidrList, normalizeCidrList } from "../../src/lib/ip-cidr.js";
-import { invalidateMerchantIpRuleCache } from "../../src/lib/merchant-ip-whitelist.js";
 import { applySpreadToCryptoAmount } from "../../src/lib/fx/spread.js";
 import { resolveFxSpread } from "../../src/lib/fx/rate-resolver.js";
 import { merchantRefParamSchema, resolveMerchantId } from "../../src/lib/merchant-ref.js";
+import {
+  getMerchantApiIpRules,
+  upsertMerchantApiIpRules,
+} from "../../src/lib/merchant-api-ip-rules.js";
 
 const errorResponse = z.object({
   error: z.string(),
@@ -634,33 +635,7 @@ export async function registerProviderAdminConfigRoutes(app: FastifyInstance) {
       const merchantId = await ensureMerchantFromRef(merchantRef, reply);
       if (!merchantId) return;
       const { environment } = request.query as { environment: (typeof ENV)[number] };
-      const [row] = await db
-        .select()
-        .from(merchantApiIpRules)
-        .where(and(eq(merchantApiIpRules.merchantId, merchantId), eq(merchantApiIpRules.environment, environment)))
-        .limit(1);
-      if (!row) {
-        return {
-          merchantId,
-          environment,
-          enabled: false,
-          enforceMode: "strict",
-          cidrs: [],
-          notes: null,
-          updatedBy: null,
-          updatedAt: null,
-        };
-      }
-      return {
-        merchantId,
-        environment: row.environment as (typeof ENV)[number],
-        enabled: row.enabled,
-        enforceMode: row.enforceMode,
-        cidrs: normalizeCidrList(row.cidrs),
-        notes: row.notes,
-        updatedBy: row.updatedBy,
-        updatedAt: row.updatedAt.toISOString(),
-      };
+      return getMerchantApiIpRules(merchantId, environment);
     }
   );
 
@@ -694,41 +669,22 @@ export async function registerProviderAdminConfigRoutes(app: FastifyInstance) {
       const body = request.body as {
         environment: (typeof ENV)[number];
         enabled: boolean;
-        enforceMode: string;
+        enforceMode: "strict" | "log_only";
         cidrs: string[];
         notes?: string | null;
       };
-      const validation = validateCidrList(body.cidrs);
-      if (body.enabled && !validation.valid) {
+      const actor = request.provider?.email ?? request.provider?.providerUserId ?? "provider";
+      const result = await upsertMerchantApiIpRules({
+        merchantId,
+        updatedBy: actor,
+        rules: body,
+      });
+      if (!result.ok) {
         return reply.status(400).send({
           error: "Bad Request",
-          message: validation.errors.join("; "),
+          message: result.message,
         });
       }
-      const actor = request.provider?.email ?? request.provider?.providerUserId ?? "provider";
-      await db
-        .insert(merchantApiIpRules)
-        .values({
-          merchantId,
-          environment: body.environment,
-          enabled: body.enabled,
-          enforceMode: body.enforceMode,
-          cidrs: body.cidrs,
-          notes: body.notes ?? null,
-          updatedBy: actor,
-        })
-        .onConflictDoUpdate({
-          target: [merchantApiIpRules.merchantId, merchantApiIpRules.environment],
-          set: {
-            enabled: body.enabled,
-            enforceMode: body.enforceMode,
-            cidrs: body.cidrs,
-            notes: body.notes ?? null,
-            updatedBy: actor,
-            updatedAt: new Date(),
-          },
-        });
-      invalidateMerchantIpRuleCache(merchantId, body.environment);
       providerMerchantAudit(request, {
         action: "provider.merchant.ip_whitelist_changed",
         merchantId,

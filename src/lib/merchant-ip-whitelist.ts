@@ -58,34 +58,53 @@ export function invalidateMerchantIpRuleCache(merchantId: string, environment: s
   cache.delete(cacheKey(merchantId, environment));
 }
 
+export function evaluateMerchantIpAllowlist(
+  rule: { enabled: boolean; enforceMode: string; cidrs: string[] } | null | undefined,
+  clientIp: string
+): { allowed: true } | { allowed: false; reason: string } {
+  if (!rule?.enabled) {
+    return { allowed: true };
+  }
+
+  const allowed = isIpv4Allowed(clientIp, rule.cidrs);
+  if (allowed) {
+    return { allowed: true };
+  }
+
+  if (rule.enforceMode === "log_only") {
+    return { allowed: true };
+  }
+
+  return { allowed: false, reason: "ip_not_allowed" };
+}
+
 export async function assertMerchantIpAllowed(params: {
   merchantId: string;
   environment: "test" | "live";
   clientIp: string;
 }): Promise<{ allowed: true } | { allowed: false; reason: string }> {
   const rule = await loadMerchantIpRule(params.merchantId, params.environment);
-  if (!rule?.enabled) {
-    return { allowed: true };
-  }
+  const decision = evaluateMerchantIpAllowlist(rule, params.clientIp);
 
-  const allowed = isIpv4Allowed(params.clientIp, rule.cidrs);
-  if (allowed) {
-    return { allowed: true };
-  }
-
-  if (rule.enforceMode === "log_only") {
+  if (!decision.allowed && decision.reason === "ip_not_allowed") {
     logSecurityEvent({
-      type: "merchant.ip_blocked_log_only",
+      type: "merchant.ip_blocked",
       merchantId: params.merchantId,
       meta: { clientIp: params.clientIp, environment: params.environment },
     });
-    return { allowed: true };
+    return decision;
   }
 
-  logSecurityEvent({
-    type: "merchant.ip_blocked",
-    merchantId: params.merchantId,
-    meta: { clientIp: params.clientIp, environment: params.environment },
-  });
-  return { allowed: false, reason: "ip_not_allowed" };
+  if (rule?.enabled && rule.enforceMode === "log_only") {
+    const allowed = isIpv4Allowed(params.clientIp, rule.cidrs);
+    if (!allowed) {
+      logSecurityEvent({
+        type: "merchant.ip_blocked_log_only",
+        merchantId: params.merchantId,
+        meta: { clientIp: params.clientIp, environment: params.environment },
+      });
+    }
+  }
+
+  return { allowed: true };
 }
