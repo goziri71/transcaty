@@ -35,8 +35,8 @@ test("reconciliationReportToCsv includes header and row", () => {
       successCount: 1,
       failedCount: 0,
       pendingCount: 0,
-      payinVolume: "100.00",
-      payoutVolume: "0.00",
+      payinVolumeByCurrency: [{ currency: "BDT", amount: "100.00" }],
+      payoutVolumeByCurrency: [],
     },
     rows: [
       {

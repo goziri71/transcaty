@@ -24,6 +24,11 @@ export type ReconciliationRow = {
   completedAt: string | null;
 };
 
+export type ReconciliationVolumeByCurrency = {
+  currency: string;
+  amount: string;
+};
+
 export type ReconciliationReport = {
   merchantId: string;
   environment: "test" | "live";
@@ -36,19 +41,40 @@ export type ReconciliationReport = {
     successCount: number;
     failedCount: number;
     pendingCount: number;
-    payinVolume: string;
-    payoutVolume: string;
+    /** Successful pay-in volume grouped by display currency (excludes failed/pending). */
+    payinVolumeByCurrency: ReconciliationVolumeByCurrency[];
+    /** Successful payout volume grouped by display currency (excludes failed/pending). */
+    payoutVolumeByCurrency: ReconciliationVolumeByCurrency[];
   };
   rows: ReconciliationRow[];
 };
 
-function sumAmounts(rows: { amount: string }[]): string {
-  let cents = 0n;
-  for (const r of rows) {
-    const n = Number(r.amount);
-    if (Number.isFinite(n)) cents += BigInt(Math.round(n * 100));
+function reconciledVolumeAmount(row: ReconciliationRow): string {
+  if (row.type === "payin" && row.paidAmount) {
+    return row.paidAmount;
   }
-  return (Number(cents) / 100).toFixed(2);
+  return row.amount;
+}
+
+export function sumSuccessfulVolumeByCurrency(
+  rows: ReconciliationRow[],
+  type: "payin" | "payout"
+): ReconciliationVolumeByCurrency[] {
+  const byCurrency = new Map<string, bigint>();
+  for (const row of rows) {
+    if (row.type !== type || row.status !== "success") continue;
+    const currency = row.currency.trim().toUpperCase() || "UNKNOWN";
+    const n = Number(reconciledVolumeAmount(row));
+    if (!Number.isFinite(n)) continue;
+    const cents = BigInt(Math.round(n * 100));
+    byCurrency.set(currency, (byCurrency.get(currency) ?? 0n) + cents);
+  }
+  return [...byCurrency.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([currency, cents]) => ({
+      currency,
+      amount: (Number(cents) / 100).toFixed(2),
+    }));
 }
 
 export async function buildReconciliationReport(
@@ -115,8 +141,8 @@ export async function buildReconciliationReport(
       successCount: rows.filter((r) => r.status === "success").length,
       failedCount: rows.filter((r) => r.status === "failed").length,
       pendingCount: rows.filter((r) => r.status === "pending").length,
-      payinVolume: sumAmounts(payins),
-      payoutVolume: sumAmounts(payouts),
+      payinVolumeByCurrency: sumSuccessfulVolumeByCurrency(mapped, "payin"),
+      payoutVolumeByCurrency: sumSuccessfulVolumeByCurrency(mapped, "payout"),
     },
     rows: mapped,
   };
