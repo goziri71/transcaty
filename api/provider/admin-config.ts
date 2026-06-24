@@ -24,6 +24,7 @@ import {
   getMerchantApiIpRules,
   upsertMerchantApiIpRules,
 } from "../../src/lib/merchant-api-ip-rules.js";
+import { parseFeePercentageInput } from "../../src/lib/billing/fee-percentage.js";
 
 const errorResponse = z.object({
   error: z.string(),
@@ -554,7 +555,7 @@ export async function registerProviderAdminConfigRoutes(app: FastifyInstance) {
           effectiveFrom: z.string().datetime().optional(),
           effectiveTo: z.string().datetime().optional().nullable(),
         }),
-        response: { 201: feeScheduleSchema, 401: errorResponse, 403: errorResponse, 404: errorResponse },
+        response: { 201: feeScheduleSchema, 400: errorResponse, 401: errorResponse, 403: errorResponse, 404: errorResponse },
       },
     },
     async (request, reply) => {
@@ -564,6 +565,10 @@ export async function registerProviderAdminConfigRoutes(app: FastifyInstance) {
       const merchantId = await ensureMerchantFromRef(merchantRef, reply);
       if (!merchantId) return;
       const body = request.body as Record<string, unknown>;
+      const feePct = parseFeePercentageInput(body.feePercentage as string | undefined);
+      if (!feePct.ok) {
+        return reply.status(400).send({ error: "Bad Request", message: feePct.message });
+      }
       const [row] = await db
         .insert(merchantFeeSchedules)
         .values({
@@ -573,7 +578,7 @@ export async function registerProviderAdminConfigRoutes(app: FastifyInstance) {
           currency: String(body.currency).trim().toUpperCase(),
           feeType: body.feeType as string,
           billingMode: (body.billingMode as string) ?? "percentage_only",
-          feePercentage: (body.feePercentage as string | undefined) ?? "0",
+          feePercentage: feePct.value,
           feeFlat: (body.feeFlat as string | undefined) ?? "0",
           feeMin: (body.feeMin as string | undefined) ?? "0",
           feeMax: (body.feeMax as string | null | undefined) ?? null,

@@ -17,6 +17,7 @@ import {
   wallets,
 } from "../../src/db/schema/index.js";
 import { audit } from "../../src/lib/audit.js";
+import { parseFeePercentageInput } from "../../src/lib/billing/fee-percentage.js";
 import {
   payokPayinInquiry,
   payokPayoutInquiry,
@@ -1332,6 +1333,7 @@ export async function registerProviderRoutes(app: FastifyInstance) {
             id: z.string(),
             billingMode: z.string(),
           }),
+          400: errorResponse,
           401: errorResponse,
           404: errorResponse,
         },
@@ -1354,6 +1356,21 @@ export async function registerProviderRoutes(app: FastifyInstance) {
       const resolved = await resolveMerchantParam(merchantRef, reply);
       if (!resolved) return;
       const { merchantId } = resolved;
+
+      if (body.feePercentagePayin != null) {
+        const parsed = parseFeePercentageInput(body.feePercentagePayin, "feePercentagePayin");
+        if (!parsed.ok) {
+          return reply.status(400).send({ error: "Bad Request", message: parsed.message });
+        }
+        body.feePercentagePayin = parsed.value;
+      }
+      if (body.feePercentagePayout != null) {
+        const parsed = parseFeePercentageInput(body.feePercentagePayout, "feePercentagePayout");
+        if (!parsed.ok) {
+          return reply.status(400).send({ error: "Bad Request", message: parsed.message });
+        }
+        body.feePercentagePayout = parsed.value;
+      }
 
       const setFields: Record<string, unknown> = { updatedAt: new Date() };
       if (body.billingMode != null) setFields.billingMode = body.billingMode;
