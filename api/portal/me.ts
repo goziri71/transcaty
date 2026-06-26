@@ -127,27 +127,27 @@ export async function registerPortalMeRoutes(app: FastifyInstance) {
       const { ensureMerchantSlug } = await import("../../src/lib/merchant-slug.js");
       const merchantSlug = await ensureMerchantSlug(merchant.id, merchant.name);
 
-      const [profile] = await db
-        .select({
-          id: merchantBusinessProfiles.id,
-          legalName: merchantBusinessProfiles.legalName,
-          tradingName: merchantBusinessProfiles.tradingName,
-          businessType: merchantBusinessProfiles.businessType,
-          status: merchantBusinessProfiles.status,
-        })
-        .from(merchantBusinessProfiles)
-        .where(eq(merchantBusinessProfiles.merchantId, user.merchantId))
-        .limit(1);
-
-      const [personsResult] = await db
-        .select({ count: count() })
-        .from(merchantPersons)
-        .where(eq(merchantPersons.merchantId, user.merchantId));
-
-      const [documentsResult] = await db
-        .select({ count: count() })
-        .from(merchantKycDocuments)
-        .where(eq(merchantKycDocuments.merchantId, user.merchantId));
+      const [[profile], [personsResult], [documentsResult]] = await Promise.all([
+        db
+          .select({
+            id: merchantBusinessProfiles.id,
+            legalName: merchantBusinessProfiles.legalName,
+            tradingName: merchantBusinessProfiles.tradingName,
+            businessType: merchantBusinessProfiles.businessType,
+            status: merchantBusinessProfiles.status,
+          })
+          .from(merchantBusinessProfiles)
+          .where(eq(merchantBusinessProfiles.merchantId, user.merchantId))
+          .limit(1),
+        db
+          .select({ count: count() })
+          .from(merchantPersons)
+          .where(eq(merchantPersons.merchantId, user.merchantId)),
+        db
+          .select({ count: count() })
+          .from(merchantKycDocuments)
+          .where(eq(merchantKycDocuments.merchantId, user.merchantId)),
+      ]);
 
       const kycStatus = merchant.kycStatus ?? "pending";
       const canCreateApiKeys = kycStatus === "verified";

@@ -152,31 +152,32 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
         );
       }
 
-      const [totalResult] = await db
-        .select({ count: count() })
-        .from(transactions)
-        .where(and(...conditions));
-
-      const rows = await db
-        .select({
-          id: transactions.id,
-          type: transactions.type,
-          status: transactions.status,
-          amount: transactions.amount,
-          paidAmount: transactions.paidAmount,
-          currency: transactions.currency,
-          provider: transactions.provider,
-          externalId: transactions.externalId,
-          walletId: transactions.walletId,
-          metadata: transactions.metadata,
-          createdAt: transactions.createdAt,
-          updatedAt: transactions.updatedAt,
-        })
-        .from(transactions)
-        .where(and(...conditions))
-        .orderBy(desc(transactions.createdAt))
-        .limit(limit)
-        .offset(offset);
+      const [[totalResult], rows] = await Promise.all([
+        db
+          .select({ count: count() })
+          .from(transactions)
+          .where(and(...conditions)),
+        db
+          .select({
+            id: transactions.id,
+            type: transactions.type,
+            status: transactions.status,
+            amount: transactions.amount,
+            paidAmount: transactions.paidAmount,
+            currency: transactions.currency,
+            provider: transactions.provider,
+            externalId: transactions.externalId,
+            walletId: transactions.walletId,
+            metadata: transactions.metadata,
+            createdAt: transactions.createdAt,
+            updatedAt: transactions.updatedAt,
+          })
+          .from(transactions)
+          .where(and(...conditions))
+          .orderBy(desc(transactions.createdAt))
+          .limit(limit)
+          .offset(offset),
+      ]);
 
       const breakdowns = await buildTransactionFeeBreakdownBatch(
         rows.map(

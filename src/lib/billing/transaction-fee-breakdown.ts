@@ -5,11 +5,13 @@ import { ledgerEntries } from "../../db/schema/index.js";
 import { subAmount } from "../money.js";
 import type { TransactionFeeType } from "./fee-calculator.js";
 import {
+  feeAmountFromSchedule,
   payoutTotalWalletDebit,
   previewTransactionFee,
   transactionFeeReferenceId,
   type TransactionFeePreviewInput,
 } from "./apply-transaction-fee.js";
+import { feeScheduleCacheKey, resolveFeeSchedulesBatch } from "./fee-schedules.js";
 
 export const transactionFeesSchema = z.object({
   platformFee: z.string(),
@@ -244,6 +246,26 @@ export async function buildTransactionFeeBreakdownBatch(
     .map((row) => transactionFeeReferenceId(row.transactionId, row.type as TransactionFeeType));
   const appliedByRef = await loadAppliedFeesByReferenceIds(appliedRefIds);
 
+  const previewKeys = rows
+    .filter((row) => {
+      if (row.type !== "payin" && row.type !== "payout") return false;
+      if (row.status === "success") {
+        const applied = appliedByRef.get(
+          transactionFeeReferenceId(row.transactionId, row.type as TransactionFeeType)
+        );
+        if (applied) return false;
+      }
+      return true;
+    })
+    .map((row) => ({
+      merchantId: row.merchantId,
+      environment: row.environment,
+      currency: row.currency,
+      feeType: row.type as TransactionFeeType,
+      provider: row.provider,
+    }));
+  const scheduleMap = await resolveFeeSchedulesBatch(previewKeys);
+
   return Promise.all(
     rows.map(async (row) => {
       if (row.type !== "payin" && row.type !== "payout") {
@@ -274,7 +296,16 @@ export async function buildTransactionFeeBreakdownBatch(
         }
       }
 
-      const preview = await previewTransactionFee(feePreviewInput(row, feeType));
+      const previewArgs = feePreviewInput(row, feeType);
+      const cacheKey = feeScheduleCacheKey({
+        merchantId: row.merchantId,
+        environment: row.environment,
+        currency: row.currency,
+        feeType,
+        provider: row.provider,
+      });
+      const schedule = scheduleMap.get(cacheKey) ?? null;
+      const preview = feeAmountFromSchedule(schedule, previewArgs.amount, feeType);
       return formatTransactionFeeBreakdown({
         type: feeType,
         status: row.status,

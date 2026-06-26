@@ -4,6 +4,7 @@ import { addAmount, toCents } from "../money.js";
 import { computeFeeFromSchedule, type TransactionFeeType } from "./fee-calculator.js";
 import { applyTransactionFee, type DbTx } from "./fee-applier.js";
 import { resolveFeeSchedule } from "./fee-schedules.js";
+import type { FeeScheduleRow } from "./fee-rail.js";
 
 export interface TryApplyTransactionFeeInput {
   merchantId: string;
@@ -23,6 +24,17 @@ export function transactionFeeReferenceId(transactionId: string, feeType: Transa
   return `fee:${transactionId}:${feeType}`;
 }
 
+export function feeAmountFromSchedule(
+  schedule: FeeScheduleRow | null,
+  amount: string,
+  feeType: TransactionFeeType
+): string | null {
+  if (!schedule) return null;
+  const computed = computeFeeFromSchedule(schedule, amount, feeType);
+  if (!computed || toCents(computed.feeAmount) <= 0n) return null;
+  return computed.feeAmount;
+}
+
 async function computeTransactionFeeAmount(input: TransactionFeePreviewInput): Promise<string | null> {
   const schedule = await resolveFeeSchedule({
     merchantId: input.merchantId,
@@ -31,11 +43,7 @@ async function computeTransactionFeeAmount(input: TransactionFeePreviewInput): P
     feeType: input.feeType,
     provider: input.provider,
   });
-  if (!schedule) return null;
-
-  const computed = computeFeeFromSchedule(schedule, input.amount, input.feeType);
-  if (!computed || toCents(computed.feeAmount) <= 0n) return null;
-  return computed.feeAmount;
+  return feeAmountFromSchedule(schedule, input.amount, input.feeType);
 }
 
 /** Resolve configured fee for a payout/payin amount (no ledger write). */

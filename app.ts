@@ -602,26 +602,28 @@ export async function buildApp() {
     async (request, reply) => {
       const m = request.merchant;
       if (!m) return reply.status(401).send({ error: "Unauthorized" });
-      const [merchant] = await db.select({ kycStatus: merchants.kycStatus }).from(merchants).where(eq(merchants.id, m.merchantId)).limit(1);
-      const [profile] = await db
-        .select({
-          id: merchantBusinessProfiles.id,
-          legalName: merchantBusinessProfiles.legalName,
-          tradingName: merchantBusinessProfiles.tradingName,
-          businessType: merchantBusinessProfiles.businessType,
-          status: merchantBusinessProfiles.status,
-        })
-        .from(merchantBusinessProfiles)
-        .where(eq(merchantBusinessProfiles.merchantId, m.merchantId))
-        .limit(1);
-      const [personsCount] = await db
-        .select({ count: count() })
-        .from(merchantPersons)
-        .where(eq(merchantPersons.merchantId, m.merchantId));
-      const [documentsCount] = await db
-        .select({ count: count() })
-        .from(merchantKycDocuments)
-        .where(eq(merchantKycDocuments.merchantId, m.merchantId));
+      const [[merchant], [profile], [personsCount], [documentsCount]] = await Promise.all([
+        db.select({ kycStatus: merchants.kycStatus }).from(merchants).where(eq(merchants.id, m.merchantId)).limit(1),
+        db
+          .select({
+            id: merchantBusinessProfiles.id,
+            legalName: merchantBusinessProfiles.legalName,
+            tradingName: merchantBusinessProfiles.tradingName,
+            businessType: merchantBusinessProfiles.businessType,
+            status: merchantBusinessProfiles.status,
+          })
+          .from(merchantBusinessProfiles)
+          .where(eq(merchantBusinessProfiles.merchantId, m.merchantId))
+          .limit(1),
+        db
+          .select({ count: count() })
+          .from(merchantPersons)
+          .where(eq(merchantPersons.merchantId, m.merchantId)),
+        db
+          .select({ count: count() })
+          .from(merchantKycDocuments)
+          .where(eq(merchantKycDocuments.merchantId, m.merchantId)),
+      ]);
       return {
         status: merchant?.kycStatus ?? "pending",
         businessProfile: profile
@@ -3491,30 +3493,31 @@ export async function buildApp() {
       const conditions = [eq(transactions.merchantId, m.merchantId), eq(transactions.environment, m.environment)];
       if (type) conditions.push(eq(transactions.type, type));
 
-      const [countResult] = await db
-        .select({ count: count() })
-        .from(transactions)
-        .where(and(...conditions));
-
-      const rows = await db
-        .select({
-          id: transactions.id,
-          type: transactions.type,
-          status: transactions.status,
-          amount: transactions.amount,
-          paidAmount: transactions.paidAmount,
-          currency: transactions.currency,
-          provider: transactions.provider,
-          metadata: transactions.metadata,
-          externalId: transactions.externalId,
-          createdAt: transactions.createdAt,
-          updatedAt: transactions.updatedAt,
-        })
-        .from(transactions)
-        .where(and(...conditions))
-        .orderBy(desc(transactions.createdAt))
-        .limit(limit)
-        .offset(offset);
+      const [[countResult], rows] = await Promise.all([
+        db
+          .select({ count: count() })
+          .from(transactions)
+          .where(and(...conditions)),
+        db
+          .select({
+            id: transactions.id,
+            type: transactions.type,
+            status: transactions.status,
+            amount: transactions.amount,
+            paidAmount: transactions.paidAmount,
+            currency: transactions.currency,
+            provider: transactions.provider,
+            metadata: transactions.metadata,
+            externalId: transactions.externalId,
+            createdAt: transactions.createdAt,
+            updatedAt: transactions.updatedAt,
+          })
+          .from(transactions)
+          .where(and(...conditions))
+          .orderBy(desc(transactions.createdAt))
+          .limit(limit)
+          .offset(offset),
+      ]);
 
       const breakdowns = await buildTransactionFeeBreakdownBatch(
         rows.map((tx) =>

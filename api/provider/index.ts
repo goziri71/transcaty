@@ -993,20 +993,21 @@ export async function registerProviderRoutes(app: FastifyInstance) {
           }
         : null;
 
-      const [profile] = await db
-        .select()
-        .from(merchantBusinessProfiles)
-        .where(eq(merchantBusinessProfiles.merchantId, merchantId))
-        .limit(1);
-
-      const [personsCount] = await db
-        .select({ count: count() })
-        .from(merchantPersons)
-        .where(eq(merchantPersons.merchantId, merchantId));
-      const [documentsCount] = await db
-        .select({ count: count() })
-        .from(merchantKycDocuments)
-        .where(eq(merchantKycDocuments.merchantId, merchantId));
+      const [[profile], [personsCount], [documentsCount]] = await Promise.all([
+        db
+          .select()
+          .from(merchantBusinessProfiles)
+          .where(eq(merchantBusinessProfiles.merchantId, merchantId))
+          .limit(1),
+        db
+          .select({ count: count() })
+          .from(merchantPersons)
+          .where(eq(merchantPersons.merchantId, merchantId)),
+        db
+          .select({ count: count() })
+          .from(merchantKycDocuments)
+          .where(eq(merchantKycDocuments.merchantId, merchantId)),
+      ]);
 
       const identity = await buildMerchantIdentity(merchant);
       return {
