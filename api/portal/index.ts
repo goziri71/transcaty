@@ -14,6 +14,7 @@ import { registerPortalMfaRoutes } from "./mfa.js";
 import { registerPortalWebhookRoutes } from "./webhook.js";
 import { registerPortalApiIpRulesRoutes } from "./api-ip-rules.js";
 import { registerPortalEurPayoutRoutes } from "./eur-payouts.js";
+import { registerPortalCpgPayoutRoutes } from "./cpg-payouts.js";
 import { registerPortalPayinsRoutes } from "./payins.js";
 import { registerPortalAuditLogRoutes } from "./audit-log.js";
 
@@ -26,6 +27,7 @@ export async function registerPortalRoutes(app: FastifyInstance) {
   await registerPortalWebhookRoutes(app);
   await registerPortalApiIpRulesRoutes(app);
   await registerPortalEurPayoutRoutes(app);
+  await registerPortalCpgPayoutRoutes(app);
   await registerPortalCustomersRoutes(app);
   await registerPortalTransactionsRoutes(app);
   await registerPortalPayinsRoutes(app);

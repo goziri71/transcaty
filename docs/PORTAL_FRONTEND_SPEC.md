@@ -4,6 +4,8 @@
 
 **June 2026 additions** (merchant slug, reconciliation report, payment emails): see **[FRONTEND_HANDOFF_JUNE_2026.md](./FRONTEND_HANDOFF_JUNE_2026.md)**.
 
+**India & Europe** (wallets, CPG/EUR payouts, reconciliation per-currency, API IP allowlist): see **[FRONTEND_INDIA_EUROPE_PORTAL.md](./FRONTEND_INDIA_EUROPE_PORTAL.md)**.
+
 ---
 
 ## Overview

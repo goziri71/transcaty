@@ -408,6 +408,46 @@ export async function cpgGetPayoutTransactionHistory(params: {
   });
 }
 
+export async function getMerchantCpgPayoutStatus(params: {
+  merchantId: string;
+  environment: TyltMerchantEnvironment;
+  transactionId: string;
+}) {
+  const [tx] = await db
+    .select()
+    .from(transactions)
+    .where(
+      and(
+        eq(transactions.id, params.transactionId),
+        eq(transactions.merchantId, params.merchantId),
+        eq(transactions.environment, params.environment)
+      )
+    )
+    .limit(1);
+
+  if (!tx || tx.type !== "payout") return null;
+
+  const meta = readMeta(tx);
+  if (!isTyltCpgPayoutMetadata(meta)) return null;
+
+  const live = await cpgGetPayoutTransactionInformation({
+    environment: params.environment,
+    orderId: tx.id,
+  }).catch(() => ({ status: 503, json: null as unknown }));
+
+  return {
+    transactionId: tx.id,
+    status: tx.status,
+    amount: String(meta.payoutSendAmount ?? tx.amount),
+    settlementCurrency: tx.currency,
+    debitAmount: typeof meta.debitAmount === "string" ? meta.debitAmount : String(tx.amount),
+    platformOrderId: tx.externalId ?? null,
+    networkSymbol: typeof meta.networkSymbol === "string" ? meta.networkSymbol : null,
+    detailsSource: live.status < 500 ? ("live" as const) : ("local" as const),
+    upstream: live.status < 500 ? live.json : null,
+  };
+}
+
 async function refundPayoutDebit(input: {
   id: string;
   merchantId: string;

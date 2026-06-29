@@ -53,7 +53,9 @@ export type AuditAction =
   | "portal.api_ip_rules.updated"
   | "portal.eur_payout.created"
   | "portal.eur_payout.approved"
-  | "portal.eur_payout.failed";
+  | "portal.eur_payout.failed"
+  | "portal.cpg_payout.created"
+  | "portal.cpg_payout.failed";
 
 export interface AuditEntry {
   action: AuditAction;

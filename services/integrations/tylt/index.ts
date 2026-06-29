@@ -64,6 +64,7 @@ export {
   createTyltCpgPayoutRequest,
   cpgGetPayoutTransactionInformation,
   cpgGetPayoutTransactionHistory,
+  getMerchantCpgPayoutStatus,
   applyTyltCpgPayoutWebhookPayload,
   extractCpgPayOutWebhookFields,
   isTyltCpgPayoutMetadata,

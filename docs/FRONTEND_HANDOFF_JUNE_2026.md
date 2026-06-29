@@ -26,7 +26,8 @@ Older baseline docs still apply: [PORTAL_FRONTEND_SPEC.md](./PORTAL_FRONTEND_SPE
 | P1 | Fee schedules | `GET/POST …/fee-schedules` | Replace/extend pricing panel: grid by rail × currency × payin/payout |
 | P1 | FX spread (crypto send-out) | `GET/POST /provider/fx-rate-profiles`, `PUT …/fx-overrides` | Finance settings: global spread bps; per-merchant override on merchant FX tab |
 | P2 | Preview quote | `POST /provider/fx-rate-profiles/preview-quote` | Small calculator in FX admin |
-| — | IP whitelist | In-app API exists | **No UI needed** — ops allowlists merchant server IP manually |
+| P1 | India / Europe payouts | `POST /portal/me/cpg/payout-requests`, `POST /portal/me/eur/payout-instances` | See **[FRONTEND_INDIA_EUROPE_PORTAL.md](./FRONTEND_INDIA_EUROPE_PORTAL.md)** |
+| P1 | API IP allowlist (merchant self-service) | `GET/PUT /portal/me/api-ip-rules` | Settings → API security; show `clientIp` on load |
 
 ### Merchant API (HMAC) — display only in portal docs
 
@@ -148,8 +149,14 @@ GET /portal/me/reconciliation?environment=test&from=…&to=…&format=csv
     "successCount": 38,
     "failedCount": 2,
     "pendingCount": 2,
-    "payinVolume": "15000.00",
-    "payoutVolume": "3200.00"
+    "payinVolumeByCurrency": [
+      { "currency": "BDT", "amount": "10000.00" },
+      { "currency": "USDT", "amount": "2500.00" }
+    ],
+    "payoutVolumeByCurrency": [
+      { "currency": "BDT", "amount": "2000.00" },
+      { "currency": "USDT", "amount": "500.00" }
+    ]
   },
   "rows": [
     {
@@ -185,7 +192,7 @@ Suggested page: **Reports → Reconciliation**
 
 1. Environment toggle (`test` / `live`)
 2. Date from / to (default: current month)
-3. Summary cards: total, pay-in volume, payout volume, success / failed / pending
+3. Summary cards: total; **pay-in / payout volume per currency** (`payinVolumeByCurrency`, `payoutVolumeByCurrency`); success / failed / pending
 4. Sortable table from `rows` (columns: date, type, status, amount, currency, rail, platform order id, transaction id)
 5. **Export CSV** → same URL with `format=csv` (open in new tab or `fetch` + blob download)
 

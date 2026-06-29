@@ -71,6 +71,7 @@ import {
   cpgGetPayoutTransactionInformation,
   createTyltCpgPayinRequest,
   createTyltCpgPayoutRequest,
+  getMerchantCpgPayoutStatus,
   executeTyltInternalTransfer,
   createTyltH2hPayinInstance,
   getMerchantH2hPayinStatus,
@@ -2241,6 +2242,48 @@ export async function buildApp() {
         sendMerchantFacingReply(reply, mapped);
         return;
       }
+    })
+  );
+
+  merchantV1GetPair("/v1/cpg/payout-requests/:transactionId", "/v1/tylt/cpg/payout-requests/:transactionId", (path) =>
+    app.get(path, {
+      schema: {
+        params: tyltTransactionIdParamSchema,
+        response: {
+          200: z.object({
+            transactionId: z.string(),
+            status: z.string(),
+            amount: z.string(),
+            settlementCurrency: z.string(),
+            debitAmount: z.string(),
+            platformOrderId: z.string().nullable(),
+            networkSymbol: z.string().nullable(),
+            detailsSource: z.enum(["live", "local"]),
+            upstream: z.unknown().nullable().optional(),
+          }),
+          401: errorResponse,
+          403: errorResponse,
+          404: errorResponse,
+        },
+      },
+    },
+    async (request, reply) => {
+      const m = request.merchant;
+      if (!m) return reply.status(401).send({ error: "Unauthorized" });
+      if (!m.scopes.includes("payout:create") && !m.scopes.includes("*")) {
+        return reply.status(403).send({ error: "Forbidden", message: "Missing scope: payout:create" });
+      }
+      if (!(await requireKycAndMarket(m.merchantId, "india", reply))) return;
+      const transactionId = request.params.transactionId;
+      const view = await getMerchantCpgPayoutStatus({
+        merchantId: m.merchantId,
+        environment: m.environment,
+        transactionId,
+      });
+      if (!view) {
+        return reply.status(404).send({ error: "Not found", message: "CPG payout not found" });
+      }
+      return view;
     })
   );
 
