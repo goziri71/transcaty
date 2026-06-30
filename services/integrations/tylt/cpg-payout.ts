@@ -15,6 +15,7 @@ import { applySpreadToCryptoAmount } from "../../../src/lib/fx/spread.js";
 import { addAmount, assertPositive, cmpAmount, subAmount } from "../../../src/lib/money.js";
 import type { WebhookEvent } from "../../../src/lib/merchant-webhook.js";
 import { PayoutCreationError } from "../../domestic/bangladesh/payout.js";
+import { UpstreamProviderClientError } from "../../../src/lib/merchant-facing-errors.js";
 import { parseTransactionMetadata, getOrCreateMerchantWallet } from "./crossramp-payin.js";
 import { tyltSignedGetJson, tyltSignedPostJson } from "./client.js";
 import type { TyltMerchantEnvironment } from "./config.js";
@@ -198,10 +199,16 @@ export async function createTyltCpgPayoutRequest(params: {
   amount: string;
   settledCurrency: string;
   networkSymbol: string;
-  /** Destination / beneficiary payload required by Tylt travel-rule / chain semantics. */
-  destinationDetails: Record<string, unknown>;
+  /** Recipient on-chain address the payout is sent to. */
+  address: string;
+  /** Travel-rule beneficiary payload required by Tylt. */
+  beneficiaryDetails: Record<string, unknown>;
 }): Promise<{ transactionId: string; status: string; platformOrderId: string | null }> {
   const callBackUrl = `${params.baseUrl.replace(/\/$/, "")}/webhooks/tylt/cpg-payout/${params.environment}`;
+
+  if (!params.address?.trim()) {
+    throw new Error("Recipient address is required");
+  }
 
   assertPositive(params.amount);
 
@@ -238,6 +245,7 @@ export async function createTyltCpgPayoutRequest(params: {
     fxSpreadAmount: spreadParts.spreadAmount,
     debitAmount,
     fxRateProfileId: fxSpread?.rateProfileId ?? null,
+    destinationAddress: params.address,
   };
 
   // tx1: lock the merchant wallet, validate balance, insert pending tx, debit
@@ -317,10 +325,11 @@ export async function createTyltCpgPayoutRequest(params: {
   const body: Record<string, unknown> = {
     merchantOrderId: tx.id,
     callBackUrl,
-    settledAmount: params.amount,
+    baseAmount: params.amount,
     settledCurrency: params.settledCurrency,
     networkSymbol: params.networkSymbol,
-    destinationDetails: params.destinationDetails,
+    address: params.address,
+    beneficiaryDetails: params.beneficiaryDetails,
   };
 
   let status: number;
@@ -357,6 +366,26 @@ export async function createTyltCpgPayoutRequest(params: {
       reason: JSON.stringify(json),
       externalId: platformOrderId ?? null,
     });
+
+    if (status >= 400) {
+      const data = (json as Record<string, unknown> | undefined)?.data as
+        | Record<string, unknown>
+        | undefined;
+      const merchantMessage =
+        pickString(
+          (json as Record<string, unknown> | undefined)?.msg,
+          (json as Record<string, unknown> | undefined)?.message,
+          data?.msg
+        ) ?? "Payout request was rejected by the provider.";
+      throw new UpstreamProviderClientError(
+        `Tylt CPG create payout failed: ${JSON.stringify(json)}`,
+        merchantMessage,
+        status,
+        tx.id,
+        platformOrderId ?? null
+      );
+    }
+
     throw new PayoutCreationError(
       "Tylt CPG create payout failed",
       tx.id,

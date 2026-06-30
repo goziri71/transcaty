@@ -113,7 +113,8 @@ export async function registerPortalCpgPayoutRoutes(app: FastifyInstance) {
           amount: z.string(),
           settledCurrency: z.string().min(1),
           networkSymbol: z.string().min(1),
-          destinationDetails: z.record(z.string(), z.unknown()),
+          address: z.string().min(1),
+          beneficiaryDetails: z.record(z.string(), z.unknown()),
         }),
         response: {
           201: cpgPayoutCreateResponseSchema,
@@ -150,7 +151,8 @@ export async function registerPortalCpgPayoutRoutes(app: FastifyInstance) {
         amount: string;
         settledCurrency: string;
         networkSymbol: string;
-        destinationDetails: Record<string, unknown>;
+        address: string;
+        beneficiaryDetails: Record<string, unknown>;
       };
 
       if (!(await requirePortalIndiaAccess(user.merchantId, body.environment, reply))) return;
@@ -161,14 +163,32 @@ export async function registerPortalCpgPayoutRoutes(app: FastifyInstance) {
         return reply.status(400).send({ error: "Bad Request", message: "Invalid amount" });
       }
 
-      if (!body.destinationDetails || Object.keys(body.destinationDetails).length === 0) {
+      if (!body.address?.trim()) {
         return reply.status(400).send({
           error: "Bad Request",
-          message: "destinationDetails is required",
+          message: "Recipient address is required",
+        });
+      }
+
+      if (
+        !body.beneficiaryDetails ||
+        typeof body.beneficiaryDetails !== "object" ||
+        Object.keys(body.beneficiaryDetails).length === 0
+      ) {
+        return reply.status(400).send({
+          error: "Bad Request",
+          message: "beneficiaryDetails (Travel Rule) is required",
         });
       }
 
       const settledCurrency = body.settledCurrency.trim().toUpperCase();
+      if (!["USDT", "USDC"].includes(settledCurrency)) {
+        return reply.status(400).send({
+          error: "Bad Request",
+          message: "Unsupported settlement currency. Supported: USDT, USDC",
+          code: "unsupported_currency",
+        });
+      }
       const baseUrl = process.env.APP_BASE_URL ?? `http://localhost:${process.env.PORT ?? 3000}`;
 
       try {
@@ -179,7 +199,8 @@ export async function registerPortalCpgPayoutRoutes(app: FastifyInstance) {
           amount: body.amount,
           settledCurrency,
           networkSymbol: body.networkSymbol,
-          destinationDetails: body.destinationDetails,
+          address: body.address.trim(),
+          beneficiaryDetails: body.beneficiaryDetails,
         });
 
         const [txRow] = await db

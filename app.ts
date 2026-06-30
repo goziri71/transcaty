@@ -2147,7 +2147,8 @@ export async function buildApp() {
           amount: z.string(),
           settledCurrency: z.string().min(1),
           networkSymbol: z.string().min(1),
-          destinationDetails: z.record(z.string(), z.unknown()),
+          address: z.string().min(1),
+          beneficiaryDetails: z.record(z.string(), z.unknown()),
         }),
         response: {
           200: z
@@ -2177,7 +2178,8 @@ export async function buildApp() {
         amount: string;
         settledCurrency: string;
         networkSymbol: string;
-        destinationDetails: Record<string, unknown>;
+        address: string;
+        beneficiaryDetails: Record<string, unknown>;
       };
       const amt = parseFloat(body.amount);
       const bounds = LIMITS.tyltCpgPayout;
@@ -2187,14 +2189,28 @@ export async function buildApp() {
           message: "Invalid amount",
         });
       }
+      if (!body.address?.trim()) {
+        return reply.status(400).send({
+          error: "Bad Request",
+          message: "Recipient address is required",
+        });
+      }
       if (
-        !body.destinationDetails ||
-        typeof body.destinationDetails !== "object" ||
-        Object.keys(body.destinationDetails).length === 0
+        !body.beneficiaryDetails ||
+        typeof body.beneficiaryDetails !== "object" ||
+        Object.keys(body.beneficiaryDetails).length === 0
       ) {
         return reply.status(400).send({
           error: "Bad Request",
-          message: "destinationDetails is required",
+          message: "beneficiaryDetails (Travel Rule) is required",
+        });
+      }
+      const settledCurrency = body.settledCurrency.trim().toUpperCase();
+      if (!["USDT", "USDC"].includes(settledCurrency)) {
+        return reply.status(400).send({
+          error: "Bad Request",
+          message: "Unsupported settlement currency. Supported: USDT, USDC",
+          code: "unsupported_currency",
         });
       }
       try {
@@ -2206,9 +2222,10 @@ export async function buildApp() {
               environment: m.environment,
               baseUrl,
               amount: body.amount,
-              settledCurrency: body.settledCurrency,
+              settledCurrency,
               networkSymbol: body.networkSymbol,
-              destinationDetails: body.destinationDetails,
+              address: body.address.trim(),
+              beneficiaryDetails: body.beneficiaryDetails,
             });
             const breakdown = await buildTransactionFeeBreakdown({
               merchantId: m.merchantId,
@@ -2217,7 +2234,7 @@ export async function buildApp() {
               type: "payout",
               status: "pending",
               amount: body.amount,
-              currency: body.settledCurrency.trim().toUpperCase(),
+              currency: settledCurrency,
               provider: "tylt-cpg-payout",
             });
             return attachFeeBreakdown(
