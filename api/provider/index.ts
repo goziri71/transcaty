@@ -1147,7 +1147,7 @@ export async function registerProviderRoutes(app: FastifyInstance) {
     }
   );
 
-  const MARKET_IDS = ["bangladesh", "india", "europe"] as const;
+  const MARKET_IDS = ["bangladesh", "india", "europe", "brazil"] as const;
   const MARKET_ENTITLEMENT = [
     "disabled",
     "requested",
@@ -1906,7 +1906,7 @@ export async function registerProviderRoutes(app: FastifyInstance) {
 
   const transactionRailFieldsSchema = z.object({
     currency: z.string(),
-    rail: z.enum(["bangladesh", "india", "europe", "internal", "unknown"]),
+    rail: z.enum(["bangladesh", "brazil", "india", "europe", "internal", "unknown"]),
     railLabel: z.string(),
   });
 

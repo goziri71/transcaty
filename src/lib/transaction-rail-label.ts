@@ -3,7 +3,7 @@
  * Maps internal `provider` DB values to region/product copy only — no vendor names.
  */
 
-export type MerchantTransactionRail = "bangladesh" | "india" | "europe" | "internal" | "unknown";
+export type MerchantTransactionRail = "bangladesh" | "brazil" | "india" | "europe" | "internal" | "unknown";
 
 export type MerchantTransactionRailPresentation = {
   currency: string;
@@ -29,6 +29,10 @@ function labelFromProvider(provider: string): Pick<MerchantTransactionRailPresen
       return { rail: "bangladesh", railLabel: "Bangladesh pay-in" };
     case "payok-bd-payout":
       return { rail: "bangladesh", railLabel: "Bangladesh payout" };
+    case "payok-br-payin":
+      return { rail: "brazil", railLabel: "Brazil pay-in" };
+    case "payok-br-payout":
+      return { rail: "brazil", railLabel: "Brazil payout" };
     case "tylt-h2h-upi":
       return { rail: "india", railLabel: "India UPI (H2H)" };
     case "tylt-cpg-payin":
@@ -110,6 +114,10 @@ export function presentTransactionRail(params: {
 
   if (currency === "BDT") {
     return { currency, rail: "bangladesh", railLabel: "Bangladesh" };
+  }
+
+  if (currency === "BRL") {
+    return { currency, rail: "brazil", railLabel: "Brazil" };
   }
 
   if (currency === "EUR") {

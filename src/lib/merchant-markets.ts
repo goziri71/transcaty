@@ -16,7 +16,7 @@ import {
 import { normalizeMoneyAmountToTwoDecimals } from "./money.js";
 import { getOrCreateMerchantWallet } from "../../services/integrations/tylt/crossramp-payin.js";
 
-export const MERCHANT_MARKETS = ["bangladesh", "india", "europe"] as const;
+export const MERCHANT_MARKETS = ["bangladesh", "india", "europe", "brazil"] as const;
 export type MerchantMarket = (typeof MERCHANT_MARKETS)[number];
 
 export const MARKET_ENTITLEMENT_STATUSES = [
@@ -44,6 +44,7 @@ export const MARKET_SETTLEMENT_CURRENCIES: Record<MerchantMarket, readonly strin
   bangladesh: ["BDT"],
   india: ["USDT"],
   europe: ["USDC"],
+  brazil: ["BRL"],
 };
 
 export function marketForCurrency(currency: string): MerchantMarket | null {
@@ -51,6 +52,7 @@ export function marketForCurrency(currency: string): MerchantMarket | null {
   if (region === "bangladesh") return "bangladesh";
   if (region === "india") return "india";
   if (region === "europe") return "europe";
+  if (region === "brazil") return "brazil";
   return null;
 }
 
@@ -421,7 +423,7 @@ export async function buildPortalWalletCatalog(params: {
   }
 
   return items.sort((a, b) => {
-    const order = { bangladesh: 0, india: 1, europe: 2, other: 3 };
+    const order = { bangladesh: 0, india: 1, europe: 2, brazil: 3, other: 4 };
     const am = order[a.market as MerchantMarket] ?? 3;
     const bm = order[b.market as MerchantMarket] ?? 3;
     if (am !== bm) return am - bm;

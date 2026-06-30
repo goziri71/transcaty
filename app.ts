@@ -57,6 +57,12 @@ import {
   verifyPayokCallbackWithFallbacksDebug,
 } from "./services/domestic/bangladesh/index.js";
 import {
+  createPayinOrder as createBrazilPayinOrder,
+  handlePayinCallback as handleBrazilPayinCallback,
+  createPayoutOrder as createBrazilPayoutOrder,
+  handlePayoutCallback as handleBrazilPayoutCallback,
+} from "./services/domestic/brazil/index.js";
+import {
   applyTyltWebhookByProductRoute,
   applyTyltWebhookByStoredRailProduct,
   extractTyltWebhookMerchantOrderId,
@@ -944,6 +950,26 @@ export async function buildApp() {
 
   const debugWebhookBody = allowDebugBody;
 
+  /**
+   * PayOK uses one webhook endpoint per direction across all countries. Route to the
+   * correct country handler by the transaction's own `provider` (authoritative — it is
+   * our field, keyed off the merchantOrderId we sent), so a Brazil (`payok-br-*`)
+   * callback never runs the Bangladesh handler (which would refund in BDT).
+   */
+  async function payokTxIsBrazil(body: unknown): Promise<boolean> {
+    const moid =
+      body && typeof body === "object" && typeof (body as Record<string, unknown>).merchantOrderId === "string"
+        ? ((body as Record<string, unknown>).merchantOrderId as string)
+        : null;
+    if (!moid) return false;
+    const [tx] = await db
+      .select({ provider: transactions.provider })
+      .from(transactions)
+      .where(eq(transactions.id, moid))
+      .limit(1);
+    return !!tx?.provider?.startsWith("payok-br");
+  }
+
   app.post(PAYIN_WEBHOOK_PATH, async (request, reply) => {
     const rawBody = (request as FastifyRequest & { rawBody?: string }).rawBody ?? "";
     const sign = (request.headers.sign ?? request.headers.Sign) as string | undefined;
@@ -986,12 +1012,14 @@ export async function buildApp() {
       );
     }
     const body = typeof request.body === "object" ? request.body : {};
+    const isBrazil = await payokTxIsBrazil(body);
+    const railLabel = isBrazil ? "payok-br-payin" : "payok-bd-payin";
     const externalIdGuess =
       typeof (body as Record<string, unknown>).platformOrderId === "string"
         ? ((body as Record<string, unknown>).platformOrderId as string)
         : null;
     const claim = await tryClaimWebhookEvent({
-      rail: "payok-bd-payin",
+      rail: railLabel,
       environment: "unknown",
       rawBody,
       signature: sign ?? null,
@@ -1000,13 +1028,15 @@ export async function buildApp() {
     });
     if (claim.kind === "duplicate") {
       app.log.info(
-        { rail: "payok-bd-payin", eventId: claim.eventId, status: claim.previousStatus },
+        { rail: railLabel, eventId: claim.eventId, status: claim.previousStatus },
         "payin webhook duplicate (replay absorbed by webhook_events)"
       );
       return reply.type("text/plain").send("SUCCESS");
     }
     try {
-      const webhook = await handlePayinCallback(body as Parameters<typeof handlePayinCallback>[0]);
+      const webhook = await (isBrazil ? handleBrazilPayinCallback : handlePayinCallback)(
+        body as Parameters<typeof handlePayinCallback>[0]
+      );
       await markWebhookProcessed(claim.eventId, {
         transactionId: webhook?.event?.transactionId ?? null,
       });
@@ -1063,12 +1093,14 @@ export async function buildApp() {
       );
     }
     const body = typeof request.body === "object" ? request.body : {};
+    const isBrazil = await payokTxIsBrazil(body);
+    const railLabel = isBrazil ? "payok-br-payout" : "payok-bd-payout";
     const externalIdGuess =
       typeof (body as Record<string, unknown>).platformOrderId === "string"
         ? ((body as Record<string, unknown>).platformOrderId as string)
         : null;
     const claim = await tryClaimWebhookEvent({
-      rail: "payok-bd-payout",
+      rail: railLabel,
       environment: "unknown",
       rawBody,
       signature: sign ?? null,
@@ -1077,13 +1109,15 @@ export async function buildApp() {
     });
     if (claim.kind === "duplicate") {
       app.log.info(
-        { rail: "payok-bd-payout", eventId: claim.eventId, status: claim.previousStatus },
+        { rail: railLabel, eventId: claim.eventId, status: claim.previousStatus },
         "payout webhook duplicate (replay absorbed by webhook_events)"
       );
       return reply.type("text/plain").send("SUCCESS");
     }
     try {
-      const webhook = await handlePayoutCallback(body as Parameters<typeof handlePayoutCallback>[0]);
+      const webhook = await (isBrazil ? handleBrazilPayoutCallback : handlePayoutCallback)(
+        body as Parameters<typeof handlePayoutCallback>[0]
+      );
       await markWebhookProcessed(claim.eventId, {
         transactionId: webhook?.event?.transactionId ?? null,
       });
@@ -1495,6 +1529,120 @@ export async function buildApp() {
         const mapped = merchantPaymentFlowErrorResponse(err);
         if (mapped.logDetail) {
           app.log.warn({ logDetail: mapped.logDetail }, "v1 payins merchant-facing error detail");
+        }
+        sendMerchantFacingReply(reply, mapped);
+        return;
+      }
+    }
+  );
+
+  // Brazil (PayOK PIX) pay-in. Separate route + market gate from Bangladesh so the
+  // two countries stay isolated; shared PayOK transport underneath (see brazil module).
+  app.post(
+    "/v1/br/payins",
+    {
+      schema: {
+        body: z.object({
+          amount: z.string(),
+          paymentMethodCode: z.enum(["PIX"]).default("PIX"),
+          /** Where the customer is sent after PayOK checkout (your site/app). Forwarded to the provider; never exposed to the merchant as PayOK. */
+          returnUrl: z.string().min(1),
+          customer: z.object({
+            name: z.string(),
+            email: z.string().email(),
+            phone: z.string(),
+            deviceId: z.string(),
+          }),
+          goodsInfo: z.object({
+            name: z.string(),
+            id: z.string().optional(),
+            price: z.string().optional(),
+          }),
+        }),
+        response: {
+          200: z
+            .object({
+              transactionId: z.string(),
+              status: z.string(),
+              amount: z.string(),
+              platformOrderId: z.string().optional(),
+              paymentInfo: z.unknown().optional(),
+              expiresAt: z.string().nullable().optional(),
+            })
+            .merge(transactionFeeBreakdownFieldsSchema.partial()),
+          400: merchantFacingError,
+          401: errorResponse,
+          403: errorResponse,
+          503: merchantFacingError,
+          500: merchantFacingError,
+        },
+      },
+    },
+    async (request, reply) => {
+      const m = request.merchant;
+      if (!m) return reply.status(401).send({ error: "Unauthorized" });
+      if (!m.scopes.includes("payin:create") && !m.scopes.includes("*")) {
+        return reply.status(403).send({ error: "Forbidden", message: "Missing scope: payin:create" });
+      }
+      if (!(await requireKycAndMarket(m.merchantId, "brazil", reply))) return;
+      const body = request.body as {
+        amount: string;
+        paymentMethodCode: string;
+        returnUrl: string;
+        customer: { name: string; email: string; phone: string; deviceId: string };
+        goodsInfo: { name: string; id?: string; price?: string };
+      };
+      const amount = parseFloat(body.amount);
+      if (!Number.isFinite(amount) || amount < LIMITS.payokBr.payin.min || amount > LIMITS.payokBr.payin.max) {
+        return reply.status(400).send({ error: `Amount must be between ${LIMITS.payokBr.payin.min} and ${LIMITS.payokBr.payin.max} BRL` });
+      }
+      const returnCheck = validateMerchantReturnUrl(body.returnUrl);
+      if (!returnCheck.ok) {
+        return reply.status(400).send({ error: "Bad Request", message: returnCheck.message });
+      }
+      try {
+        const response = await withIdempotency(
+          { request, reply, merchantId: m.merchantId, body },
+          async () => {
+            const result = await createBrazilPayinOrder({
+              merchantId: m.merchantId,
+              environment: m.environment,
+              amount: body.amount,
+              paymentMethodCode: body.paymentMethodCode,
+              baseUrl,
+              merchantReturnUrl: returnCheck.normalized,
+              customer: body.customer,
+              goodsInfo: body.goodsInfo,
+            });
+            const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+            const breakdown = await buildTransactionFeeBreakdown({
+              merchantId: m.merchantId,
+              environment: m.environment,
+              transactionId: result.transactionId,
+              type: "payin",
+              status: "pending",
+              amount: body.amount,
+              currency: "BRL",
+              provider: "payok-br-payin",
+            });
+            return attachFeeBreakdown(
+              {
+                ...result,
+                status: "pending",
+                amount: body.amount,
+                expiresAt,
+              },
+              breakdown
+            );
+          }
+        );
+        if (response === undefined) return; // 409 conflict already sent
+        return response;
+      } catch (err) {
+        app.log.error(err);
+        const mapped = merchantPaymentFlowErrorResponse(err);
+        if (mapped.logDetail) {
+          app.log.warn({ logDetail: mapped.logDetail }, "v1 br payins merchant-facing error detail");
         }
         sendMerchantFacingReply(reply, mapped);
         return;
@@ -2959,6 +3107,110 @@ export async function buildApp() {
     }
   );
 
+  // Brazil (PayOK PIX) payout. Separate route + market gate + BRL limits from Bangladesh.
+  app.post(
+    "/v1/br/payouts",
+    {
+      schema: {
+        body: z.object({
+          amount: z.string(),
+          benificiaryAccountInfo: z.object({
+            number: z.string(),
+            orgId: z.string(),
+            orgCode: z.string(),
+            orgName: z.string(),
+            holderName: z.string(),
+          }),
+          cardHolderInfo: z.object({
+            firstName: z.string(),
+            lastName: z.string(),
+            email: z.string().email(),
+            phone: z.string(),
+          }),
+        }),
+        response: {
+          200: z
+            .object({
+              transactionId: z.string(),
+              status: z.string(),
+              amount: z.string(),
+              platformOrderId: z.string().optional(),
+              recipient: merchantPayoutRecipientSchema,
+              estimatedCompletion: z.string().nullable().optional(),
+            })
+            .merge(transactionFeeBreakdownFieldsSchema.partial()),
+          400: merchantFacingError,
+          401: errorResponse,
+          403: errorResponse,
+          503: merchantFacingError,
+          500: merchantFacingError,
+        },
+      },
+    },
+    async (request, reply) => {
+      const m = request.merchant;
+      if (!m) return reply.status(401).send({ error: "Unauthorized" });
+      if (!m.scopes.includes("payout:create") && !m.scopes.includes("*")) {
+        return reply.status(403).send({ error: "Forbidden", message: "Missing scope: payout:create" });
+      }
+      if (!(await requireKycAndMarket(m.merchantId, "brazil", reply))) return;
+      const body = request.body as { amount: string; benificiaryAccountInfo: { number: string; orgId: string; orgCode: string; orgName: string; holderName: string }; cardHolderInfo: { firstName: string; lastName: string; email: string; phone: string } };
+      const amount = parseFloat(body.amount);
+      if (!Number.isFinite(amount) || amount < LIMITS.payokBr.payout.min || amount > LIMITS.payokBr.payout.max) {
+        return reply.status(400).send({ error: `Amount must be between ${LIMITS.payokBr.payout.min} and ${LIMITS.payokBr.payout.max} BRL` });
+      }
+      try {
+        const response = await withIdempotency(
+          { request, reply, merchantId: m.merchantId, body },
+          async () => {
+            const result = await createBrazilPayoutOrder({
+              merchantId: m.merchantId,
+              environment: m.environment,
+              amount: body.amount,
+              baseUrl,
+              benificiaryAccountInfo: body.benificiaryAccountInfo,
+              cardHolderInfo: body.cardHolderInfo,
+            });
+            const estimatedCompletion = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+            const breakdown = await buildTransactionFeeBreakdown({
+              merchantId: m.merchantId,
+              environment: m.environment,
+              transactionId: result.transactionId,
+              type: "payout",
+              status: "pending",
+              amount: body.amount,
+              currency: "BRL",
+              provider: "payok-br-payout",
+            });
+            return attachFeeBreakdown(
+              {
+                ...result,
+                status: result.status ?? "pending",
+                amount: body.amount,
+                recipient: {
+                  benificiaryAccountInfo: body.benificiaryAccountInfo,
+                  cardHolderInfo: body.cardHolderInfo,
+                },
+                estimatedCompletion,
+              },
+              breakdown
+            );
+          }
+        );
+        if (response === undefined) return; // 409 conflict already sent
+        return response;
+      } catch (err) {
+        app.log.error(err);
+        const mapped = merchantPaymentFlowErrorResponse(err);
+        if (mapped.logDetail) {
+          app.log.warn({ logDetail: mapped.logDetail }, "v1 br payouts merchant-facing error detail");
+        }
+        sendMerchantFacingReply(reply, mapped);
+        return;
+      }
+    }
+  );
+
   app.post(
     "/v1/wallets",
     {
@@ -3364,7 +3616,7 @@ export async function buildApp() {
       amount: z.string(),
       paidAmount: z.string().nullable(),
       currency: z.string(),
-      rail: z.enum(["bangladesh", "india", "europe", "internal", "unknown"]),
+      rail: z.enum(["bangladesh", "brazil", "india", "europe", "internal", "unknown"]),
       railLabel: z.string(),
       platformOrderId: z.string().nullable(),
       instanceId: z.string().nullable(),

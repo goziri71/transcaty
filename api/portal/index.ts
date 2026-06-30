@@ -16,6 +16,7 @@ import { registerPortalApiIpRulesRoutes } from "./api-ip-rules.js";
 import { registerPortalEurPayoutRoutes } from "./eur-payouts.js";
 import { registerPortalCpgPayoutRoutes } from "./cpg-payouts.js";
 import { registerPortalPayinsRoutes } from "./payins.js";
+import { registerPortalBrazilRoutes } from "./br-payments.js";
 import { registerPortalAuditLogRoutes } from "./audit-log.js";
 
 export async function registerPortalRoutes(app: FastifyInstance) {
@@ -31,5 +32,6 @@ export async function registerPortalRoutes(app: FastifyInstance) {
   await registerPortalCustomersRoutes(app);
   await registerPortalTransactionsRoutes(app);
   await registerPortalPayinsRoutes(app);
+  await registerPortalBrazilRoutes(app);
   await registerPortalAuditLogRoutes(app);
 }

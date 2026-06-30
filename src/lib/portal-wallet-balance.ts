@@ -10,7 +10,7 @@ export const portalWalletLimitsSchema = z.object({
   payout: z.object({ min: z.number(), max: z.number() }),
 });
 
-export const portalWalletMarketSchema = z.enum(["bangladesh", "india", "europe"]);
+export const portalWalletMarketSchema = z.enum(["bangladesh", "india", "europe", "brazil"]);
 export const portalWalletActivationStatusSchema = z.enum([
   "active",
   "not_enabled",
@@ -27,7 +27,7 @@ export const portalWalletBalanceItemSchema = z.object({
   status: z.string(),
   label: z.string().nullable(),
   displayLabel: z.string(),
-  region: z.enum(["bangladesh", "india", "europe", "other"]),
+  region: z.enum(["bangladesh", "india", "europe", "brazil", "other"]),
   regionLabel: z.string(),
   lastUpdated: z.string().nullable(),
   updatedAt: z.string().nullable(),
@@ -52,6 +52,7 @@ export function merchantWalletRegionForCurrency(currency: string): PortalWalletR
   if (c === "USDT") return "india";
   if (c === "INR") return "other";
   if (c === "USDC" || c === "EUR" || c === "GBP") return "europe";
+  if (c === "BRL") return "brazil";
   return "other";
 }
 
@@ -60,6 +61,8 @@ export function merchantWalletRegionLabel(region: PortalWalletRegion, currency: 
   switch (region) {
     case "bangladesh":
       return "Bangladesh";
+    case "brazil":
+      return "Brazil (PIX)";
     case "india":
       return "India (USDT)";
     case "europe":
@@ -92,6 +95,9 @@ export function limitsForMerchantWalletCurrency(currency: string): PayinPayoutLi
   if (c === "USDC") {
     const l = LIMITS.tyltEurOpenBanking.EUR;
     return { payin: { ...l }, payout: { ...l } };
+  }
+  if (c === "BRL") {
+    return { payin: { ...LIMITS.payokBr.payin }, payout: { ...LIMITS.payokBr.payout } };
   }
   return { payin: { ...LIMITS.payin }, payout: { ...LIMITS.payout } };
 }

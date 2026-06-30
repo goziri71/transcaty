@@ -34,6 +34,9 @@ import { getRedis } from "./redis.js";
 import type { ProviderCircuit } from "./outbound-http.js";
 
 export const PAYOK_CIRCUIT_KEY = "payok";
+/** Brazil PayOK uses the same vendor but a separate breaker, so a Brazil-specific
+ * outage cannot trip Bangladesh's circuit (and vice versa). */
+export const PAYOK_BR_CIRCUIT_KEY = "payok-br";
 /** Tylt CPG + CrossRamp share one breaker (same vendor HTTP edge). */
 export const TYLT_CIRCUIT_KEY = "tylt";
 

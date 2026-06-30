@@ -13,9 +13,10 @@
  */
 import {
   PAYOK_CIRCUIT_KEY,
+  PAYOK_BR_CIRCUIT_KEY,
   getProviderCircuit,
 } from "../../../../src/lib/provider-circuit-breaker.js";
-import { outboundFetch, parseJsonResult } from "../../../../src/lib/outbound-http.js";
+import { outboundFetch, parseJsonResult, type ProviderCircuit } from "../../../../src/lib/outbound-http.js";
 import { getPayokConfig } from "./config.js";
 import { getPayokConfigForEnvironment, type PayokEnvironment } from "./config.js";
 import { signPayokRequest } from "./signature.js";
@@ -23,7 +24,22 @@ import { signPayokRequest } from "./signature.js";
 const PAYIN_BASE = "/api-pay/payment/V3.5";
 const PAYOUT_BASE = "/api-pay/remit/V3.5";
 
-const PAYOK_CIRCUIT = getProviderCircuit(PAYOK_CIRCUIT_KEY);
+// One circuit per key, memoized. Bangladesh stays on "payok"; Brazil uses
+// "payok-br" so a country-specific outage does not trip the other's breaker.
+const circuits = new Map<string, ProviderCircuit>();
+function circuitFor(key: string): ProviderCircuit {
+  let c = circuits.get(key);
+  if (!c) {
+    c = getProviderCircuit(key);
+    circuits.set(key, c);
+  }
+  return c;
+}
+
+/** Map a request's countryCode to its PayOK circuit key (defaults to Bangladesh). */
+function payokCircuitKeyForCountry(countryCode?: string): string {
+  return countryCode === "BR" ? PAYOK_BR_CIRCUIT_KEY : PAYOK_CIRCUIT_KEY;
+}
 
 function formatRequestTime(): string {
   return new Date().toISOString();
@@ -35,6 +51,8 @@ interface PayokPostOptions {
   /** Mutating endpoints (create-order, payout-create) should not retry on
    * 4xx and should send Idempotency-Key. Reads (queries) can retry freely. */
   retryable?: boolean;
+  /** Circuit-breaker key; defaults to the shared Bangladesh "payok" key. */
+  circuitKey?: string;
 }
 
 async function payokPost<T = unknown>(
@@ -61,7 +79,7 @@ async function payokPost<T = unknown>(
     },
     {
       label: `payok ${path}`,
-      circuit: PAYOK_CIRCUIT,
+      circuit: circuitFor(options.circuitKey ?? PAYOK_CIRCUIT_KEY),
       idempotencyKey: options.idempotencyKey,
       // Reads can retry on transient 4xx like 429; mutations also retry on
       // network errors and 5xx but the underlying provider must dedupe.
@@ -95,6 +113,9 @@ export async function payokPayinCreateOrder(params: {
   returnUrl?: string;
   customer: { name: string; email: string; phone: string; deviceId: string };
   goodsInfo: { name: string; id?: string; price?: string };
+  countryCode?: string;
+  currency?: string;
+  language?: string;
 }) {
   const config = params.environment ? getPayokConfigForEnvironment(params.environment) : getPayokConfig();
   return payokPost(
@@ -103,13 +124,13 @@ export async function payokPayinCreateOrder(params: {
       requestTime: formatRequestTime(),
       merchantId: config.merchantId,
       paymentMethodCode: params.paymentMethodCode,
-      countryCode: "BD",
+      countryCode: params.countryCode ?? "BD",
       merchantOrderId: params.merchantOrderId,
       amount: params.amount,
-      currency: "BDT",
+      currency: params.currency ?? "BDT",
       notificationUrl: params.notificationUrl,
       returnUrl: params.returnUrl,
-      language: "EN",
+      language: params.language ?? "EN",
       customer: params.customer,
       goodsInfo: params.goodsInfo,
     },
@@ -117,6 +138,7 @@ export async function payokPayinCreateOrder(params: {
       environment: params.environment,
       idempotencyKey: params.merchantOrderId,
       retryable: true,
+      circuitKey: payokCircuitKeyForCountry(params.countryCode),
     }
   );
 }
@@ -147,6 +169,9 @@ export async function payokPayoutAccountInquiry(params: {
     orgName: string;
     holderName: string;
   };
+  countryCode?: string;
+  currency?: string;
+  language?: string;
 }) {
   const config = params.environment ? getPayokConfigForEnvironment(params.environment) : getPayokConfig();
   return payokPost<{ code: string; inquiryToken?: string; message?: string; [k: string]: unknown }>(
@@ -156,15 +181,16 @@ export async function payokPayoutAccountInquiry(params: {
       merchantId: config.merchantId,
       merchantOrderId: params.merchantOrderId,
       amount: params.amount,
-      countryCode: "BD",
-      currency: "BDT",
-      language: "EN",
+      countryCode: params.countryCode ?? "BD",
+      currency: params.currency ?? "BDT",
+      language: params.language ?? "EN",
       benificiaryAccountInfo: params.benificiaryAccountInfo,
     },
     {
       environment: params.environment,
       idempotencyKey: params.merchantOrderId,
       retryable: true,
+      circuitKey: payokCircuitKeyForCountry(params.countryCode),
     }
   );
 }
@@ -185,6 +211,9 @@ export async function payokPayoutCreate(params: {
     holderName: string;
   };
   cardHolderInfo: { firstName: string; lastName: string; email: string; phone: string };
+  countryCode?: string;
+  currency?: string;
+  language?: string;
 }) {
   const config = params.environment ? getPayokConfigForEnvironment(params.environment) : getPayokConfig();
   return payokPost(
@@ -194,9 +223,9 @@ export async function payokPayoutCreate(params: {
       merchantId: config.merchantId,
       merchantOrderId: params.merchantOrderId,
       amount: params.amount,
-      countryCode: "BD",
-      currency: "BDT",
-      language: "EN",
+      countryCode: params.countryCode ?? "BD",
+      currency: params.currency ?? "BDT",
+      language: params.language ?? "EN",
       inquiryToken: params.inquiryToken,
       notificationUrl: params.notificationUrl,
       description: params.description,
@@ -207,6 +236,7 @@ export async function payokPayoutCreate(params: {
       environment: params.environment,
       idempotencyKey: params.merchantOrderId,
       retryable: true,
+      circuitKey: payokCircuitKeyForCountry(params.countryCode),
     }
   );
 }

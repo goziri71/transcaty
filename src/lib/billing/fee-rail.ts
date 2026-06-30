@@ -1,15 +1,19 @@
 import type { TransactionFeeType } from "./fee-calculator.js";
 
-export type FeeRail = "bangladesh" | "india" | "europe" | "cpg_crypto";
+export type FeeRail = "bangladesh" | "india" | "europe" | "cpg_crypto" | "brazil";
 
 export function providerToFeeRail(provider: string | null | undefined, currency: string): FeeRail {
   const p = provider?.trim() ?? "";
   const c = currency.trim().toUpperCase();
+  // Brazil (PayOK BRL/PIX) must be matched before the generic `payok` prefix,
+  // which otherwise routes every PayOK provider to the Bangladesh rail.
+  if (p.startsWith("payok-br")) return "brazil";
   if (p.startsWith("payok")) return "bangladesh";
   if (p === "tylt-cpg-payout" || p === "tylt-cpg-payin") return "cpg_crypto";
   if (p === "tylt-eur-payout" || p === "tylt-eur-payin" || p.startsWith("tylt-eur")) return "europe";
   if (p.startsWith("tylt-")) return "india";
   if (c === "BDT") return "bangladesh";
+  if (c === "BRL") return "brazil";
   if (c === "EUR" || c === "USDC") return "europe";
   if (c === "USDT" || c === "INR") return "india";
   return "bangladesh";

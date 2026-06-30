@@ -2,6 +2,11 @@
 export const LIMITS = {
   payin: { min: 200, max: 25_000 },
   payout: { min: 100, max: 25_000 },
+  /** Brazil BRL limits for PayOK PIX flows (per Tylt/PayOK payout doc: 10–15,000 BRL). */
+  payokBr: {
+    payin: { min: 10, max: 15_000 },
+    payout: { min: 10, max: 15_000 },
+  },
   /** Tylt UPI pay-in (merchant H2H): quoted amount limits by currency symbol. */
   tyltCrossRamp: {
     USDT: { min: 1, max: 500_000 },

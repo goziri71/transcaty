@@ -33,7 +33,7 @@ const errorResponse = z.object({
 });
 
 const FX_PRODUCT = ["cpg_payout", "eur_payout"] as const;
-const FEE_RAIL = ["bangladesh", "india", "europe", "cpg_crypto"] as const;
+const FEE_RAIL = ["bangladesh", "brazil", "india", "europe", "cpg_crypto"] as const;
 const FEE_TYPE = ["payin", "payout"] as const;
 const ENV = ["test", "live"] as const;
 
