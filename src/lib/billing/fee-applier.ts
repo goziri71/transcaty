@@ -1,7 +1,7 @@
 import { db } from "../../db/index.js";
 import { ledgerEntries, wallets } from "../../db/schema/index.js";
 import { and, eq } from "drizzle-orm";
-import { PLATFORM_WALLET_ID } from "./platform-wallet.js";
+import { PLATFORM_MERCHANT_ID } from "./platform-wallet.js";
 import { audit } from "../audit.js";
 import { addAmount, cmpAmount, subAmount, toCents } from "../money.js";
 import type { TransactionFeeType } from "./fee-calculator.js";
@@ -72,7 +72,15 @@ async function applyFeeWithTx(tx: DbTx, input: ApplyFeeInput): Promise<boolean> 
   const [platformWallet] = await tx
     .select({ id: wallets.id, balance: wallets.balance })
     .from(wallets)
-    .where(eq(wallets.id, PLATFORM_WALLET_ID))
+    .where(
+      and(
+        eq(wallets.merchantId, PLATFORM_MERCHANT_ID),
+        eq(wallets.environment, environment),
+        eq(wallets.type, "merchant"),
+        eq(wallets.currency, settlementCurrency),
+        eq(wallets.status, "active")
+      )
+    )
     .for("update")
     .limit(1);
 

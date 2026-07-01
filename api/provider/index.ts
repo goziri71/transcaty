@@ -30,7 +30,7 @@ import {
 } from "../../src/lib/provider-auth.js";
 import { getDefaultPayokEnvironment, type PayokEnvironment } from "../../services/domestic/bangladesh/provider/config.js";
 import { pickPrimaryMerchantWallet, primaryMerchantBalanceByMerchantId } from "../../src/lib/provider-merchant-balance.js";
-import { reconcilePayokPayinByTransactionId } from "../../services/domestic/bangladesh/payin-reconcile.js";
+import { reconcilePayokPayinByTransactionId } from "../../services/domestic/payok/reconcile-payin.js";
 import { reconcileCrossRampPayinByTransactionId } from "../../services/integrations/tylt/index.js";
 import { ProviderCircuitOpenError } from "../../src/lib/provider-circuit-breaker.js";
 import { queueMerchantWebhook } from "../../src/lib/merchant-webhook.js";
@@ -2912,7 +2912,7 @@ export async function registerProviderRoutes(app: FastifyInstance) {
           if (result.reason === "wrong_rail") {
             return reply.status(400).send({
               error: "Bad Request",
-              message: "Not a Bangladesh Payok pay-in transaction",
+              message: "Not a Payok domestic pay-in transaction (Bangladesh or Brazil)",
             });
           }
           return reply.status(200).send({

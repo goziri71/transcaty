@@ -11,6 +11,22 @@ describe("presentTransactionRail", () => {
     assert.equal("product" in p, false);
   });
 
+  it("labels Brazil pay-in and payout", () => {
+    const payin = presentTransactionRail({ provider: "payok-br-payin", currency: "BRL" });
+    assert.equal(payin.rail, "brazil");
+    assert.equal(payin.railLabel, "Brazil pay-in");
+
+    const payout = presentTransactionRail({ provider: "payok-br-payout", currency: "BRL" });
+    assert.equal(payout.rail, "brazil");
+    assert.equal(payout.railLabel, "Brazil payout");
+  });
+
+  it("infers Brazil from BRL currency", () => {
+    const p = presentTransactionRail({ provider: null, currency: "BRL" });
+    assert.equal(p.rail, "brazil");
+    assert.equal(p.railLabel, "Brazil");
+  });
+
   it("labels India UPI H2H without vendor name", () => {
     const p = presentTransactionRail({
       provider: "tylt-h2h-upi",

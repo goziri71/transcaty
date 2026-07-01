@@ -56,7 +56,7 @@ function isTerminalPayokOutcome(code?: string, status?: string): boolean {
   return false;
 }
 
-export async function reconcilePayokPayinByTransactionId(
+export async function reconcileBangladeshPayokPayinByTransactionId(
   transactionId: string
 ): Promise<ReconcilePayokPayinResult> {
   const [tx] = await db

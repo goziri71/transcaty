@@ -4,9 +4,11 @@
  */
 export { createPayinOrder, handlePayinCallback } from "./payin.js";
 export {
-  reconcilePayokPayinByTransactionId,
+  reconcileBangladeshPayokPayinByTransactionId,
   repairMisCreditedPayinWallet,
 } from "./payin-reconcile.js";
+export type { ReconcilePayokPayinResult, RepairMisCreditedPayinResult } from "./payin-reconcile.js";
+export { reconcilePayokPayinByTransactionId } from "../payok/reconcile-payin.js";
 export { createPayoutOrder, handlePayoutCallback } from "./payout.js";
 export { payokBalanceQuery } from "./provider/client.js";
 export { getPayokConfig, getPayokCallbackPublicKeys } from "./provider/config.js";

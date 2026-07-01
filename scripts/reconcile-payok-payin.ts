@@ -4,7 +4,7 @@
  * Usage: npx tsx scripts/reconcile-payok-payin.ts <transactionId>
  */
 import "dotenv/config";
-import { reconcilePayokPayinByTransactionId } from "../services/domestic/bangladesh/payin-reconcile.js";
+import { reconcilePayokPayinByTransactionId } from "../services/domestic/payok/reconcile-payin.js";
 
 async function main() {
   const transactionId = process.argv[2]?.trim();

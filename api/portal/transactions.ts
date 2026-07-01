@@ -137,7 +137,8 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
       if (type) conditions.push(eq(transactions.type, type));
       if (status) conditions.push(eq(transactions.status, status));
       if (customerId) conditions.push(eq(transactions.walletId, customerId));
-      if (rail === "bangladesh") conditions.push(like(transactions.provider, "payok%"));
+      if (rail === "bangladesh") conditions.push(like(transactions.provider, "payok-bd%"));
+      else if (rail === "brazil") conditions.push(like(transactions.provider, "payok-br%"));
       else if (rail === "india") {
         conditions.push(
           and(like(transactions.provider, "tylt%"), not(like(transactions.provider, "tylt-eur%")))!
