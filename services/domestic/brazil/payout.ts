@@ -12,7 +12,7 @@
 import { eq, and } from "drizzle-orm";
 import { db } from "../../../src/db/index.js";
 import { transactions, wallets, ledgerEntries } from "../../../src/db/schema/index.js";
-// Shared PayOK transport — same merchant account for all countries.
+// Shared PayOK transport — Brazil uses PAYOK_BR_* credentials (separate MID from BD).
 import { payokPayoutAccountInquiry, payokPayoutCreate } from "../bangladesh/provider/client.js";
 import { audit } from "../../../src/lib/audit.js";
 import { previewTransactionFee, payoutTotalWalletDebit, ensurePayoutFeeCollected } from "../../../src/lib/billing/index.js";

@@ -5,6 +5,9 @@ import { getSecret } from "../../../../src/lib/encryption.js";
 
 export type PayokEnvironment = "test" | "live";
 
+/** Which PayOK merchant account to use (separate MIDs per country). */
+export type PayokMarket = "bangladesh" | "brazil";
+
 export type PayokConfig = {
   merchantId: string;
   privateKey: string;
@@ -20,8 +23,15 @@ function safeGetSecret(plainKey: string, encKey: string): string | undefined {
   }
 }
 
-function envPrefix(environment: PayokEnvironment): string {
+function envPrefix(environment: PayokEnvironment, market: PayokMarket = "bangladesh"): string {
+  if (market === "brazil") {
+    return environment === "test" ? "PAYOK_BR_TEST_" : "PAYOK_BR_LIVE_";
+  }
   return environment === "test" ? "PAYOK_TEST_" : "PAYOK_LIVE_";
+}
+
+function legacyEnvPrefix(environment: PayokEnvironment): string {
+  return envPrefix(environment, "bangladesh");
 }
 
 export function getDefaultPayokEnvironment(): PayokEnvironment {
@@ -35,8 +45,8 @@ export function getDefaultPayokEnvironment(): PayokEnvironment {
  * Private key: supports environment-specific keys first, then legacy keys.
  * Also accepts *_PRIVATE_KEY_ENC alias.
  */
-function getPrivateKey(environment: PayokEnvironment): string {
-  const prefix = envPrefix(environment);
+function getPrivateKey(environment: PayokEnvironment, market: PayokMarket = "bangladesh"): string {
+  const prefix = envPrefix(environment, market);
   const key =
     getSecret(`${prefix}MERCHANT_PRI_KEY`, `${prefix}MERCHANT_PRI_KEY_ENC`) ??
     getSecret(`${prefix}MERCHANT_PRI_KEY`, `${prefix}MERCHANT_PRIVATE_KEY_ENC`) ??
@@ -66,36 +76,52 @@ function parseMerchantIdFromKey(value: string): { merchantId: string | null; pem
  * Load Payok config. Throws if any required value is missing.
  * Merchant ID: from PAYOK_MERCHANT_ID, or first line of decrypted private key.
  */
-export function getPayokConfigForEnvironment(environment: PayokEnvironment): PayokConfig {
-  const prefix = envPrefix(environment);
-  const privateKeyRaw = getPrivateKey(environment);
+export function getPayokConfigForEnvironment(
+  environment: PayokEnvironment,
+  market: PayokMarket = "bangladesh"
+): PayokConfig {
+  const prefix = envPrefix(environment, market);
+  const privateKeyRaw = getPrivateKey(environment, market);
   if (!privateKeyRaw) {
     const hasEnc =
       process.env[`${prefix}MERCHANT_PRI_KEY_ENC`] ||
       process.env[`${prefix}MERCHANT_PRIVATE_KEY_ENC`] ||
-      (environment === "live" &&
+      (market === "bangladesh" &&
+        environment === "live" &&
         (process.env.PAYOK_MERCHANT_PRI_KEY_ENC || process.env.PAYOK_MERCHANT_PRIVATE_KEY_ENC));
     const hint = hasEnc && !process.env.ENCRYPTION_MASTER_KEY
       ? "ENCRYPTION_MASTER_KEY required to decrypt."
       : `Set ${prefix}MERCHANT_PRI_KEY or ${prefix}MERCHANT_PRI_KEY_ENC in .env`;
-    throw new Error(`Payok private key required for ${environment} environment. ${hint}`);
+    const marketLabel = market === "brazil" ? "Brazil" : "Bangladesh";
+    throw new Error(`Payok private key required for ${environment} (${marketLabel}). ${hint}`);
   }
 
   const { merchantId: fromKey, pem } = parseMerchantIdFromKey(privateKeyRaw);
+  const legacyPrefix = market === "bangladesh" ? legacyEnvPrefix(environment) : null;
   const merchantId =
     getSecret(`${prefix}MERCHANT_ID`, `${prefix}MERCHANT_ID_ENC`)?.trim() ??
-    (environment === "live" ? getSecret("PAYOK_MERCHANT_ID", "PAYOK_MERCHANT_ID_ENC")?.trim() : undefined) ??
+    (legacyPrefix
+      ? getSecret(`${legacyPrefix}MERCHANT_ID`, `${legacyPrefix}MERCHANT_ID_ENC`)?.trim()
+      : undefined) ??
+    (market === "bangladesh" && environment === "live"
+      ? getSecret("PAYOK_MERCHANT_ID", "PAYOK_MERCHANT_ID_ENC")?.trim()
+      : undefined) ??
     fromKey;
 
   if (!merchantId) {
     throw new Error(
-      `Payok merchant ID required for ${environment}. Set ${prefix}MERCHANT_ID or use first line of private key as merchantId.`
+      `Payok merchant ID required for ${environment} (${market}). Set ${prefix}MERCHANT_ID or use first line of private key as merchantId.`
     );
   }
 
   const baseUrl =
     getSecret(`${prefix}BASE_URL`, `${prefix}BASE_URL_ENC`)?.trim() ??
-    (environment === "live" ? getSecret("PAYOK_BASE_URL", "PAYOK_BASE_URL_ENC")?.trim() : undefined) ??
+    (legacyPrefix
+      ? getSecret(`${legacyPrefix}BASE_URL`, `${legacyPrefix}BASE_URL_ENC`)?.trim()
+      : undefined) ??
+    (market === "bangladesh" && environment === "live"
+      ? getSecret("PAYOK_BASE_URL", "PAYOK_BASE_URL_ENC")?.trim()
+      : undefined) ??
     "";
   if (!baseUrl.startsWith("http")) {
     throw new Error(
@@ -106,11 +132,16 @@ export function getPayokConfigForEnvironment(environment: PayokEnvironment): Pay
 
   const platformPublicKey =
     getSecret(`${prefix}PLATFORM_PUB_KEY`, `${prefix}PLATFORM_PUB_KEY_ENC`)?.trim() ??
-    (environment === "live" ? getSecret("PAYOK_PLATFORM_PUB_KEY", "PAYOK_PLATFORM_PUB_KEY_ENC")?.trim() : undefined) ??
+    (legacyPrefix
+      ? getSecret(`${legacyPrefix}PLATFORM_PUB_KEY`, `${legacyPrefix}PLATFORM_PUB_KEY_ENC`)?.trim()
+      : undefined) ??
+    (market === "bangladesh" && environment === "live"
+      ? getSecret("PAYOK_PLATFORM_PUB_KEY", "PAYOK_PLATFORM_PUB_KEY_ENC")?.trim()
+      : undefined) ??
     "";
   if (!platformPublicKey) {
     throw new Error(
-      `Payok platform public key required for ${environment}. Set ${prefix}PLATFORM_PUB_KEY or ${prefix}PLATFORM_PUB_KEY_ENC.`
+      `Payok platform public key required for ${environment} (${market}). Set ${prefix}PLATFORM_PUB_KEY or ${prefix}PLATFORM_PUB_KEY_ENC.`
     );
   }
 
@@ -137,6 +168,8 @@ export function getPayokCallbackPublicKeys(): string[] {
 
   push(safeGetSecret("PAYOK_TEST_PLATFORM_PUB_KEY", "PAYOK_TEST_PLATFORM_PUB_KEY_ENC"));
   push(safeGetSecret("PAYOK_LIVE_PLATFORM_PUB_KEY", "PAYOK_LIVE_PLATFORM_PUB_KEY_ENC"));
+  push(safeGetSecret("PAYOK_BR_TEST_PLATFORM_PUB_KEY", "PAYOK_BR_TEST_PLATFORM_PUB_KEY_ENC"));
+  push(safeGetSecret("PAYOK_BR_LIVE_PLATFORM_PUB_KEY", "PAYOK_BR_LIVE_PLATFORM_PUB_KEY_ENC"));
   push(safeGetSecret("PAYOK_PLATFORM_PUB_KEY", "PAYOK_PLATFORM_PUB_KEY_ENC"));
 
   if (!keys.length) {

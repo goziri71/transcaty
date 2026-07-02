@@ -65,7 +65,7 @@ export async function reconcileBrazilPayokPayinByTransactionId(
   let inquiryStatus: number;
   let inquiryBody: unknown;
   try {
-    const res = await payokPayinInquiry(tx.id, payokEnvironment);
+    const res = await payokPayinInquiry(tx.id, payokEnvironment, "brazil");
     inquiryStatus = res.status;
     inquiryBody = res.body;
   } catch {

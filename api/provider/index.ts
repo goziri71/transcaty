@@ -28,7 +28,7 @@ import {
   canProviderActionContext,
   requireProviderStepUp,
 } from "../../src/lib/provider-auth.js";
-import { getDefaultPayokEnvironment, type PayokEnvironment } from "../../services/domestic/bangladesh/provider/config.js";
+import { getDefaultPayokEnvironment, type PayokEnvironment, type PayokMarket } from "../../services/domestic/bangladesh/provider/config.js";
 import { pickPrimaryMerchantWallet, primaryMerchantBalanceByMerchantId } from "../../src/lib/provider-merchant-balance.js";
 import { reconcilePayokPayinByTransactionId } from "../../services/domestic/payok/reconcile-payin.js";
 import { reconcileCrossRampPayinByTransactionId } from "../../services/integrations/tylt/index.js";
@@ -159,6 +159,10 @@ function getApprovalRiskLevel(params: {
   }
   if (params.actionType === "transaction_status_change" && params.force) return "high";
   return "normal";
+}
+
+function payokMarketForProvider(provider: string | null): PayokMarket {
+  return provider?.startsWith("payok-br") ? "brazil" : "bangladesh";
 }
 
 function getTransactionPayokEnvironment(metadata: string | null): PayokEnvironment {
@@ -2710,13 +2714,14 @@ export async function registerProviderRoutes(app: FastifyInstance) {
       let inquiryStatus: number;
       let inquiryBody: unknown;
       const txEnvironment = getTransactionPayokEnvironment(txRow.metadata);
+      const payokMarket = payokMarketForProvider(txRow.provider);
       try {
         if (txRow.type === "payin") {
-          const res = await payokPayinInquiry(txRow.id, txEnvironment);
+          const res = await payokPayinInquiry(txRow.id, txEnvironment, payokMarket);
           inquiryStatus = res.status;
           inquiryBody = res.body;
         } else {
-          const res = await payokPayoutInquiry(txRow.id, txEnvironment);
+          const res = await payokPayoutInquiry(txRow.id, txEnvironment, payokMarket);
           inquiryStatus = res.status;
           inquiryBody = res.body;
         }
