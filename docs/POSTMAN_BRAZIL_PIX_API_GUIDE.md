@@ -30,21 +30,7 @@ This guide does **not** cover the dashboard (`/portal/*`, JWT) — that's the me
 
 - Server running: `npm run dev`
 - DB migrated: `npm run db:migrate`
-- `.env` has `ENCRYPTION_MASTER_KEY` and PayOK credentials
-
-### PayOK Brazil credentials (required on the API server)
-
-Brazil uses a **separate PayOK merchant account** from Bangladesh. Set these on Render / production (test example):
-
-| Variable | Purpose |
-|----------|---------|
-| `PAYOK_BR_TEST_MERCHANT_ID` | Brazil test MID (must match `countryCode: BR`) |
-| `PAYOK_BR_TEST_MERCHANT_PRI_KEY` | Brazil test private key PEM |
-| `PAYOK_BR_TEST_BASE_URL` | PayOK API base URL |
-| `PAYOK_BR_TEST_PLATFORM_PUB_KEY` | Webhook signature verification |
-| `PAYOK_BR_LIVE_*` | Same four keys for live |
-
-Without `PAYOK_BR_*`, PayOK returns **`merchant and country code mismatch!`** because the BD merchant ID is sent with `BR`.
+- `.env` has `ENCRYPTION_MASTER_KEY` and PayOK credentials (`PAYOK_TEST_*` / `PAYOK_LIVE_*` — **same keys for Bangladesh and Brazil**; only `countryCode` / `currency` on each request differ)
 
 ---
 

@@ -18,7 +18,7 @@ import {
 } from "../../../../src/lib/provider-circuit-breaker.js";
 import { outboundFetch, parseJsonResult, type ProviderCircuit } from "../../../../src/lib/outbound-http.js";
 import { getPayokConfig } from "./config.js";
-import { getPayokConfigForEnvironment, type PayokEnvironment, type PayokMarket } from "./config.js";
+import { getPayokConfigForEnvironment, type PayokEnvironment } from "./config.js";
 import { signPayokRequest } from "./signature.js";
 
 const PAYIN_BASE = "/api-pay/payment/V3.5";
@@ -41,25 +41,12 @@ function payokCircuitKeyForCountry(countryCode?: string): string {
   return countryCode === "BR" ? PAYOK_BR_CIRCUIT_KEY : PAYOK_CIRCUIT_KEY;
 }
 
-/** Map PayOK countryCode on requests to credential set (BD vs BR merchant accounts). */
-function payokMarketForCountry(countryCode?: string): PayokMarket {
-  return countryCode === "BR" ? "brazil" : "bangladesh";
-}
-
-function loadPayokConfig(environment: PayokEnvironment | undefined, market: PayokMarket) {
-  if (environment) {
-    return getPayokConfigForEnvironment(environment, market);
-  }
-  return getPayokConfig();
-}
-
 function formatRequestTime(): string {
   return new Date().toISOString();
 }
 
 interface PayokPostOptions {
   environment?: PayokEnvironment;
-  market?: PayokMarket;
   idempotencyKey?: string;
   /** Mutating endpoints (create-order, payout-create) should not retry on
    * 4xx and should send Idempotency-Key. Reads (queries) can retry freely. */
@@ -73,8 +60,9 @@ async function payokPost<T = unknown>(
   body: object,
   options: PayokPostOptions = {}
 ): Promise<{ status: number; body: T }> {
-  const market = options.market ?? "bangladesh";
-  const config = loadPayokConfig(options.environment, market);
+  const config = options.environment
+    ? getPayokConfigForEnvironment(options.environment)
+    : getPayokConfig();
   const baseUrl = config.baseUrl.replace(/\/$/, "");
   const url = `${baseUrl}${path}`;
 
@@ -103,15 +91,15 @@ async function payokPost<T = unknown>(
 }
 
 /** Balance inquiry */
-export async function payokBalanceQuery(environment?: PayokEnvironment, market: PayokMarket = "bangladesh") {
-  const config = loadPayokConfig(environment, market);
+export async function payokBalanceQuery(environment?: PayokEnvironment) {
+  const config = environment ? getPayokConfigForEnvironment(environment) : getPayokConfig();
   return payokPost<{ code: string; availableBalance?: string; [k: string]: unknown }>(
     `${PAYOUT_BASE}/balance/query`,
     {
       requestTime: formatRequestTime(),
       merchantId: config.merchantId,
     },
-    { environment, market }
+    { environment }
   );
 }
 
@@ -129,12 +117,12 @@ export async function payokPayinCreateOrder(params: {
   currency?: string;
   language?: string;
 }) {
-  const market = payokMarketForCountry(params.countryCode);
+  const config = params.environment ? getPayokConfigForEnvironment(params.environment) : getPayokConfig();
   return payokPost(
     `${PAYIN_BASE}/order/create-api`,
     {
       requestTime: formatRequestTime(),
-      merchantId: loadPayokConfig(params.environment, market).merchantId,
+      merchantId: config.merchantId,
       paymentMethodCode: params.paymentMethodCode,
       countryCode: params.countryCode ?? "BD",
       merchantOrderId: params.merchantOrderId,
@@ -148,7 +136,6 @@ export async function payokPayinCreateOrder(params: {
     },
     {
       environment: params.environment,
-      market,
       idempotencyKey: params.merchantOrderId,
       retryable: true,
       circuitKey: payokCircuitKeyForCountry(params.countryCode),
@@ -157,12 +144,8 @@ export async function payokPayinCreateOrder(params: {
 }
 
 /** Pay-in: Inquiry status */
-export async function payokPayinInquiry(
-  merchantOrderId: string,
-  environment?: PayokEnvironment,
-  market: PayokMarket = "bangladesh"
-) {
-  const config = loadPayokConfig(environment, market);
+export async function payokPayinInquiry(merchantOrderId: string, environment?: PayokEnvironment) {
+  const config = environment ? getPayokConfigForEnvironment(environment) : getPayokConfig();
   return payokPost(
     `${PAYIN_BASE}/order/query`,
     {
@@ -170,7 +153,7 @@ export async function payokPayinInquiry(
       merchantId: config.merchantId,
       merchantOrderId,
     },
-    { environment, market }
+    { environment }
   );
 }
 
@@ -190,8 +173,7 @@ export async function payokPayoutAccountInquiry(params: {
   currency?: string;
   language?: string;
 }) {
-  const market = payokMarketForCountry(params.countryCode);
-  const config = loadPayokConfig(params.environment, market);
+  const config = params.environment ? getPayokConfigForEnvironment(params.environment) : getPayokConfig();
   return payokPost<{ code: string; inquiryToken?: string; message?: string; [k: string]: unknown }>(
     `${PAYOUT_BASE}/account/inquiry`,
     {
@@ -206,7 +188,6 @@ export async function payokPayoutAccountInquiry(params: {
     },
     {
       environment: params.environment,
-      market,
       idempotencyKey: params.merchantOrderId,
       retryable: true,
       circuitKey: payokCircuitKeyForCountry(params.countryCode),
@@ -234,8 +215,7 @@ export async function payokPayoutCreate(params: {
   currency?: string;
   language?: string;
 }) {
-  const market = payokMarketForCountry(params.countryCode);
-  const config = loadPayokConfig(params.environment, market);
+  const config = params.environment ? getPayokConfigForEnvironment(params.environment) : getPayokConfig();
   return payokPost(
     `${PAYOUT_BASE}/order/create`,
     {
@@ -254,7 +234,6 @@ export async function payokPayoutCreate(params: {
     },
     {
       environment: params.environment,
-      market,
       idempotencyKey: params.merchantOrderId,
       retryable: true,
       circuitKey: payokCircuitKeyForCountry(params.countryCode),
@@ -263,12 +242,8 @@ export async function payokPayoutCreate(params: {
 }
 
 /** Payout: Inquiry status */
-export async function payokPayoutInquiry(
-  merchantOrderId: string,
-  environment?: PayokEnvironment,
-  market: PayokMarket = "bangladesh"
-) {
-  const config = loadPayokConfig(environment, market);
+export async function payokPayoutInquiry(merchantOrderId: string, environment?: PayokEnvironment) {
+  const config = environment ? getPayokConfigForEnvironment(environment) : getPayokConfig();
   return payokPost(
     `${PAYOUT_BASE}/order/query`,
     {
@@ -276,6 +251,6 @@ export async function payokPayoutInquiry(
       merchantId: config.merchantId,
       merchantOrderId,
     },
-    { environment, market }
+    { environment }
   );
 }
