@@ -30,7 +30,21 @@ This guide does **not** cover the dashboard (`/portal/*`, JWT) — that's the me
 
 - Server running: `npm run dev`
 - DB migrated: `npm run db:migrate`
-- `.env` has `ENCRYPTION_MASTER_KEY` and PayOK credentials (`PAYOK_TEST_*` / `PAYOK_LIVE_*` — **same keys for Bangladesh and Brazil**; only `countryCode` / `currency` on each request differ)
+- `.env` has `ENCRYPTION_MASTER_KEY` and PayOK credentials (`PAYOK_TEST_*` / `PAYOK_LIVE_*` — **same private key and base URL for Bangladesh and Brazil**). If PayOK gave you a **different merchant ID for Brazil**, set `PAYOK_TEST_BR_MERCHANT_ID` / `PAYOK_LIVE_BR_MERCHANT_ID` (optional; same signing key).
+
+---
+
+## Troubleshooting: `merchant and country code mismatch!`
+
+PayOK returns this when `countryCode: "BR"` does not match the **merchant ID** sent on the request.
+
+| Cause | Fix |
+|-------|-----|
+| Brazil/PIX not enabled on your PayOK test/live account | Contact PayOK support to enable **Brazil + PIX** on your merchant ID |
+| PayOK issued a **separate Brazil merchant ID** (same key/URL) | Set `PAYOK_TEST_BR_MERCHANT_ID` (test) or `PAYOK_LIVE_BR_MERCHANT_ID` (live) in Render/env |
+| Wrong `PAYOK_*_MERCHANT_ID` (Bangladesh-only MID) | Confirm with PayOK which MID is valid for `countryCode: "BR"` |
+
+Transacty already sends `countryCode: "BR"`, `currency: "BRL"`, and `paymentMethodCode: "PIX"` on Brazil pay-ins.
 
 ---
 

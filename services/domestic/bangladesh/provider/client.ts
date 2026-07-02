@@ -117,7 +117,9 @@ export async function payokPayinCreateOrder(params: {
   currency?: string;
   language?: string;
 }) {
-  const config = params.environment ? getPayokConfigForEnvironment(params.environment) : getPayokConfig();
+  const config = params.environment
+    ? getPayokConfigForEnvironment(params.environment, { countryCode: params.countryCode })
+    : getPayokConfig();
   return payokPost(
     `${PAYIN_BASE}/order/create-api`,
     {
@@ -144,8 +146,14 @@ export async function payokPayinCreateOrder(params: {
 }
 
 /** Pay-in: Inquiry status */
-export async function payokPayinInquiry(merchantOrderId: string, environment?: PayokEnvironment) {
-  const config = environment ? getPayokConfigForEnvironment(environment) : getPayokConfig();
+export async function payokPayinInquiry(
+  merchantOrderId: string,
+  environment?: PayokEnvironment,
+  options?: { countryCode?: string }
+) {
+  const config = environment
+    ? getPayokConfigForEnvironment(environment, { countryCode: options?.countryCode })
+    : getPayokConfig();
   return payokPost(
     `${PAYIN_BASE}/order/query`,
     {
@@ -153,7 +161,10 @@ export async function payokPayinInquiry(merchantOrderId: string, environment?: P
       merchantId: config.merchantId,
       merchantOrderId,
     },
-    { environment }
+    {
+      environment,
+      circuitKey: payokCircuitKeyForCountry(options?.countryCode),
+    }
   );
 }
 
@@ -173,7 +184,9 @@ export async function payokPayoutAccountInquiry(params: {
   currency?: string;
   language?: string;
 }) {
-  const config = params.environment ? getPayokConfigForEnvironment(params.environment) : getPayokConfig();
+  const config = params.environment
+    ? getPayokConfigForEnvironment(params.environment, { countryCode: params.countryCode })
+    : getPayokConfig();
   return payokPost<{ code: string; inquiryToken?: string; message?: string; [k: string]: unknown }>(
     `${PAYOUT_BASE}/account/inquiry`,
     {
@@ -215,7 +228,9 @@ export async function payokPayoutCreate(params: {
   currency?: string;
   language?: string;
 }) {
-  const config = params.environment ? getPayokConfigForEnvironment(params.environment) : getPayokConfig();
+  const config = params.environment
+    ? getPayokConfigForEnvironment(params.environment, { countryCode: params.countryCode })
+    : getPayokConfig();
   return payokPost(
     `${PAYOUT_BASE}/order/create`,
     {

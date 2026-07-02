@@ -25,6 +25,43 @@ function envPrefix(environment: PayokEnvironment): string {
   return environment === "test" ? "PAYOK_TEST_" : "PAYOK_LIVE_";
 }
 
+/** ISO country on PayOK requests (BD, BR, …). */
+export type PayokCountryCode = "BD" | "BR" | string;
+
+function resolveDefaultMerchantId(
+  environment: PayokEnvironment,
+  prefix: string,
+  fromKey: string | null
+): string | undefined {
+  return (
+    getSecret(`${prefix}MERCHANT_ID`, `${prefix}MERCHANT_ID_ENC`)?.trim() ??
+    (environment === "live"
+      ? getSecret("PAYOK_MERCHANT_ID", "PAYOK_MERCHANT_ID_ENC")?.trim()
+      : undefined) ??
+    fromKey ??
+    undefined
+  );
+}
+
+/**
+ * Same PayOK signing key + base URL for all countries; PayOK may issue a different
+ * merchantId per country on the same account. Optional override:
+ * PAYOK_TEST_BR_MERCHANT_ID / PAYOK_LIVE_BR_MERCHANT_ID (or *_ENC).
+ */
+export function resolvePayokMerchantIdForCountry(
+  environment: PayokEnvironment,
+  countryCode: PayokCountryCode | undefined,
+  defaultMerchantId: string
+): string {
+  const cc = (countryCode ?? "BD").trim().toUpperCase();
+  if (cc !== "BR") {
+    return defaultMerchantId;
+  }
+  const prefix = envPrefix(environment);
+  const brMerchantId = getSecret(`${prefix}BR_MERCHANT_ID`, `${prefix}BR_MERCHANT_ID_ENC`)?.trim();
+  return brMerchantId || defaultMerchantId;
+}
+
 export function getDefaultPayokEnvironment(): PayokEnvironment {
   const raw = (process.env.PAYOK_DEFAULT_ENV ?? "").trim().toLowerCase();
   if (raw === "test" || raw === "live") return raw;
@@ -66,8 +103,12 @@ function parseMerchantIdFromKey(value: string): { merchantId: string | null; pem
 /**
  * Load Payok config. Throws if any required value is missing.
  * Merchant ID: from PAYOK_MERCHANT_ID, or first line of decrypted private key.
+ * Pass `countryCode: "BR"` to apply optional PAYOK_*_BR_MERCHANT_ID override (same keys/url).
  */
-export function getPayokConfigForEnvironment(environment: PayokEnvironment): PayokConfig {
+export function getPayokConfigForEnvironment(
+  environment: PayokEnvironment,
+  options?: { countryCode?: PayokCountryCode }
+): PayokConfig {
   const prefix = envPrefix(environment);
   const privateKeyRaw = getPrivateKey(environment);
   if (!privateKeyRaw) {
@@ -83,16 +124,19 @@ export function getPayokConfigForEnvironment(environment: PayokEnvironment): Pay
   }
 
   const { merchantId: fromKey, pem } = parseMerchantIdFromKey(privateKeyRaw);
-  const merchantId =
-    getSecret(`${prefix}MERCHANT_ID`, `${prefix}MERCHANT_ID_ENC`)?.trim() ??
-    (environment === "live" ? getSecret("PAYOK_MERCHANT_ID", "PAYOK_MERCHANT_ID_ENC")?.trim() : undefined) ??
-    fromKey;
+  const defaultMerchantId = resolveDefaultMerchantId(environment, prefix, fromKey);
 
-  if (!merchantId) {
+  if (!defaultMerchantId) {
     throw new Error(
       `Payok merchant ID required for ${environment}. Set ${prefix}MERCHANT_ID or use first line of private key as merchantId.`
     );
   }
+
+  const merchantId = resolvePayokMerchantIdForCountry(
+    environment,
+    options?.countryCode,
+    defaultMerchantId
+  );
 
   const baseUrl =
     getSecret(`${prefix}BASE_URL`, `${prefix}BASE_URL_ENC`)?.trim() ??

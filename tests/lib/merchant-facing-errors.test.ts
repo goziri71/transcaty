@@ -54,4 +54,19 @@ describe("merchantPaymentFlowErrorResponse", () => {
     assert.equal(mapped.body.transactionId, "tx-uuid");
     assert.equal(mapped.body.code, "payment_provider_rejected");
   });
+
+  it("maps PayOK Brazil country mismatch UpstreamProviderClientError", () => {
+    const err = new UpstreamProviderClientError(
+      'Payok create order failed: {"code":"FAIL","message":"merchant and country code mismatch!"}',
+      "PayOK rejected Brazil (countryCode BR): your merchant ID is not enabled for Brazil/PIX.",
+      400,
+      "tx-br-1",
+      null
+    );
+    const mapped = merchantPaymentFlowErrorResponse(err);
+    assert.equal(mapped.status, 400);
+    assert.equal(mapped.body.code, "payment_provider_rejected");
+    assert.equal(mapped.body.transactionId, "tx-br-1");
+    assert.match(mapped.body.message ?? "", /Brazil\/PIX/i);
+  });
 });

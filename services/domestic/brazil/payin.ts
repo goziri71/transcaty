@@ -16,6 +16,7 @@ import {
 import { addAmount } from "../../../src/lib/money.js";
 import type { PayokEnvironment } from "../bangladesh/provider/config.js";
 import { assertPayinAllowed } from "../../../src/lib/fraud-policy.js";
+import { UpstreamProviderClientError } from "../../../src/lib/merchant-facing-errors.js";
 
 export async function createPayinOrder(params: {
   merchantId: string;
@@ -74,10 +75,24 @@ export async function createPayinOrder(params: {
     language: "EN",
   });
 
-  const res = body as { code?: string; paymentInfo?: { content?: string; type?: string }; platformOrderId?: string };
+  const res = body as { code?: string; message?: string; paymentInfo?: { content?: string; type?: string }; platformOrderId?: string };
   if (status !== 200 || res.code === "FAIL") {
     await db.update(transactions).set({ status: "failed" }).where(eq(transactions.id, tx.id));
-    throw new Error(`Payok create order failed: ${JSON.stringify(res)}`);
+    const detail = JSON.stringify(res);
+    const mismatch =
+      (typeof res.message === "string" && /country code mismatch/i.test(res.message)) ||
+      /country code mismatch/i.test(detail);
+    if (mismatch) {
+      const envPrefix = params.environment === "test" ? "PAYOK_TEST_" : "PAYOK_LIVE_";
+      throw new UpstreamProviderClientError(
+        `Payok create order failed: ${detail}`,
+        `PayOK rejected Brazil (countryCode BR): your merchant ID is not enabled for Brazil/PIX. Ask PayOK to enable Brazil on your account, or set ${envPrefix}BR_MERCHANT_ID if they issued a separate Brazil merchant ID (same private key and base URL).`,
+        400,
+        tx.id,
+        null
+      );
+    }
+    throw new Error(`Payok create order failed: ${detail}`);
   }
 
   await db
