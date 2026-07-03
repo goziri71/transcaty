@@ -145,6 +145,28 @@ export async function payokPayinCreateOrder(params: {
   );
 }
 
+/** Pay-in: Inquiry available payment methods for a country */
+export async function payokPayinPaymentMethods(params: {
+  environment?: PayokEnvironment;
+  countryCode: string;
+}) {
+  const config = params.environment
+    ? getPayokConfigForEnvironment(params.environment, { countryCode: params.countryCode })
+    : getPayokConfig();
+  return payokPost<{ code?: string; message?: string; list?: unknown[]; [k: string]: unknown }>(
+    `${PAYIN_BASE}/merchant/paymentMethods`,
+    {
+      requestTime: formatRequestTime(),
+      merchantId: config.merchantId,
+      countryCode: params.countryCode,
+    },
+    {
+      environment: params.environment,
+      circuitKey: payokCircuitKeyForCountry(params.countryCode),
+    }
+  );
+}
+
 /** Pay-in: Inquiry status */
 export async function payokPayinInquiry(
   merchantOrderId: string,

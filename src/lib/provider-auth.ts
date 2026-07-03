@@ -48,7 +48,8 @@ export type ProviderPermission =
   | "tx.status.write"
   | "approval.read"
   | "approval.review"
-  | "provider.users.manage";
+  | "provider.users.manage"
+  | "treasury.read";
 
 /** Permissions that mutate money or transaction state. API-key auth is
  * always denied these regardless of the role mapping — JWT + MFA is
@@ -353,6 +354,7 @@ const ROLE_PERMISSIONS: Record<ProviderRole, ProviderPermission[]> = {
     "approval.read",
     "approval.review",
     "provider.users.manage",
+    "treasury.read",
   ],
   ops: ["merchant.read", "customer.read", "customer.status.write", "tx.read", "tx.reconcile", "approval.read"],
   risk: [
@@ -383,6 +385,7 @@ const ROLE_PERMISSIONS: Record<ProviderRole, ProviderPermission[]> = {
     "wallet.adjust",
     "tx.status.write",
     "approval.read",
+    "treasury.read",
   ],
   support: ["merchant.read", "customer.read", "tx.read", "tx.reconcile", "approval.read"],
 };

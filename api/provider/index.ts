@@ -41,6 +41,7 @@ import {
   buildReconciliationReport,
   reconciliationReportToCsv,
 } from "../../src/lib/reconciliation-report.js";
+import { buildTreasuryOverview } from "../../src/lib/treasury-report.js";
 import {
   buildMerchantIdentity,
   merchantIdentitySchema,
@@ -120,6 +121,7 @@ function ensureProviderPermission(
     | "tx.status.write"
     | "approval.read"
     | "approval.review"
+    | "treasury.read"
 ): boolean {
   const actor = request.provider;
   if (!actor) {
@@ -231,6 +233,83 @@ export async function registerProviderRoutes(app: FastifyInstance) {
         }
       }
       return base;
+    }
+  );
+
+  const treasuryVolumeItemSchema = z.object({
+    key: z.string(),
+    payin: z.string(),
+    payout: z.string(),
+    total: z.string(),
+  });
+
+  app.get(
+    "/provider/treasury/overview",
+    {
+      schema: {
+        querystring: z.object({
+          environment: z.enum(["test", "live"]).default("test"),
+          /** ISO datetimes; default window is the last 30 days. */
+          from: z.string().datetime().optional(),
+          to: z.string().datetime().optional(),
+        }),
+        response: {
+          200: z.object({
+            environment: z.enum(["test", "live"]),
+            from: z.string(),
+            to: z.string(),
+            platformBalances: z.array(z.object({ currency: z.string(), balance: z.string() })),
+            revenue: z.object({
+              byCurrency: z.array(
+                z.object({
+                  currency: z.string(),
+                  platformFee: z.string(),
+                  monthlyFee: z.string(),
+                  total: z.string(),
+                })
+              ),
+            }),
+            volume: z.object({
+              byCurrency: z.array(treasuryVolumeItemSchema),
+              byRail: z.array(treasuryVolumeItemSchema),
+            }),
+            takeRate: z.array(
+              z.object({
+                currency: z.string(),
+                revenue: z.string(),
+                volume: z.string(),
+                takeRateBps: z.number().nullable(),
+              })
+            ),
+            disclosures: z.object({
+              basis: z.literal("gross"),
+              netMarginAvailable: z.boolean(),
+              providerCostTracked: z.boolean(),
+              fxSpreadLedgered: z.boolean(),
+              note: z.string(),
+            }),
+          }),
+          400: errorResponse,
+          401: errorResponse,
+          403: errorResponse,
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!request.provider) return reply.status(401).send({ error: "Unauthorized" });
+      if (!ensureProviderPermission(request, reply, "treasury.read")) return;
+      const { environment, from, to } = request.query as {
+        environment: "test" | "live";
+        from?: string;
+        to?: string;
+      };
+      const toDate = to ? new Date(to) : new Date();
+      const fromDate = from ? new Date(from) : new Date(toDate.getTime() - 30 * 24 * 60 * 60 * 1000);
+      if (fromDate.getTime() > toDate.getTime()) {
+        return reply.status(400).send({ error: "Bad Request", message: "`from` must be before `to`" });
+      }
+      const overview = await buildTreasuryOverview({ environment, from: fromDate, to: toDate });
+      return overview;
     }
   );
 
