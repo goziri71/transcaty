@@ -362,6 +362,7 @@ export async function buildApp() {
   await app.register(compress, { global: true });
   const corsAllowedOrigins = new Set<string>([
     "https://transacty-admin.vercel.app",
+    "https://admin.transacty.ai",
     "https://dashboard.transacty.ai",
     "http://localhost:3000",
     "http://localhost:5173",
