@@ -11,6 +11,9 @@ import { merchants, merchantApiKeys } from "../../src/db/schema/index.js";
 import { encrypt } from "../../src/lib/encryption.js";
 import { audit } from "../../src/lib/audit.js";
 import { invalidateMerchantApiKeyCache } from "../../src/lib/merchant-key-cache.js";
+import {
+  normalizeMerchantApiScopes,
+} from "../../src/lib/merchant-api-scopes.js";
 
 const errorResponse = z.object({
   error: z.string(),
@@ -104,6 +107,8 @@ export async function registerPortalApiKeysRoutes(app: FastifyInstance) {
       schema: {
         body: z.object({
           environment: z.enum(["live", "test"]).default("test"),
+          /** Optional least-privilege scopes. Omit for backward-compatible default (includes `*`). */
+          scopes: z.array(z.string().min(1)).min(1).optional(),
         }),
         response: {
           201: z.object({
@@ -114,6 +119,7 @@ export async function registerPortalApiKeysRoutes(app: FastifyInstance) {
             scopes: z.string(),
             message: z.string(),
           }),
+          400: errorResponse,
           401: errorResponse,
           403: errorResponse,
           500: errorResponse,
@@ -137,8 +143,16 @@ export async function registerPortalApiKeysRoutes(app: FastifyInstance) {
         });
       }
 
-      const body = request.body as { environment?: "live" | "test" };
+      const body = request.body as {
+        environment?: "live" | "test";
+        scopes?: string[];
+      };
       const environment = body.environment ?? "test";
+      const scopesNorm = normalizeMerchantApiScopes(body.scopes);
+      if (!scopesNorm.ok) {
+        return reply.status(400).send({ error: "Bad Request", message: scopesNorm.message });
+      }
+      const scopesValue = scopesNorm.value;
 
       const masterKey = process.env.ENCRYPTION_MASTER_KEY;
       if (!masterKey) {
@@ -160,7 +174,7 @@ export async function registerPortalApiKeysRoutes(app: FastifyInstance) {
           keyHash,
           secretEnc,
           environment,
-          scopes: "payin:create,payout:create,balance:read,*",
+          scopes: scopesValue,
           status: "active",
         })
         .returning({ id: merchantApiKeys.id });
@@ -171,7 +185,7 @@ export async function registerPortalApiKeysRoutes(app: FastifyInstance) {
         merchantUserId: user.merchantUserId,
         actorEmail: user.email,
         resource: inserted!.id,
-        meta: { environment },
+        meta: { environment, scopes: scopesValue },
       });
 
       return reply.status(201).send({
@@ -179,7 +193,7 @@ export async function registerPortalApiKeysRoutes(app: FastifyInstance) {
         apiKey,
         secret,
         environment,
-        scopes: "payin:create,payout:create,balance:read,*",
+        scopes: scopesValue,
         message: "Save the secret securely. It will not be shown again.",
       });
     }

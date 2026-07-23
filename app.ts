@@ -239,6 +239,25 @@ export async function buildApp() {
       request.log.info({ err: error, ...meta }, `request error: ${request.method} ${path}`);
     }
 
+    // DEF-04: in production, do not return Zod/Fastify field paths or enum catalogs to clients.
+    const isProd = process.env.NODE_ENV === "production";
+    const hasValidation =
+      Array.isArray(error.validation) ||
+      error.code === "FST_ERR_VALIDATION" ||
+      (typeof error.message === "string" &&
+        (error.message.includes("Invalid enum value") ||
+          error.message.startsWith("body/") ||
+          error.message.startsWith("querystring/") ||
+          error.message.startsWith("params/")));
+
+    if (isProd && statusCode === 400 && hasValidation) {
+      return reply.status(400).send({
+        error: "Bad Request",
+        message: "Invalid request payload. Please check your request parameters.",
+        code: "FST_ERR_VALIDATION",
+      });
+    }
+
     await reply.send(error);
   });
 

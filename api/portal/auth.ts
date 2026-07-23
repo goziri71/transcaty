@@ -32,6 +32,7 @@ import {
 } from "../../src/lib/password-reset.js";
 import { queueTransactionalEmail } from "../../src/lib/transactional-email-queue.js";
 import { getClientIp } from "../../src/lib/request-ip.js";
+import { strongPasswordSchema } from "../../src/lib/password-policy.js";
 
 const errorResponse = z.object({
   error: z.string(),
@@ -55,7 +56,7 @@ export async function registerPortalAuthRoutes(app: FastifyInstance) {
         body: z.object({
           businessName: z.string().min(1).max(200),
           email: z.string().email(),
-          password: z.string().min(8).max(128),
+          password: strongPasswordSchema,
         }),
         response: {
           201: z.object({
@@ -600,7 +601,7 @@ export async function registerPortalAuthRoutes(app: FastifyInstance) {
       schema: {
         body: z.object({
           token: z.string().min(1),
-          password: z.string().min(8).max(128),
+          password: strongPasswordSchema,
         }),
         response: {
           200: z.object({ ok: z.literal(true) }),

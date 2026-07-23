@@ -31,6 +31,7 @@ import {
 } from "../../src/lib/password-reset.js";
 import { queueTransactionalEmail } from "../../src/lib/transactional-email-queue.js";
 import { getClientIp } from "../../src/lib/request-ip.js";
+import { strongPasswordSchema } from "../../src/lib/password-policy.js";
 
 const errorResponse = z.object({
   error: z.string(),
@@ -305,7 +306,7 @@ export async function registerProviderAuthRoutes(app: FastifyInstance) {
       schema: {
         body: z.object({
           email: z.string().email(),
-          password: z.string().min(8).max(128),
+          password: strongPasswordSchema,
           fullName: z.string().max(200).optional(),
         }),
         response: {
@@ -436,7 +437,7 @@ export async function registerProviderAuthRoutes(app: FastifyInstance) {
       schema: {
         body: z.object({
           email: z.string().email(),
-          password: z.string().min(8).max(128),
+          password: strongPasswordSchema,
           fullName: z.string().max(200).optional(),
           role: z.enum(PROVIDER_ROLES),
         }),
@@ -518,7 +519,7 @@ export async function registerProviderAuthRoutes(app: FastifyInstance) {
           role: z.enum(PROVIDER_ROLES).optional(),
           status: z.enum(["active", "suspended"]).optional(),
           fullName: z.string().max(200).optional(),
-          password: z.string().min(8).max(128).optional(),
+          password: strongPasswordSchema.optional(),
         }),
         response: {
           200: z.object({
@@ -832,7 +833,7 @@ export async function registerProviderAuthRoutes(app: FastifyInstance) {
       schema: {
         body: z.object({
           token: z.string().min(1),
-          password: z.string().min(8).max(128),
+          password: strongPasswordSchema,
         }),
         response: {
           200: z.object({ ok: z.literal(true) }),
