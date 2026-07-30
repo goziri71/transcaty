@@ -32,6 +32,7 @@ import {
   feeSummaryFromBreakdown,
   type TransactionFeeBreakdownInput,
 } from "../../src/lib/billing/transaction-fee-breakdown.js";
+import { requirePortalMoneyGuards } from "../../src/lib/portal-roles.js";
 
 const transactionRailFieldsSchema = z.object({
   currency: z.string(),
@@ -375,6 +376,7 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const user = request.portalUser;
       if (!user) return reply.status(401).send({ error: "Unauthorized" });
+      if (!(await requirePortalMoneyGuards(request, reply))) return;
 
       const body = request.body as {
         environment: "test" | "live";
@@ -513,6 +515,7 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const user = request.portalUser;
       if (!user) return reply.status(401).send({ error: "Unauthorized" });
+      if (!(await requirePortalMoneyGuards(request, reply))) return;
 
       const body = request.body as {
         environment: "test" | "live";
@@ -593,6 +596,7 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const user = request.portalUser;
       if (!user) return reply.status(401).send({ error: "Unauthorized" });
+      if (!(await requirePortalMoneyGuards(request, reply))) return;
 
       const body = request.body as {
         environment: "test" | "live";

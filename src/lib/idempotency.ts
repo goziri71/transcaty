@@ -102,11 +102,23 @@ export async function withIdempotency<T>(
     merchantId: string;
     body: unknown;
     ttlMs?: number;
+    /**
+     * When true (money writes), missing/blank `Idempotency-Key` → 400.
+     * Defaults false for non-money callers that still want optional replay safety.
+     */
+    required?: boolean;
   },
   work: () => Promise<T>
 ): Promise<T | undefined> {
   const key = readIdempotencyKey(opts.request);
   if (!key) {
+    if (opts.required) {
+      opts.reply.status(400).send({
+        error: "Bad Request",
+        message: "Idempotency-Key header is required",
+      });
+      return undefined;
+    }
     return work();
   }
 

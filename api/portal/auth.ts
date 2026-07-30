@@ -17,6 +17,11 @@ import {
   signPortalMfaPendingToken,
   verifyPortalMfaPendingToken,
   verifyPortalToken,
+  signPortalStepUpToken,
+  bumpPortalSessionVersion,
+  isPortalMfaRequired,
+  verifyPassword,
+  type PortalStepUpAction,
 } from "../../src/lib/portal-auth.js";
 import {
   UNIFIED_LOGIN_FAILURE,
@@ -66,6 +71,7 @@ export async function registerPortalAuthRoutes(app: FastifyInstance) {
             email: z.string(),
             role: z.string(),
             needsActivation: z.boolean(),
+            mfaSetupRequired: z.boolean().optional(),
             merchant: portalMerchantSchema,
           }),
           400: errorResponse,
@@ -125,7 +131,11 @@ export async function registerPortalAuthRoutes(app: FastifyInstance) {
           passwordHash,
           role: "admin",
         })
-        .returning({ id: merchantUsers.id, email: merchantUsers.email });
+        .returning({
+          id: merchantUsers.id,
+          email: merchantUsers.email,
+          sessionVersion: merchantUsers.sessionVersion,
+        });
 
       if (!user) {
         return reply.status(500).send({
@@ -151,6 +161,7 @@ export async function registerPortalAuthRoutes(app: FastifyInstance) {
         merchantId: merchant.id,
         email: user.email,
         role: "admin",
+        sessionVersion: user.sessionVersion,
       });
 
       audit({
@@ -168,6 +179,7 @@ export async function registerPortalAuthRoutes(app: FastifyInstance) {
         email: user.email,
         role: "admin",
         needsActivation: true,
+        mfaSetupRequired: isPortalMfaRequired(),
         merchant: {
           id: merchant.id,
           slug: merchant.slug ?? slug,
@@ -198,6 +210,8 @@ export async function registerPortalAuthRoutes(app: FastifyInstance) {
             role: z.string().optional(),
             needsActivation: z.boolean().optional(),
             merchantSlug: z.string().optional(),
+            mfaSetupRequired: z.boolean().optional(),
+            mfaEnabled: z.boolean().optional(),
             merchant: portalMerchantSchema.optional(),
           }),
           401: errorResponse,
@@ -217,6 +231,7 @@ export async function registerPortalAuthRoutes(app: FastifyInstance) {
           role: merchantUsers.role,
           status: merchantUsers.status,
           mfaEnabled: merchantUsers.mfaEnabled,
+          sessionVersion: merchantUsers.sessionVersion,
         })
         .from(merchantUsers)
         .where(eq(merchantUsers.email, body.email.toLowerCase().trim()))
@@ -309,6 +324,7 @@ export async function registerPortalAuthRoutes(app: FastifyInstance) {
         merchantId: existing.merchantId,
         email: existing.email,
         role: existing.role,
+        sessionVersion: existing.sessionVersion,
       });
 
       const portalBase = (
@@ -344,6 +360,8 @@ export async function registerPortalAuthRoutes(app: FastifyInstance) {
         email: existing.email,
         role: existing.role,
         needsActivation,
+        mfaEnabled: false,
+        mfaSetupRequired: isPortalMfaRequired(),
         merchant: merchantPayload,
       });
     }
@@ -437,11 +455,17 @@ export async function registerPortalAuthRoutes(app: FastifyInstance) {
       const needsActivation = merchant.kycStatus !== "verified";
       const { ensureMerchantSlug } = await import("../../src/lib/merchant-slug.js");
       const merchantSlug = await ensureMerchantSlug(merchant.id, merchant.name);
+      const [userRow] = await db
+        .select({ sessionVersion: merchantUsers.sessionVersion })
+        .from(merchantUsers)
+        .where(eq(merchantUsers.id, pending.merchantUserId))
+        .limit(1);
       const token = signPortalToken({
         merchantUserId: pending.merchantUserId,
         merchantId: pending.merchantId,
         email: pending.email,
         role: pending.role,
+        sessionVersion: userRow?.sessionVersion ?? 0,
       });
 
       const portalBase = (
@@ -637,15 +661,174 @@ export async function registerPortalAuthRoutes(app: FastifyInstance) {
         .where(eq(merchantUsers.id, result.userId))
         .limit(1);
 
+      await bumpPortalSessionVersion(result.userId);
+
       audit({
         action: "auth.password_reset_completed",
         resource: result.userId,
         merchantId: mu?.merchantId,
         merchantUserId: result.userId,
-        meta: { realm: "portal" },
+        meta: { realm: "portal", sessionsRevoked: true },
       });
 
       return reply.send({ ok: true });
+    }
+  );
+
+  const STEP_UP_ACTIONS = [
+    "api_keys.write",
+    "webhook.write",
+    "money.write",
+    "any",
+  ] as const satisfies readonly PortalStepUpAction[];
+
+  app.post(
+    "/portal/auth/step-up",
+    {
+      schema: {
+        body: z.object({
+          code: z.string().min(6).max(12),
+          action: z.enum(STEP_UP_ACTIONS).default("any"),
+        }),
+        response: {
+          200: z.object({
+            token: z.string(),
+            tokenType: z.literal("Bearer"),
+            expiresIn: z.string(),
+            action: z.enum(STEP_UP_ACTIONS),
+          }),
+          401: errorResponse,
+          403: errorResponse,
+        },
+      },
+    },
+    async (request, reply) => {
+      const user = request.portalUser;
+      if (!user) return reply.status(401).send({ error: "Unauthorized" });
+      const body = request.body as { code: string; action: PortalStepUpAction };
+
+      const [u] = await db
+        .select({
+          mfaEnabled: merchantUsers.mfaEnabled,
+          mfaSecretEnc: merchantUsers.mfaSecretEnc,
+        })
+        .from(merchantUsers)
+        .where(eq(merchantUsers.id, user.merchantUserId))
+        .limit(1);
+
+      if (!u?.mfaEnabled || !u.mfaSecretEnc) {
+        return reply.status(403).send({
+          error: "Forbidden",
+          message: "MFA must be enrolled to perform this action",
+        });
+      }
+
+      let secret: string;
+      try {
+        secret = decryptTotpSecret(u.mfaSecretEnc);
+      } catch {
+        return reply
+          .status(401)
+          .send({ error: "Unauthorized", message: "MFA misconfigured" });
+      }
+
+      if (!verifyTotp(secret, body.code)) {
+        audit({
+          action: "auth.failed",
+          merchantId: user.merchantId,
+          merchantUserId: user.merchantUserId,
+          actorEmail: user.email,
+          meta: { realm: "portal", reason: "step_up_invalid_code", action: body.action },
+        });
+        return reply.status(401).send({
+          error: "Unauthorized",
+          message: "Invalid authenticator code",
+        });
+      }
+
+      const token = signPortalStepUpToken({
+        merchantUserId: user.merchantUserId,
+        action: body.action,
+      });
+
+      audit({
+        action: "portal.step_up.issued",
+        merchantId: user.merchantId,
+        merchantUserId: user.merchantUserId,
+        actorEmail: user.email,
+        meta: { action: body.action },
+      });
+
+      return reply.send({
+        token,
+        tokenType: "Bearer" as const,
+        expiresIn: "5m",
+        action: body.action,
+      });
+    }
+  );
+
+  app.post(
+    "/portal/auth/revoke-sessions",
+    {
+      schema: {
+        body: z.object({
+          password: z.string().min(1),
+        }),
+        response: {
+          200: z.object({ ok: z.literal(true), sessionVersion: z.number() }),
+          401: errorResponse,
+        },
+      },
+    },
+    async (request, reply) => {
+      const user = request.portalUser;
+      if (!user) return reply.status(401).send({ error: "Unauthorized" });
+      const body = request.body as { password: string };
+
+      const [row] = await db
+        .select({ passwordHash: merchantUsers.passwordHash })
+        .from(merchantUsers)
+        .where(eq(merchantUsers.id, user.merchantUserId))
+        .limit(1);
+
+      if (!row?.passwordHash || !(await verifyPassword(body.password, row.passwordHash))) {
+        audit({
+          action: "auth.failed",
+          merchantId: user.merchantId,
+          merchantUserId: user.merchantUserId,
+          actorEmail: user.email,
+          meta: { realm: "portal", reason: "revoke_sessions_bad_password" },
+        });
+        return reply.status(401).send({
+          error: "Unauthorized",
+          message: "Invalid password",
+        });
+      }
+
+      const sessionVersion = await bumpPortalSessionVersion(user.merchantUserId);
+      // Current request's JWT is now invalid; client must re-login.
+      // Also revoke current jti for belt-and-suspenders.
+      const session = request.portalSession;
+      if (session?.jti) {
+        await revokeJti({
+          realm: "portal",
+          jti: session.jti,
+          expiresAt: session.expiresAt,
+          subjectId: user.merchantUserId,
+          reason: "revoke_all_sessions",
+        }).catch(() => undefined);
+      }
+
+      audit({
+        action: "portal.session.revoke_all",
+        merchantId: user.merchantId,
+        merchantUserId: user.merchantUserId,
+        actorEmail: user.email,
+        meta: { sessionVersion },
+      });
+
+      return reply.send({ ok: true as const, sessionVersion });
     }
   );
 }

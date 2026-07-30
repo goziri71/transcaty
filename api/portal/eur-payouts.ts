@@ -25,6 +25,8 @@ import {
   getMerchantEurPayoutStatus,
 } from "../../services/integrations/tylt/eur-payout.js";
 import { pickTyltJsonPrimaryMessage } from "../../services/integrations/tylt/h2h-upi.js";
+import { requirePortalMoneyGuards, requirePortalMoneyRole } from "../../src/lib/portal-roles.js";
+import { requirePortalStepUp } from "../../src/lib/portal-auth.js";
 
 const errorResponse = z.object({
   error: z.string(),
@@ -149,6 +151,7 @@ export async function registerPortalEurPayoutRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const user = request.portalUser;
       if (!user) return reply.status(401).send({ error: "Unauthorized" });
+      if (!(await requirePortalMoneyGuards(request, reply))) return;
 
       const idemKey = request.headers["idempotency-key"] as string | undefined;
       if (idemKey?.trim()) {
@@ -322,6 +325,8 @@ export async function registerPortalEurPayoutRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const user = request.portalUser;
       if (!user) return reply.status(401).send({ error: "Unauthorized" });
+      if (!(await requirePortalMoneyRole(request, reply))) return;
+      if (!(await requirePortalStepUp(request, reply, "money.write"))) return;
 
       const { transactionId } = request.params as { transactionId: string };
       const { environment } = request.query as { environment: "test" | "live" };

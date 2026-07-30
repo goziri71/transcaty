@@ -24,19 +24,23 @@ const ORIGINAL_PORTAL_SECRET = process.env.PORTAL_JWT_SECRET;
 const ORIGINAL_PROVIDER_SECRET = process.env.PROVIDER_JWT_SECRET;
 
 describe("portal JWT (P4 hardening)", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     process.env.PORTAL_JWT_SECRET = "test-portal-secret-do-not-use";
     process.env.PROVIDER_JWT_SECRET = "test-provider-secret-do-not-use";
     __setJwtRevocationLookupForTesting(async () => false);
+    const portal = await import("../../src/lib/portal-auth.js");
+    portal.__setPortalSessionVersionLookupForTesting(async () => 0);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     if (ORIGINAL_PORTAL_SECRET == null) delete process.env.PORTAL_JWT_SECRET;
     else process.env.PORTAL_JWT_SECRET = ORIGINAL_PORTAL_SECRET;
     if (ORIGINAL_PROVIDER_SECRET == null) delete process.env.PROVIDER_JWT_SECRET;
     else process.env.PROVIDER_JWT_SECRET = ORIGINAL_PROVIDER_SECRET;
     __setJwtRevocationLookupForTesting(null);
     clearJwtRevocationCache();
+    const portal = await import("../../src/lib/portal-auth.js");
+    portal.__setPortalSessionVersionLookupForTesting(null);
   });
 
   it("signed portal token carries iss, aud, jti, sub, exp", async () => {

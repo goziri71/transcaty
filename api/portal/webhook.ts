@@ -9,6 +9,12 @@ import { eq } from "drizzle-orm";
 import { db } from "../../src/db/index.js";
 import { merchants } from "../../src/db/schema/index.js";
 import { encrypt } from "../../src/lib/encryption.js";
+import { assertHttpsWebhookUrl } from "../../src/lib/https-url.js";
+import { requirePortalAdminRole } from "../../src/lib/portal-roles.js";
+import {
+  requirePortalStepUp,
+} from "../../src/lib/portal-auth.js";
+import { audit } from "../../src/lib/audit.js";
 
 const errorResponse = z.object({
   error: z.string(),
@@ -68,6 +74,7 @@ export async function registerPortalWebhookRoutes(app: FastifyInstance) {
             webhookUrl: z.string().nullable(),
             webhookSecret: z.string().optional(),
           }),
+          400: errorResponse,
           401: errorResponse,
           403: errorResponse,
           500: errorResponse,
@@ -77,6 +84,8 @@ export async function registerPortalWebhookRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const user = request.portalUser;
       if (!user) return reply.status(401).send({ error: "Unauthorized" });
+      if (!(await requirePortalAdminRole(request, reply))) return;
+      if (!(await requirePortalStepUp(request, reply, "webhook.write"))) return;
 
       const [merchant] = await db
         .select({ kycStatus: merchants.kycStatus })
@@ -97,7 +106,15 @@ export async function registerPortalWebhookRoutes(app: FastifyInstance) {
         return reply.status(500).send({ error: "Internal", message: "Webhook config unavailable" });
       }
 
-      const url = body.webhookUrl === null || body.webhookUrl === "" ? null : body.webhookUrl?.trim() ?? null;
+      const rawUrl =
+        body.webhookUrl === null || body.webhookUrl === ""
+          ? null
+          : body.webhookUrl?.trim() ?? null;
+      const urlCheck = assertHttpsWebhookUrl(rawUrl);
+      if (!urlCheck.ok) {
+        return reply.status(400).send({ error: "Bad Request", message: urlCheck.message });
+      }
+      const url = urlCheck.url;
       const webhookSecret = url ? randomBytes(32).toString("hex") : null;
       const webhookSecretEnc = webhookSecret ? encrypt(webhookSecret, masterKey) : null;
 
@@ -109,6 +126,14 @@ export async function registerPortalWebhookRoutes(app: FastifyInstance) {
           updatedAt: new Date(),
         })
         .where(eq(merchants.id, user.merchantId));
+
+      audit({
+        action: "portal.webhook.updated",
+        merchantId: user.merchantId,
+        merchantUserId: user.merchantUserId,
+        actorEmail: user.email,
+        meta: { configured: !!url },
+      });
 
       return {
         webhookUrl: url,

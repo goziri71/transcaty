@@ -131,6 +131,7 @@ import {
   type TransactionFeeBreakdownInput,
 } from "./src/lib/billing/transaction-fee-breakdown.js";
 import { encrypt, getSecret } from "./src/lib/encryption.js";
+import { assertHttpsWebhookUrl } from "./src/lib/https-url.js";
 import { pingRedis } from "./src/lib/redis.js";
 import { recordHttpRequest, renderMetrics, getMetricsContentType } from "./src/lib/metrics.js";
 import { registerProviderMfaRoutes } from "./api/provider/mfa.js";
@@ -573,6 +574,7 @@ export async function buildApp() {
             webhookUrl: z.string().nullable(),
             webhookSecret: z.string().optional(),
           }),
+          400: errorResponse,
           401: errorResponse,
           500: errorResponse,
         },
@@ -584,7 +586,15 @@ export async function buildApp() {
       const body = request.body as { webhookUrl?: string | null };
       const masterKey = process.env.ENCRYPTION_MASTER_KEY;
       if (!masterKey) return reply.status(500).send({ error: "Internal", message: "Webhook config unavailable" });
-      const url = body.webhookUrl === null || body.webhookUrl === "" ? null : body.webhookUrl?.trim() ?? null;
+      const rawUrl =
+        body.webhookUrl === null || body.webhookUrl === ""
+          ? null
+          : body.webhookUrl?.trim() ?? null;
+      const urlCheck = assertHttpsWebhookUrl(rawUrl);
+      if (!urlCheck.ok) {
+        return reply.status(400).send({ error: "Bad Request", message: urlCheck.message });
+      }
+      const url = urlCheck.url;
       const webhookSecret = url ? randomBytes(32).toString("hex") : null;
       const webhookSecretEnc = webhookSecret ? encrypt(webhookSecret, masterKey) : null;
       await db
@@ -1507,7 +1517,7 @@ export async function buildApp() {
       }
       try {
         const response = await withIdempotency(
-          { request, reply, merchantId: m.merchantId, body },
+          { request, reply, merchantId: m.merchantId, body, required: true },
           async () => {
             const result = await createPayinOrder({
               merchantId: m.merchantId,
@@ -1621,7 +1631,7 @@ export async function buildApp() {
       }
       try {
         const response = await withIdempotency(
-          { request, reply, merchantId: m.merchantId, body },
+          { request, reply, merchantId: m.merchantId, body, required: true },
           async () => {
             const result = await createBrazilPayinOrder({
               merchantId: m.merchantId,
@@ -1758,7 +1768,7 @@ export async function buildApp() {
       }
       try {
         const response = await withIdempotency(
-          { request, reply, merchantId: m.merchantId, body },
+          { request, reply, merchantId: m.merchantId, body, required: true },
           async () => {
             const userDetails =
               body.userDetails ??
@@ -2188,7 +2198,7 @@ export async function buildApp() {
       }
       try {
         const response = await withIdempotency(
-          { request, reply, merchantId: m.merchantId, body },
+          { request, reply, merchantId: m.merchantId, body, required: true },
           async () => {
             const result = await createTyltCpgPayinRequest({
               merchantId: m.merchantId,
@@ -2382,7 +2392,7 @@ export async function buildApp() {
       }
       try {
         const response = await withIdempotency(
-          { request, reply, merchantId: m.merchantId, body },
+          { request, reply, merchantId: m.merchantId, body, required: true },
           async () => {
             const result = await createTyltCpgPayoutRequest({
               merchantId: m.merchantId,
@@ -2615,7 +2625,7 @@ export async function buildApp() {
       }
       try {
         const response = await withIdempotency(
-          { request, reply, merchantId: m.merchantId, body },
+          { request, reply, merchantId: m.merchantId, body, required: true },
           async () => {
             const result = await createTyltEurPayinInstance({
               merchantId: m.merchantId,
@@ -2764,7 +2774,7 @@ export async function buildApp() {
       }
       try {
         const response = await withIdempotency(
-          { request, reply, merchantId: m.merchantId, body },
+          { request, reply, merchantId: m.merchantId, body, required: true },
           async () => {
             const result = await createTyltEurPayoutInstance({
               merchantId: m.merchantId,
@@ -2991,7 +3001,7 @@ export async function buildApp() {
       }
       try {
         const response = await withIdempotency(
-          { request, reply, merchantId: m.merchantId, body },
+          { request, reply, merchantId: m.merchantId, body, required: true },
           async () => {
             const result = await executeTyltInternalTransfer({
               merchantId: m.merchantId,
@@ -3076,7 +3086,7 @@ export async function buildApp() {
       }
       try {
         const response = await withIdempotency(
-          { request, reply, merchantId: m.merchantId, body },
+          { request, reply, merchantId: m.merchantId, body, required: true },
           async () => {
             const result = await createPayoutOrder({
               merchantId: m.merchantId,
@@ -3180,7 +3190,7 @@ export async function buildApp() {
       }
       try {
         const response = await withIdempotency(
-          { request, reply, merchantId: m.merchantId, body },
+          { request, reply, merchantId: m.merchantId, body, required: true },
           async () => {
             const result = await createBrazilPayoutOrder({
               merchantId: m.merchantId,

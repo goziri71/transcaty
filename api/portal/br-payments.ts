@@ -22,6 +22,7 @@ import {
   buildTransactionFeeBreakdown,
   attachFeeBreakdown,
 } from "../../src/lib/billing/transaction-fee-breakdown.js";
+import { requirePortalMoneyGuards } from "../../src/lib/portal-roles.js";
 
 const errorResponse = z.object({
   error: z.string(),
@@ -128,6 +129,7 @@ export async function registerPortalBrazilRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const user = request.portalUser;
       if (!user) return reply.status(401).send({ error: "Unauthorized" });
+      if (!(await requirePortalMoneyGuards(request, reply))) return;
 
       const idemKey = request.headers["idempotency-key"] as string | undefined;
       if (idemKey?.trim()) {
@@ -280,6 +282,7 @@ export async function registerPortalBrazilRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const user = request.portalUser;
       if (!user) return reply.status(401).send({ error: "Unauthorized" });
+      if (!(await requirePortalMoneyGuards(request, reply))) return;
 
       const body = request.body as {
         environment: "test" | "live";

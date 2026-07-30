@@ -579,6 +579,8 @@ export const merchantUsers = pgTable(
     mfaEnabled: boolean("mfa_enabled").notNull().default(false),
     mfaPending: boolean("mfa_pending").notNull().default(false),
     mfaSecretEnc: text("mfa_secret_enc"),
+    /** Bumped on revoke-all; JWT claim `sv` must match or session is rejected. */
+    sessionVersion: integer("session_version").notNull().default(0),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

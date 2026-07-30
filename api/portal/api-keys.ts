@@ -14,6 +14,8 @@ import { invalidateMerchantApiKeyCache } from "../../src/lib/merchant-key-cache.
 import {
   normalizeMerchantApiScopes,
 } from "../../src/lib/merchant-api-scopes.js";
+import { requirePortalAdminRole } from "../../src/lib/portal-roles.js";
+import { requirePortalStepUp } from "../../src/lib/portal-auth.js";
 
 const errorResponse = z.object({
   error: z.string(),
@@ -129,6 +131,8 @@ export async function registerPortalApiKeysRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const user = request.portalUser;
       if (!user) return reply.status(401).send({ error: "Unauthorized" });
+      if (!(await requirePortalAdminRole(request, reply))) return;
+      if (!(await requirePortalStepUp(request, reply, "api_keys.write"))) return;
 
       const [merchant] = await db
         .select({ kycStatus: merchants.kycStatus })
@@ -160,6 +164,42 @@ export async function registerPortalApiKeysRoutes(app: FastifyInstance) {
           error: "Internal",
           message: "API key encryption not configured",
         });
+      }
+
+      // One active live key: creating a new live key revokes prior live keys.
+      if (environment === "live") {
+        const priorLive = await db
+          .select({ id: merchantApiKeys.id, keyHash: merchantApiKeys.keyHash })
+          .from(merchantApiKeys)
+          .where(
+            and(
+              eq(merchantApiKeys.merchantId, user.merchantId),
+              eq(merchantApiKeys.environment, "live"),
+              eq(merchantApiKeys.status, "active")
+            )
+          );
+        if (priorLive.length > 0) {
+          await db
+            .update(merchantApiKeys)
+            .set({ status: "revoked" })
+            .where(
+              and(
+                eq(merchantApiKeys.merchantId, user.merchantId),
+                eq(merchantApiKeys.environment, "live"),
+                eq(merchantApiKeys.status, "active")
+              )
+            );
+          for (const k of priorLive) {
+            invalidateMerchantApiKeyCache(k.keyHash);
+          }
+          audit({
+            action: "portal.api_key.auto_revoked_prior_live",
+            merchantId: user.merchantId,
+            merchantUserId: user.merchantUserId,
+            actorEmail: user.email,
+            meta: { revokedIds: priorLive.map((k) => k.id) },
+          });
+        }
       }
 
       const apiKey = generateKey();
@@ -194,7 +234,10 @@ export async function registerPortalApiKeysRoutes(app: FastifyInstance) {
         secret,
         environment,
         scopes: scopesValue,
-        message: "Save the secret securely. It will not be shown again.",
+        message:
+          environment === "live"
+            ? "Save the secret securely. It will not be shown again. Any previous live API key was revoked."
+            : "Save the secret securely. It will not be shown again.",
       });
     }
   );
@@ -215,6 +258,8 @@ export async function registerPortalApiKeysRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const user = request.portalUser;
       if (!user) return reply.status(401).send({ error: "Unauthorized" });
+      if (!(await requirePortalAdminRole(request, reply))) return;
+      if (!(await requirePortalStepUp(request, reply, "api_keys.write"))) return;
 
       const [merchant] = await db
         .select({ kycStatus: merchants.kycStatus })

@@ -22,6 +22,7 @@ import {
   createTyltCpgPayoutRequest,
   getMerchantCpgPayoutStatus,
 } from "../../services/integrations/tylt/cpg-payout.js";
+import { requirePortalMoneyGuards } from "../../src/lib/portal-roles.js";
 
 const errorResponse = z.object({
   error: z.string(),
@@ -129,6 +130,7 @@ export async function registerPortalCpgPayoutRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const user = request.portalUser;
       if (!user) return reply.status(401).send({ error: "Unauthorized" });
+      if (!(await requirePortalMoneyGuards(request, reply))) return;
 
       const idemKey = request.headers["idempotency-key"] as string | undefined;
       if (idemKey?.trim()) {

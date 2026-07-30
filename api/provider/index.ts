@@ -1421,6 +1421,7 @@ export async function registerProviderRoutes(app: FastifyInstance) {
     },
     async (request, reply) => {
       if (!ensureProviderPermission(request, reply, "merchant.pricing.write")) return;
+      if (!(await requireProviderStepUp(request, reply, "merchant.pricing.write"))) return;
       const { merchantId: merchantRef } = request.params as { merchantId: string };
       const body = request.body as {
         billingMode?: (typeof BILLING_MODE)[number];
