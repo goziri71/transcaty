@@ -21,9 +21,11 @@ export {
   createTekkoPyusdPaymentIntent,
   getTekkoPyusdPaymentIntentStatus,
   settleTekkoPyusdTransaction,
+  reconcileTekkoPyusdPayinByTransactionId,
   isSettlementComplete,
   isTerminalFailure,
 } from "./pyusd-payin.js";
+export type { TekkoPyusdReconcileResult } from "./pyusd-payin.js";
 export {
   verifyTekkoWebhookSignature,
   readTekkoWebhookHeaders,

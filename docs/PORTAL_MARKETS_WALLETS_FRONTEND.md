@@ -437,15 +437,17 @@ await api.post(`/portal/me/markets/${market}/request`);
 
 ## Part B — Provider admin
 
-Ops **approves payment markets** (Bangladesh / India / Europe), not individual wallet rows. When a market is **approved**, the backend **auto-creates** settlement wallets (test + live). There is no `POST …/wallets/:id/activate`.
+Ops **approves payment markets** (Bangladesh / India / Europe / Brazil / **PYUSD**), not individual wallet rows. When a market is **approved**, the backend **auto-creates** settlement wallets (test + live). There is no `POST …/wallets/:id/activate`.
 
-**Where in the app:** Merchant detail page (`/merchants/:merchantId`) — add a **Payment markets** panel (three rows). Optional: dashboard widget for merchants with any `entitlementStatus === "requested"`.
+**Where in the app:** Merchant detail page (`/merchants/:merchantId`) — add a **Payment markets** panel (one row per market, including **`pyusd`**). Optional: dashboard widget for merchants with any `entitlementStatus === "requested"`.
 
 **Auth:** Provider session JWT — `Authorization: Bearer <provider_jwt>` (see [`PROVIDER_FRONTEND_SPEC.md`](./PROVIDER_FRONTEND_SPEC.md)).
 
 **Permission:** `merchant.kyc.write` (same as global KYC approve/reject). Hide actions if the role lacks this permission.
 
 **No step-up MFA** on market PATCH (unlike wallet adjustments).
+
+**PYUSD note:** market `pyusd` settles **USDC** (shared pocket with Europe). Portal create: [`FRONTEND_PYUSD_PORTAL.md`](./FRONTEND_PYUSD_PORTAL.md). Provider reconcile: [`FRONTEND_PYUSD_PROVIDER.md`](./FRONTEND_PYUSD_PROVIDER.md).
 
 ### End-to-end flow
 

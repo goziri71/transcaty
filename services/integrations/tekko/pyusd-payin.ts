@@ -580,3 +580,123 @@ export async function settleTekkoPyusdTransaction(params: {
     },
   };
 }
+
+export type TekkoPyusdReconcileResult =
+  | {
+      outcome: "finalized";
+      transactionId: string;
+      paymentStatus: string | null;
+      settlementStatus: string | null;
+      merchantWebhook: { merchantId: string; event: WebhookEvent } | null;
+    }
+  | {
+      outcome: "not_terminal";
+      transactionId: string;
+      paymentStatus: string | null;
+      settlementStatus: string | null;
+      detail: string;
+    }
+  | {
+      outcome: "skipped";
+      transactionId: string;
+      reason: "already_terminal" | "wrong_rail";
+    }
+  | {
+      outcome: "error";
+      detail: string;
+    };
+
+/**
+ * Provider reconcile: poll Tekko and settle USDC when settlement is complete.
+ * Mirrors PayOK / Tylt reconcile outcome shapes.
+ */
+export async function reconcileTekkoPyusdPayinByTransactionId(
+  transactionId: string
+): Promise<TekkoPyusdReconcileResult> {
+  const [tx] = await db.select().from(transactions).where(eq(transactions.id, transactionId)).limit(1);
+  if (!tx) return { outcome: "error", detail: "transaction_not_found" };
+  if (tx.provider !== TEKKO_PYUSD_PROVIDER) {
+    return { outcome: "skipped", transactionId, reason: "wrong_rail" };
+  }
+  if (tx.status === "success" || tx.status === "failed") {
+    return { outcome: "skipped", transactionId, reason: "already_terminal" };
+  }
+  if (tx.type !== "payin") {
+    return { outcome: "error", detail: "not_payin" };
+  }
+
+  const beforeStatus: string = tx.status;
+  const view = await getTekkoPyusdPaymentIntentStatus({
+    merchantId: tx.merchantId,
+    transactionId: tx.id,
+  });
+  if (!view) {
+    return { outcome: "error", detail: "transaction_not_found" };
+  }
+
+  const [after] = await db.select().from(transactions).where(eq(transactions.id, tx.id)).limit(1);
+  if (!after) return { outcome: "error", detail: "transaction_not_found" };
+
+  if (after.status === "success" && beforeStatus !== "success") {
+    const breakdown = await buildTransactionFeeBreakdown({
+      merchantId: after.merchantId,
+      environment: after.environment as "test" | "live",
+      transactionId: after.id,
+      type: "payin",
+      status: "success",
+      amount: String(after.paidAmount ?? after.amount),
+      currency: TEKKO_SETTLEMENT_CURRENCY,
+      provider: TEKKO_PYUSD_PROVIDER,
+    }).catch(() => null);
+
+    const paidAmount = after.paidAmount ? String(after.paidAmount) : String(after.amount);
+
+    return {
+      outcome: "finalized",
+      transactionId: after.id,
+      paymentStatus: view.status,
+      settlementStatus: view.settlementStatus,
+      merchantWebhook: {
+        merchantId: after.merchantId,
+        event: {
+          type: "payin.completed",
+          transactionId: after.id,
+          status: "success",
+          amount: String(tx.amount),
+          paidAmount,
+          currency: TEKKO_SETTLEMENT_CURRENCY,
+          platformOrderId: after.externalId ?? null,
+          ...feeBreakdownToWebhookFields(breakdown),
+        },
+      },
+    };
+  }
+
+  if (after.status === "failed" && beforeStatus !== "failed") {
+    return {
+      outcome: "finalized",
+      transactionId: after.id,
+      paymentStatus: view.status,
+      settlementStatus: view.settlementStatus,
+      merchantWebhook: {
+        merchantId: after.merchantId,
+        event: {
+          type: "payin.failed",
+          transactionId: after.id,
+          status: "failed",
+          amount: String(after.amount),
+          platformOrderId: after.externalId ?? null,
+        },
+      },
+    };
+  }
+
+  return {
+    outcome: "not_terminal",
+    transactionId: after.id,
+    paymentStatus: view.status,
+    settlementStatus: view.settlementStatus,
+    detail: `local=${after.status} payment=${view.status} settlement=${view.settlementStatus ?? "null"}`,
+  };
+}
+

@@ -5,11 +5,14 @@ How to accept **one-time PYUSD** payments on **Ethereum** via Transacty. Settled
 | Audience | Surface | Auth |
 |----------|---------|------|
 | **Merchant backend** | `POST/GET /v1/pyusd/payment-intents` | **HMAC** (same as all `/v1/*`) |
+| **Merchant dashboard** | `POST/GET /portal/me/pyusd/payment-intents` + markets/txs | **Portal JWT** |
 | **Inbound callbacks** | Configure Tekko → Transacty `/webhooks/tekko/live` | Tekko HMAC (`whsec_…`) — Transacty verifies; merchants receive normal outbound webhooks |
 
-> **Live only:** Tekko has no sandbox. Use a **live** API key. `test` environment returns a fail-safe unavailable error.
+> **Live only:** Tekko has no sandbox. Use a **live** API key / portal `environment: "live"`. `test` returns a fail-safe unavailable error.
 
 > Market gate: merchant must have the **`pyusd`** market **approved**. Settlement uses the same **USDC** pocket as Europe.
+
+SPA handoff: [`FRONTEND_PYUSD_PORTAL.md`](./FRONTEND_PYUSD_PORTAL.md) · Provider admin: [`FRONTEND_PYUSD_PROVIDER.md`](./FRONTEND_PYUSD_PROVIDER.md)
 
 ---
 
@@ -29,18 +32,38 @@ How to accept **one-time PYUSD** payments on **Ethereum** via Transacty. Settled
 
 ## 2. Auth
 
-Same HMAC as other `/v1` routes. Money writes require **`Idempotency-Key`**.
+### HMAC (`/v1`)
 
-Scope: `payin:create` (or `*`).
+Same as other `/v1` routes. Money writes require **`Idempotency-Key`**. Scope: `payin:create` (or `*`).
+
+### Portal JWT (`/portal`)
+
+Same session as other dashboard money routes. Create requires portal money role + existing step-up/MFA guards. Send **`Idempotency-Key`** on create.
 
 ---
 
 ## 3. Create payment intent
 
+### API
+
 `POST /v1/pyusd/payment-intents`
 
 ```json
 {
+  "amount": "25.00",
+  "merchantReference": "order-4821",
+  "expiresInMinutes": 30,
+  "metadata": { "orderId": "4821" }
+}
+```
+
+### Portal (dashboard)
+
+`POST /portal/me/pyusd/payment-intents`
+
+```json
+{
+  "environment": "live",
   "amount": "25.00",
   "merchantReference": "order-4821",
   "expiresInMinutes": 30,
@@ -54,6 +77,7 @@ Scope: `payin:create` (or `*`).
 | `merchantReference` | yes | Your reference (max 128) |
 | `expiresInMinutes` | no | 5–1440, default 30 |
 | `metadata` | no | Opaque object echoed upstream |
+| `environment` | portal only | Must be `live` for Tekko |
 
 **Response (200):**
 
@@ -79,11 +103,16 @@ Show the payer the **deposit address** + **amount** (QR / copy). Network is alwa
 
 ## 4. Poll status
 
-`GET /v1/pyusd/payment-intents/:transactionId`
+| Surface | Path |
+|---------|------|
+| API | `GET /v1/pyusd/payment-intents/:transactionId` |
+| Portal | `GET /portal/me/pyusd/payment-intents/:transactionId` |
 
 Returns Transacty status plus upstream payment/settlement fields. When settlement completes (including if a webhook was missed), Transacty may settle USDC on poll.
 
 `settled: true` means the USDC ledger credit succeeded.
+
+Also: `GET /portal/me/transactions?rail=pyusd`.
 
 ---
 
@@ -102,4 +131,4 @@ Configure your webhook URL in the portal / `/v1/me/webhook` (HTTPS only).
 
 - Inbound Tekko URL (provider-facing): `{APP_BASE_URL}/webhooks/tekko/live`
 - Env (platform): `TEKKO_LIVE_KEY_ID`, `TEKKO_LIVE_PRIVATE_KEY` (Ed25519 PEM), `TEKKO_WEBHOOK_SECRET`
-- Portal create UI is out of scope for phase 1; credited pays appear on the transaction list once ledgered
+- Provider: approve `pyusd` market; reconcile with `POST /provider/tekko/pyusd/reconcile`

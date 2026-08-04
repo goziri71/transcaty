@@ -29,6 +29,7 @@ export type AuditAction =
   | "provider.transaction.reconciled"
   | "provider.tylt.crossramp.reconcile"
   | "provider.payok.payin.reconcile"
+  | "provider.tekko.pyusd.reconcile"
   | "provider.merchant.rates_changed"
   | "provider.merchant.fee_schedule_changed"
   | "provider.merchant.ip_whitelist_changed"
