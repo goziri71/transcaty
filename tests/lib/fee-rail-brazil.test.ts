@@ -15,4 +15,9 @@ describe("providerToFeeRail", () => {
   it("maps BRL currency to brazil when provider missing", () => {
     assert.equal(providerToFeeRail(null, "BRL"), "brazil");
   });
+
+  it("maps tekko-pyusd-payin to europe (USDC settlement fee schedules)", () => {
+    assert.equal(providerToFeeRail("tekko-pyusd-payin", "USDC"), "europe");
+    assert.equal(providerToFeeRail("tekko-pyusd-payin", "PYUSD"), "europe");
+  });
 });

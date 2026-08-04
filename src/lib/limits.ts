@@ -32,4 +32,8 @@ export const LIMITS = {
     EUR: { min: 1, max: 50_000 },
     GBP: { min: 1, max: 50_000 },
   },
+  /** Tekko PYUSD checkout (expected PYUSD amount). */
+  tekkoPyusd: {
+    payin: { min: 1, max: 500_000 },
+  },
 } as const;

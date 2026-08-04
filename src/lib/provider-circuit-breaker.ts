@@ -27,6 +27,7 @@
  * Optional overrides per rail (fallback to globals above):
  * - PROVIDER_CIRCUIT_PAYOK_FAILURE_THRESHOLD, PROVIDER_CIRCUIT_PAYOK_COOLDOWN_MS
  * - PROVIDER_CIRCUIT_TYLT_FAILURE_THRESHOLD, PROVIDER_CIRCUIT_TYLT_COOLDOWN_MS
+ * - PROVIDER_CIRCUIT_TEKKO_FAILURE_THRESHOLD, PROVIDER_CIRCUIT_TEKKO_COOLDOWN_MS
  */
 
 import type { Redis } from "ioredis";
@@ -39,6 +40,8 @@ export const PAYOK_CIRCUIT_KEY = "payok";
 export const PAYOK_BR_CIRCUIT_KEY = "payok-br";
 /** Tylt CPG + CrossRamp share one breaker (same vendor HTTP edge). */
 export const TYLT_CIRCUIT_KEY = "tylt";
+/** Tekko Platform API (PYUSD checkout + settlement). */
+export const TEKKO_CIRCUIT_KEY = "tekko";
 
 export class ProviderCircuitOpenError extends Error {
   readonly providerKey: string;
@@ -68,7 +71,9 @@ function failureThresholdFor(providerKey: string): number {
       ? process.env.PROVIDER_CIRCUIT_PAYOK_FAILURE_THRESHOLD
       : providerKey === TYLT_CIRCUIT_KEY
         ? process.env.PROVIDER_CIRCUIT_TYLT_FAILURE_THRESHOLD
-        : undefined;
+        : providerKey === TEKKO_CIRCUIT_KEY
+          ? process.env.PROVIDER_CIRCUIT_TEKKO_FAILURE_THRESHOLD
+          : undefined;
   const n = Number(specific ?? process.env.PROVIDER_CIRCUIT_FAILURE_THRESHOLD);
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : 5;
 }
@@ -79,7 +84,9 @@ function cooldownMsFor(providerKey: string): number {
       ? process.env.PROVIDER_CIRCUIT_PAYOK_COOLDOWN_MS
       : providerKey === TYLT_CIRCUIT_KEY
         ? process.env.PROVIDER_CIRCUIT_TYLT_COOLDOWN_MS
-        : undefined;
+        : providerKey === TEKKO_CIRCUIT_KEY
+          ? process.env.PROVIDER_CIRCUIT_TEKKO_COOLDOWN_MS
+          : undefined;
   const n = Number(specific ?? process.env.PROVIDER_CIRCUIT_COOLDOWN_MS);
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : 60_000;
 }

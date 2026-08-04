@@ -10,7 +10,7 @@ export const portalWalletLimitsSchema = z.object({
   payout: z.object({ min: z.number(), max: z.number() }),
 });
 
-export const portalWalletMarketSchema = z.enum(["bangladesh", "india", "europe", "brazil"]);
+export const portalWalletMarketSchema = z.enum(["bangladesh", "india", "europe", "brazil", "pyusd"]);
 export const portalWalletActivationStatusSchema = z.enum([
   "active",
   "not_enabled",
@@ -27,7 +27,7 @@ export const portalWalletBalanceItemSchema = z.object({
   status: z.string(),
   label: z.string().nullable(),
   displayLabel: z.string(),
-  region: z.enum(["bangladesh", "india", "europe", "brazil", "other"]),
+  region: z.enum(["bangladesh", "india", "europe", "brazil", "pyusd", "other"]),
   regionLabel: z.string(),
   lastUpdated: z.string().nullable(),
   updatedAt: z.string().nullable(),
@@ -70,6 +70,8 @@ export function merchantWalletRegionLabel(region: PortalWalletRegion, currency: 
       if (c === "EUR") return "Europe (EUR)";
       if (c === "GBP") return "Europe (GBP)";
       return `Europe (${c})`;
+    case "pyusd":
+      return "PYUSD → USDC";
     default:
       return c || "Other";
   }

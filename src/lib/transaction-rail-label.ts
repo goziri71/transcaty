@@ -3,7 +3,14 @@
  * Maps internal `provider` DB values to region/product copy only — no vendor names.
  */
 
-export type MerchantTransactionRail = "bangladesh" | "brazil" | "india" | "europe" | "internal" | "unknown";
+export type MerchantTransactionRail =
+  | "bangladesh"
+  | "brazil"
+  | "india"
+  | "europe"
+  | "pyusd"
+  | "internal"
+  | "unknown";
 
 export type MerchantTransactionRailPresentation = {
   currency: string;
@@ -47,6 +54,8 @@ function labelFromProvider(provider: string): Pick<MerchantTransactionRailPresen
       return { rail: "europe", railLabel: "Europe pay-in" };
     case "tylt-eur-payout":
       return { rail: "europe", railLabel: "Europe payout" };
+    case "tekko-pyusd-payin":
+      return { rail: "pyusd", railLabel: "PYUSD pay-in" };
     case "internal-transfer":
       return { rail: "internal", railLabel: "Customer transfer" };
     case "internal-refund":
@@ -89,6 +98,16 @@ function inferEuropeFromMetadata(metadata: string | null): boolean {
   }
 }
 
+function inferTekkoPyusdFromMetadata(metadata: string | null): boolean {
+  if (!metadata?.trim()) return false;
+  try {
+    const meta = JSON.parse(metadata) as { rail?: unknown; tekkoProduct?: unknown };
+    return meta.rail === "tekko" && meta.tekkoProduct === "pyusd_payin";
+  } catch {
+    return false;
+  }
+}
+
 export function presentTransactionRail(params: {
   provider: string | null;
   currency: string;
@@ -112,12 +131,20 @@ export function presentTransactionRail(params: {
     return { currency, rail: "india", railLabel: "India" };
   }
 
+  if (inferTekkoPyusdFromMetadata(params.metadata ?? null)) {
+    return { currency, rail: "pyusd", railLabel: "PYUSD pay-in" };
+  }
+
   if (currency === "BDT") {
     return { currency, rail: "bangladesh", railLabel: "Bangladesh" };
   }
 
   if (currency === "BRL") {
     return { currency, rail: "brazil", railLabel: "Brazil" };
+  }
+
+  if (currency === "PYUSD") {
+    return { currency, rail: "pyusd", railLabel: "PYUSD pay-in" };
   }
 
   if (currency === "EUR") {

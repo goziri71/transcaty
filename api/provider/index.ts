@@ -1986,7 +1986,7 @@ export async function registerProviderRoutes(app: FastifyInstance) {
 
   const transactionRailFieldsSchema = z.object({
     currency: z.string(),
-    rail: z.enum(["bangladesh", "brazil", "india", "europe", "internal", "unknown"]),
+    rail: z.enum(["bangladesh", "brazil", "india", "europe", "pyusd", "internal", "unknown"]),
     railLabel: z.string(),
   });
 

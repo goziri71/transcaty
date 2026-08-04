@@ -17,10 +17,12 @@ describe("merchant-markets", () => {
     assert.deepEqual(MARKET_SETTLEMENT_CURRENCIES.bangladesh, ["BDT"]);
     assert.deepEqual(MARKET_SETTLEMENT_CURRENCIES.india, ["USDT"]);
     assert.deepEqual(MARKET_SETTLEMENT_CURRENCIES.europe, ["USDC"]);
+    assert.deepEqual(MARKET_SETTLEMENT_CURRENCIES.pyusd, ["USDC"]);
   });
 
   it("validates market ids", () => {
     assert.equal(isMerchantMarket("europe"), true);
+    assert.equal(isMerchantMarket("pyusd"), true);
     assert.equal(isMerchantMarket("invalid"), false);
   });
 });

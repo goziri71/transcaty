@@ -63,4 +63,20 @@ describe("presentTransactionRail", () => {
     assert.equal(p.rail, "unknown");
     assert.equal(p.railLabel, "Cross-border");
   });
+
+  it("labels Tekko PYUSD pay-in", () => {
+    const p = presentTransactionRail({ provider: "tekko-pyusd-payin", currency: "PYUSD" });
+    assert.equal(p.rail, "pyusd");
+    assert.equal(p.railLabel, "PYUSD pay-in");
+  });
+
+  it("infers PYUSD from tekko metadata when provider missing", () => {
+    const p = presentTransactionRail({
+      provider: null,
+      currency: "USDC",
+      metadata: JSON.stringify({ rail: "tekko", tekkoProduct: "pyusd_payin" }),
+    });
+    assert.equal(p.rail, "pyusd");
+    assert.equal(p.railLabel, "PYUSD pay-in");
+  });
 });

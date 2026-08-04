@@ -121,6 +121,8 @@ export const merchants = pgTable(
     kycStatus: text("kyc_status").default("pending"),
     webhookUrl: text("webhook_url"),
     webhookSecretEnc: text("webhook_secret_enc"),
+    /** Tekko Platform end-customer id for PYUSD checkout (one per merchant, phase 1). */
+    tekkoCustomerId: text("tekko_customer_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

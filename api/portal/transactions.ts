@@ -36,7 +36,7 @@ import { requirePortalMoneyGuards } from "../../src/lib/portal-roles.js";
 
 const transactionRailFieldsSchema = z.object({
   currency: z.string(),
-  rail: z.enum(["bangladesh", "brazil", "india", "europe", "internal", "unknown"]),
+  rail: z.enum(["bangladesh", "brazil", "india", "europe", "pyusd", "internal", "unknown"]),
   railLabel: z.string(),
 });
 
@@ -88,7 +88,7 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
           environment: z.enum(["test", "live"]).default("test"),
           type: z.enum(["payin", "payout", "transfer", "refund"]).optional(),
           status: z.enum(["pending", "success", "failed"]).optional(),
-          rail: z.enum(["bangladesh", "brazil", "india", "europe", "internal"]).optional(),
+          rail: z.enum(["bangladesh", "brazil", "india", "europe", "pyusd", "internal"]).optional(),
           customerId: z.string().uuid().optional(),
           limit: z.coerce.number().min(1).max(100).default(20),
           offset: z.coerce.number().min(0).default(0),
@@ -128,7 +128,7 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
         environment: "test" | "live";
         type?: "payin" | "payout" | "transfer" | "refund";
         status?: "pending" | "success" | "failed";
-        rail?: "bangladesh" | "brazil" | "india" | "europe" | "internal";
+        rail?: "bangladesh" | "brazil" | "india" | "europe" | "pyusd" | "internal";
         customerId?: string;
         limit: number;
         offset: number;
@@ -145,6 +145,7 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
           and(like(transactions.provider, "tylt%"), not(like(transactions.provider, "tylt-eur%")))!
         );
       } else if (rail === "europe") conditions.push(like(transactions.provider, "tylt-eur%"));
+      else if (rail === "pyusd") conditions.push(eq(transactions.provider, "tekko-pyusd-payin"));
       else if (rail === "internal") {
         conditions.push(
           or(

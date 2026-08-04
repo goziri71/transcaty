@@ -103,6 +103,15 @@ import {
   getMerchantEurPayoutStatus,
   isTyltEurPayoutMetadata,
 } from "./services/integrations/tylt/index.js";
+  import {
+  applyTekkoWebhookPayload,
+  createTekkoPyusdPaymentIntent,
+  getTekkoLiveConfig,
+  getTekkoPyusdPaymentIntentStatus,
+  readTekkoWebhookHeaders,
+  TEKKO_PYUSD_PROVIDER,
+  verifyTekkoWebhookSignature,
+} from "./services/integrations/tekko/index.js";
 import { LIMITS } from "./src/lib/limits.js";
 import {
   createCustomerWallet,
@@ -305,7 +314,7 @@ export async function buildApp() {
   // Capture raw body for Payok webhooks (any content-type) for signature verification
   app.addHook("preParsing", async (request, _reply, payload) => {
     const path = request.url.split("?")[0];
-    if (!path.startsWith("/webhooks/payok/") && !path.startsWith("/webhooks/tylt/")) return payload;
+    if (!path.startsWith("/webhooks/payok/") && !path.startsWith("/webhooks/tylt/") && !path.startsWith("/webhooks/tekko/")) return payload;
     const chunks: Buffer[] = [];
     for await (const chunk of payload) {
       chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
@@ -429,7 +438,7 @@ export async function buildApp() {
   app.addHook("preHandler", async (request, reply) => {
     const path = request.url.split("?")[0];
     if (path === "/" || path === "/health" || path === "/metrics") return;
-    if (path.startsWith("/webhooks/payok/") || path.startsWith("/webhooks/tylt/")) return;
+    if (path.startsWith("/webhooks/payok/") || path.startsWith("/webhooks/tylt/") || path.startsWith("/webhooks/tekko/")) return;
     if (
       path === "/portal/auth/signup" ||
       path === "/portal/auth/login" ||
@@ -1370,6 +1379,95 @@ export async function buildApp() {
       tyltWebhookCredential: "unified",
       apply: (body) => applyTyltWebhookByStoredRailProduct(body),
     });
+  });
+
+  const TEKKO_WEBHOOK_PATH = "/webhooks/tekko/:environment";
+
+  app.post(TEKKO_WEBHOOK_PATH, async (request, reply) => {
+    const environment = (request.params as { environment?: string }).environment;
+    if (environment !== "test" && environment !== "live") {
+      return reply.status(404).type("text/plain").send("Not found");
+    }
+    // Tekko Platform is live-only; still accept path for wiring but require live secret.
+    const rawBody = (request as FastifyRequest & { rawBody?: string }).rawBody ?? "";
+    const hdrs = readTekkoWebhookHeaders(
+      request.headers as Record<string, string | string[] | undefined>
+    );
+    const cfg = getTekkoLiveConfig();
+    const secret = cfg?.webhookSecret?.trim() ?? "";
+    if (!secret) {
+      app.log.warn({ path: TEKKO_WEBHOOK_PATH }, "tekko webhook rejected: TEKKO_WEBHOOK_SECRET not configured");
+      logSecurityEvent("webhook.signature_rejected", {
+        path: TEKKO_WEBHOOK_PATH,
+        rail: TEKKO_PYUSD_PROVIDER,
+        environment,
+      });
+      return reply.status(401).type("text/plain").send("Invalid signature");
+    }
+    if (
+      !hdrs.timestamp ||
+      !hdrs.signature ||
+      !verifyTekkoWebhookSignature({
+        secret,
+        timestamp: hdrs.timestamp,
+        signature: hdrs.signature,
+        rawBody,
+      })
+    ) {
+      app.log.warn(
+        { path: TEKKO_WEBHOOK_PATH, hasSig: !!hdrs.signature, rawBodyLen: rawBody.length },
+        "tekko webhook rejected: invalid or missing signature"
+      );
+      logSecurityEvent("webhook.signature_rejected", {
+        path: TEKKO_WEBHOOK_PATH,
+        rail: TEKKO_PYUSD_PROVIDER,
+        environment,
+      });
+      return reply.status(401).type("text/plain").send("Invalid signature");
+    }
+
+    const body = typeof request.body === "object" && request.body !== null ? request.body : {};
+    const root = body as Record<string, unknown>;
+    const data =
+      root.data && typeof root.data === "object"
+        ? (root.data as Record<string, unknown>)
+        : root;
+    const externalIdGuess =
+      (typeof data.paymentIntentId === "string" && data.paymentIntentId) ||
+      (typeof root.id === "string" && root.id) ||
+      null;
+
+    const claim = await tryClaimWebhookEvent({
+      rail: TEKKO_PYUSD_PROVIDER,
+      environment,
+      rawBody,
+      signature: hdrs.signature,
+      signatureValid: true,
+      externalId: externalIdGuess,
+    });
+    if (claim.kind === "duplicate") {
+      return reply.type("text/plain").send("ok");
+    }
+
+    try {
+      const webhook = await applyTekkoWebhookPayload(body, hdrs.event);
+      await markWebhookProcessed(claim.eventId, {
+        transactionId: webhook?.event?.transactionId ?? null,
+      });
+      if (webhook) {
+        queueMerchantWebhook(webhook.merchantId, webhook.event).catch((e) =>
+          app.log.warn(e, "Merchant webhook queue failed")
+        );
+      }
+    } catch (err) {
+      await markWebhookFailed(claim.eventId, err).catch(() => {});
+      app.log.error(
+        { err: err instanceof Error ? err.message : String(err), path: TEKKO_WEBHOOK_PATH },
+        "tekko webhook apply failed"
+      );
+      return reply.status(500).type("text/plain").send("INTERNAL");
+    }
+    return reply.type("text/plain").send("ok");
   });
 
   const kycRequired = process.env.KYC_REQUIRED === "true";
@@ -2718,6 +2816,153 @@ export async function buildApp() {
       })
   );
 
+  // --- Tekko PYUSD (Ethereum) → USDC settlement ---
+  app.post("/v1/pyusd/payment-intents", {
+    schema: {
+      body: z.object({
+        amount: z.string(),
+        merchantReference: z.string().min(1).max(128),
+        expiresInMinutes: z.number().int().min(5).max(1440).optional(),
+        metadata: z.record(z.string(), z.unknown()).optional(),
+      }),
+      response: {
+        200: z.object({
+          transactionId: z.string(),
+          paymentIntentId: z.string(),
+          status: z.string(),
+          settlementStatus: z.string().nullable(),
+          amount: z.string(),
+          currency: z.literal("PYUSD"),
+          settlementCurrency: z.literal("USDC"),
+          network: z.literal("ethereum"),
+          depositAddress: z.string(),
+          expiresAt: z.string().nullable(),
+          environment: z.enum(["test", "live"]),
+        }),
+        400: merchantFacingError,
+        401: errorResponse,
+        403: errorResponse,
+        503: merchantFacingError,
+        500: merchantFacingError,
+      },
+    },
+  },
+  async (request, reply) => {
+    const m = request.merchant;
+    if (!m) return reply.status(401).send({ error: "Unauthorized" });
+    if (!m.scopes.includes("payin:create") && !m.scopes.includes("*")) {
+      return reply.status(403).send({ error: "Forbidden", message: "Missing scope: payin:create" });
+    }
+    if (!(await requireKycAndMarket(m.merchantId, "pyusd", reply))) return;
+    const body = request.body as {
+      amount: string;
+      merchantReference: string;
+      expiresInMinutes?: number;
+      metadata?: Record<string, unknown>;
+    };
+    const bounds = LIMITS.tekkoPyusd.payin;
+    const amt = parseFloat(body.amount);
+    if (!Number.isFinite(amt) || amt < bounds.min || amt > bounds.max) {
+      return reply.status(400).send({
+        error: "Bad Request",
+        message: `Amount must be between ${bounds.min} and ${bounds.max} PYUSD`,
+      });
+    }
+    try {
+      const response = await withIdempotency(
+        { request, reply, merchantId: m.merchantId, body, required: true },
+        async () => {
+          const result = await createTekkoPyusdPaymentIntent({
+            merchantId: m.merchantId,
+            environment: m.environment,
+            amount: body.amount,
+            merchantReference: body.merchantReference,
+            expiresInMinutes: body.expiresInMinutes,
+            metadata: body.metadata,
+            baseUrl,
+          });
+          return {
+            transactionId: result.transactionId,
+            paymentIntentId: result.paymentIntentId,
+            status: result.status,
+            settlementStatus: result.settlementStatus,
+            amount: result.amount,
+            currency: "PYUSD" as const,
+            settlementCurrency: "USDC" as const,
+            network: "ethereum" as const,
+            depositAddress: result.depositAddress,
+            expiresAt: result.expiresAt,
+            environment: result.environment,
+          };
+        }
+      );
+      if (response === undefined) return;
+      return response;
+    } catch (err) {
+      app.log.error(err);
+      const mapped = merchantPaymentFlowErrorResponse(err);
+      if (mapped.logDetail) {
+        app.log.warn({ logDetail: mapped.logDetail }, "v1 pyusd payin merchant-facing error detail");
+      }
+      sendMerchantFacingReply(reply, mapped);
+      return;
+    }
+  });
+
+  app.get("/v1/pyusd/payment-intents/:transactionId", {
+    schema: {
+      params: z.object({ transactionId: z.string().uuid() }),
+      response: {
+        200: z.object({
+          transactionId: z.string(),
+          paymentIntentId: z.string().nullable(),
+          status: z.string(),
+          settlementStatus: z.string().nullable(),
+          amount: z.string(),
+          paidAmount: z.string().nullable(),
+          currency: z.string(),
+          settlementCurrency: z.literal("USDC"),
+          network: z.literal("ethereum"),
+          depositAddress: z.string().nullable(),
+          expiresAt: z.string().nullable(),
+          environment: z.string(),
+          settled: z.boolean(),
+        }),
+        401: errorResponse,
+        403: errorResponse,
+        404: errorResponse,
+        503: merchantFacingError,
+      },
+    },
+  },
+  async (request, reply) => {
+    const m = request.merchant;
+    if (!m) return reply.status(401).send({ error: "Unauthorized" });
+    if (!m.scopes.includes("payin:create") && !m.scopes.includes("*")) {
+      return reply.status(403).send({ error: "Forbidden", message: "Missing scope: payin:create" });
+    }
+    if (!(await requireKycAndMarket(m.merchantId, "pyusd", reply))) return;
+    const { transactionId } = request.params as { transactionId: string };
+    try {
+      const view = await getTekkoPyusdPaymentIntentStatus({
+        merchantId: m.merchantId,
+        transactionId,
+      });
+      if (!view) {
+        return reply.status(404).send({ error: "Not found", message: "PYUSD payment intent not found" });
+      }
+      return {
+        ...view,
+        settlementCurrency: "USDC" as const,
+        network: "ethereum" as const,
+      };
+    } catch (err) {
+      const mapped = merchantPaymentFlowErrorResponse(err);
+      sendMerchantFacingReply(reply, mapped);
+      return;
+    }
+  });
+
   merchantV1PostPair("/v1/eur/payout-instances", "/v1/tylt/eur/payout-instances", (path) =>
     app.post(path, {
       schema: {
@@ -3645,7 +3890,7 @@ export async function buildApp() {
       amount: z.string(),
       paidAmount: z.string().nullable(),
       currency: z.string(),
-      rail: z.enum(["bangladesh", "brazil", "india", "europe", "internal", "unknown"]),
+      rail: z.enum(["bangladesh", "brazil", "india", "europe", "pyusd", "internal", "unknown"]),
       railLabel: z.string(),
       platformOrderId: z.string().nullable(),
       instanceId: z.string().nullable(),

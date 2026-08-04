@@ -16,7 +16,7 @@ import {
 import { normalizeMoneyAmountToTwoDecimals } from "./money.js";
 import { getOrCreateMerchantWallet } from "../../services/integrations/tylt/crossramp-payin.js";
 
-export const MERCHANT_MARKETS = ["bangladesh", "india", "europe", "brazil"] as const;
+export const MERCHANT_MARKETS = ["bangladesh", "india", "europe", "brazil", "pyusd"] as const;
 export type MerchantMarket = (typeof MERCHANT_MARKETS)[number];
 
 export const MARKET_ENTITLEMENT_STATUSES = [
@@ -45,6 +45,8 @@ export const MARKET_SETTLEMENT_CURRENCIES: Record<MerchantMarket, readonly strin
   india: ["USDT"],
   europe: ["USDC"],
   brazil: ["BRL"],
+  /** PYUSD checkout settles to the merchant USDC pocket (shared with europe wallet row). */
+  pyusd: ["USDC"],
 };
 
 export function marketForCurrency(currency: string): MerchantMarket | null {
@@ -409,8 +411,13 @@ export async function buildPortalWalletCatalog(params: {
   );
 
   const items: PortalWalletBalanceItem[] = [];
+  const seenCurrencies = new Set<string>();
   for (const { market, currency } of currencies) {
-    const w = walletByCurrency.get(currency.trim().toUpperCase()) ?? null;
+    const key = currency.trim().toUpperCase();
+    // europe + pyusd both settle USDC — one balance card per currency.
+    if (seenCurrencies.has(key)) continue;
+    seenCurrencies.add(key);
+    const w = walletByCurrency.get(key) ?? null;
     items.push(
       presentSlot({
         market,
@@ -423,9 +430,16 @@ export async function buildPortalWalletCatalog(params: {
   }
 
   return items.sort((a, b) => {
-    const order = { bangladesh: 0, india: 1, europe: 2, brazil: 3, other: 4 };
-    const am = order[a.market as MerchantMarket] ?? 3;
-    const bm = order[b.market as MerchantMarket] ?? 3;
+    const order: Record<string, number> = {
+      bangladesh: 0,
+      india: 1,
+      europe: 2,
+      brazil: 3,
+      pyusd: 4,
+      other: 5,
+    };
+    const am = order[a.market] ?? 5;
+    const bm = order[b.market] ?? 5;
     if (am !== bm) return am - bm;
     return a.currency.localeCompare(b.currency);
   });
