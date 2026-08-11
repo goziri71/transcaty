@@ -131,4 +131,12 @@ Configure your webhook URL in the portal / `/v1/me/webhook` (HTTPS only).
 
 - Inbound Tekko URL (provider-facing): `{APP_BASE_URL}/webhooks/tekko/live`
 - Env (platform): `TEKKO_LIVE_KEY_ID`, `TEKKO_LIVE_PRIVATE_KEY` (Ed25519 PEM), `TEKKO_WEBHOOK_SECRET`
+
+### Signing keys + webhook secret
+
+1. Upload **public** PEM in the Tekko dashboard; set `TEKKO_LIVE_KEY_ID` from the UI.
+2. Encrypt private PEM: `npm run encrypt -- --file path/to/private.pem --name TEKKO_LIVE_PRIVATE_KEY_ENC`
+3. Copy webhook secret from Tekko → encrypt → `TEKKO_WEBHOOK_SECRET` / `_ENC`.
+4. Webhook URL: `{APP_BASE_URL}/webhooks/tekko/live`.
+
 - Provider: approve `pyusd` market; reconcile with `POST /provider/tekko/pyusd/reconcile`
