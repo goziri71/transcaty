@@ -132,7 +132,7 @@ export async function registerPortalPyusdRoutes(app: FastifyInstance) {
             )
           )
           .limit(1);
-        if (cached) return JSON.parse(cached.responseSnapshot);
+        if (cached) return reply.status(201).send(JSON.parse(cached.responseSnapshot));
       }
 
       const body = request.body as {

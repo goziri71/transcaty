@@ -10,6 +10,7 @@ import { createCustomerWallet } from "../../services/operations/transfers.js";
 import { audit } from "../../src/lib/audit.js";
 import { presentTransactionListItems } from "../../src/lib/present-transaction.js";
 import { transactionFeeSummaryFieldsSchema } from "../../src/lib/billing/transaction-fee-breakdown.js";
+import { requirePortalMoneyGuards } from "../../src/lib/portal-roles.js";
 
 const errorResponse = z.object({
   error: z.string(),
@@ -157,13 +158,16 @@ export async function registerPortalCustomersRoutes(app: FastifyInstance) {
             status: z.string(),
             createdAt: z.string(),
           }),
+          400: errorResponse,
           401: errorResponse,
+          403: errorResponse,
         },
       },
     },
     async (request, reply) => {
       const user = request.portalUser;
       if (!user) return reply.status(401).send({ error: "Unauthorized" });
+      if (!(await requirePortalMoneyGuards(request, reply))) return;
 
       const body = request.body as { environment: "test" | "live"; label?: string };
 
@@ -307,6 +311,7 @@ export async function registerPortalCustomersRoutes(app: FastifyInstance) {
           }),
           400: errorResponse,
           401: errorResponse,
+          403: errorResponse,
           404: errorResponse,
         },
       },
@@ -314,6 +319,7 @@ export async function registerPortalCustomersRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const user = request.portalUser;
       if (!user) return reply.status(401).send({ error: "Unauthorized" });
+      if (!(await requirePortalMoneyGuards(request, reply))) return;
 
       const { id } = request.params as { id: string };
       const { environment } = request.query as { environment: "test" | "live" };
