@@ -25,6 +25,7 @@ import {
   upsertMerchantApiIpRules,
 } from "../../src/lib/merchant-api-ip-rules.js";
 import { parseFeePercentageInput } from "../../src/lib/billing/fee-percentage.js";
+import { buildAdminPricingOverview } from "../../src/lib/merchant-pricing-experience.js";
 
 const errorResponse = z.object({
   error: z.string(),
@@ -696,6 +697,93 @@ export async function registerProviderAdminConfigRoutes(app: FastifyInstance) {
         meta: { environment: body.environment, enabled: body.enabled, cidrCount: body.cidrs.length },
       });
       return { ok: true as const };
+    }
+  );
+
+  const feeLineSchema = z.object({
+    id: z.string(),
+    source: z.enum(["schedule", "legacy"]),
+    environment: z.union([z.enum(ENV), z.literal("legacy")]),
+    rail: z.string(),
+    currency: z.string(),
+    feeType: z.enum(FEE_TYPE),
+    billingMode: z.string(),
+    feePercentage: z.string().nullable(),
+    feeFlat: z.string().nullable(),
+    feeMin: z.string().nullable(),
+    feeMax: z.string().nullable(),
+    effectiveFrom: z.string().nullable(),
+    effectiveTo: z.string().nullable(),
+    status: z.string(),
+  });
+
+  app.get(
+    "/provider/merchants/:merchantId/pricing/overview",
+    {
+      schema: {
+        params: z.object({ merchantId: merchantRefParamSchema }),
+        response: {
+          200: z.object({
+            legacy: z.object({
+              billingMode: z.string(),
+              feePercentagePayin: z.string().nullable(),
+              feePercentagePayout: z.string().nullable(),
+              feeMinPayin: z.string().nullable(),
+              feeMaxPayin: z.string().nullable(),
+              feeMinPayout: z.string().nullable(),
+              feeMaxPayout: z.string().nullable(),
+              monthlyAmount: z.string().nullable(),
+            }),
+            feeSchedules: z.array(feeLineSchema),
+            pendingAdjustments: z.object({
+              count: z.number(),
+              items: z.array(
+                z.object({
+                  id: z.string(),
+                  actionType: z.string(),
+                  status: z.string(),
+                  resourceType: z.string(),
+                  resourceId: z.string(),
+                  riskLevel: z.string(),
+                  direction: z.string().nullable(),
+                  amount: z.string().nullable(),
+                  reason: z.string().nullable(),
+                  ticketId: z.string().nullable(),
+                  requestedBy: z.string().nullable(),
+                  createdAt: z.string(),
+                  reviewPath: z.string(),
+                })
+              ),
+            }),
+            recentPricingActions: z.array(
+              z.object({
+                id: z.string(),
+                action: z.string(),
+                resource: z.string().nullable(),
+                actorEmail: z.string().nullable(),
+                createdAt: z.string(),
+              })
+            ),
+            links: z.object({
+              legacyPricing: z.string(),
+              feeSchedules: z.string(),
+              createFeeSchedule: z.string(),
+              approvals: z.string(),
+              merchantWalletAdjust: z.string(),
+            }),
+          }),
+          401: errorResponse,
+          403: errorResponse,
+          404: errorResponse,
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!ensurePermission(request, reply, "merchant.pricing.read")) return;
+      const { merchantId: merchantRef } = request.params as { merchantId: string };
+      const merchantId = await ensureMerchantFromRef(merchantRef, reply);
+      if (!merchantId) return;
+      return buildAdminPricingOverview(merchantId);
     }
   );
 }

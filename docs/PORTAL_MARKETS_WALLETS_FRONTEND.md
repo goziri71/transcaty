@@ -2,6 +2,35 @@
 
 > **Single source of truth** for **merchant portal** markets/wallets and **provider admin** market approval (June 2026). Login, MFA, and other portal routes: [`PORTAL_FRONTEND_SPEC.md`](./PORTAL_FRONTEND_SPEC.md). Provider auth/MFA: [`PROVIDER_FRONTEND_SPEC.md`](./PROVIDER_FRONTEND_SPEC.md).
 
+## Dashboard services board (Aug 2026)
+
+Prefer **one load** for overview:
+
+| App | Endpoint |
+|-----|----------|
+| Merchant | `GET /portal/me/services?environment=test\|live` |
+| Admin | `GET /provider/merchants/:id/services?environment=test\|live` |
+
+Returns `globalKycStatus`, `markets[]` (with unlock reasons), and `wallets[]` (same catalog as `/wallets`, plus `unlockReason` / `blockers`).
+
+Each **market** row now includes:
+
+| Field | Meaning |
+|-------|---------|
+| `displayName` | Human label |
+| `activationStatus` | `active` \| `not_enabled` \| `pending_kyb` \| `suspended` |
+| `canRequest` | Show **Request access** when `true` |
+| `ready` | Usable for money flows |
+| `unlockReason` | Single sentence why locked (`null` when ready) |
+| `blockers[]` | `{ code, message }` codes: `not_requested`, `awaiting_review`, `kyb_pending`, `kyb_rejected`, `global_kyc_pending`, `suspended`, `wallet_not_provisioned` |
+| `walletsProvisioned` | Settlement wallet exists for env |
+
+`GET /portal/me/markets` and `GET /provider/merchants/:id/markets` return the same enriched market rows (+ `globalKycStatus`). Optional `?environment=` defaults to `live` (wallet provision check).
+
+Wallet catalog items (`/wallets`, `/balance`, `/services`) also include `unlockReason` + `blockers`.
+
+---
+
 **Two apps:**
 
 | App | Users | This doc |

@@ -60,7 +60,9 @@ export type AuditAction =
   | "portal.eur_payout.approved"
   | "portal.eur_payout.failed"
   | "portal.cpg_payout.created"
-  | "portal.cpg_payout.failed";
+  | "portal.cpg_payout.failed"
+  | "portal.h2h_payin.created"
+  | "portal.h2h_payin.confirmed";
 
 export interface AuditEntry {
   action: AuditAction;

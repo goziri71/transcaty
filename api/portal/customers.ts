@@ -3,11 +3,13 @@
  */
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { eq, and, count, desc } from "drizzle-orm";
+import { eq, and, count, desc, sql } from "drizzle-orm";
 import { db } from "../../src/db/index.js";
 import { wallets, transactions } from "../../src/db/schema/index.js";
 import { createCustomerWallet } from "../../services/operations/transfers.js";
 import { audit } from "../../src/lib/audit.js";
+import { presentTransactionListItems } from "../../src/lib/present-transaction.js";
+import { transactionFeeSummaryFieldsSchema } from "../../src/lib/billing/transaction-fee-breakdown.js";
 
 const errorResponse = z.object({
   error: z.string(),
@@ -15,6 +17,43 @@ const errorResponse = z.object({
 });
 
 const WALLET_STATUS = ["active", "frozen", "pending", "closed"] as const;
+
+const transactionListItemSchema = z
+  .object({
+    id: z.string(),
+    type: z.string(),
+    status: z.string(),
+    amount: z.string(),
+    paidAmount: z.string().nullable(),
+    platformOrderId: z.string().nullable(),
+    customerWalletId: z.string().nullable(),
+    refundOfTransactionId: z.string().nullable(),
+    settlementCurrency: z.string(),
+    currency: z.string(),
+    rail: z.string(),
+    railLabel: z.string(),
+    createdAt: z.string(),
+    completedAt: z.string().nullable(),
+  })
+  .merge(transactionFeeSummaryFieldsSchema.partial());
+
+const customerDossierSchema = z.object({
+  id: z.string(),
+  label: z.string().nullable(),
+  balance: z.string(),
+  currency: z.string(),
+  status: z.string(),
+  environment: z.enum(["test", "live"]),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  txSummary: z.object({
+    total: z.number(),
+    pending: z.number(),
+    success: z.number(),
+    failed: z.number(),
+  }),
+  recentTransactions: z.array(transactionListItemSchema),
+});
 
 export async function registerPortalCustomersRoutes(app: FastifyInstance) {
   app.get(
@@ -163,15 +202,7 @@ export async function registerPortalCustomersRoutes(app: FastifyInstance) {
           environment: z.enum(["test", "live"]).default("test"),
         }),
         response: {
-          200: z.object({
-            id: z.string(),
-            label: z.string().nullable(),
-            balance: z.string(),
-            currency: z.string(),
-            status: z.string(),
-            createdAt: z.string(),
-            updatedAt: z.string(),
-          }),
+          200: customerDossierSchema,
           401: errorResponse,
           404: errorResponse,
         },
@@ -201,14 +232,58 @@ export async function registerPortalCustomersRoutes(app: FastifyInstance) {
         return reply.status(404).send({ error: "Not found", message: "Customer not found" });
       }
 
+      const [counts] = await db
+        .select({
+          total: count(),
+          pending: sql<number>`count(*) filter (where ${transactions.status} = 'pending')`,
+          success: sql<number>`count(*) filter (where ${transactions.status} = 'success')`,
+          failed: sql<number>`count(*) filter (where ${transactions.status} = 'failed')`,
+        })
+        .from(transactions)
+        .where(and(eq(transactions.walletId, id), eq(transactions.environment, environment)));
+
+      const recentRows = await db
+        .select({
+          id: transactions.id,
+          type: transactions.type,
+          status: transactions.status,
+          amount: transactions.amount,
+          paidAmount: transactions.paidAmount,
+          currency: transactions.currency,
+          provider: transactions.provider,
+          externalId: transactions.externalId,
+          walletId: transactions.walletId,
+          metadata: transactions.metadata,
+          createdAt: transactions.createdAt,
+          updatedAt: transactions.updatedAt,
+        })
+        .from(transactions)
+        .where(and(eq(transactions.walletId, id), eq(transactions.environment, environment)))
+        .orderBy(desc(transactions.createdAt))
+        .limit(10);
+
+      const recentTransactions = await presentTransactionListItems({
+        merchantId: user.merchantId,
+        environment,
+        rows: recentRows,
+      });
+
       return {
         id: wallet.id,
         label: wallet.label,
         balance: String(wallet.balance),
         currency: wallet.currency,
         status: wallet.status,
+        environment: wallet.environment as "test" | "live",
         createdAt: wallet.createdAt.toISOString(),
         updatedAt: wallet.updatedAt.toISOString(),
+        txSummary: {
+          total: Number(counts?.total ?? 0),
+          pending: Number(counts?.pending ?? 0),
+          success: Number(counts?.success ?? 0),
+          failed: Number(counts?.failed ?? 0),
+        },
+        recentTransactions,
       };
     }
   );
@@ -305,18 +380,7 @@ export async function registerPortalCustomersRoutes(app: FastifyInstance) {
         }),
         response: {
           200: z.object({
-            items: z.array(
-              z.object({
-                id: z.string(),
-                type: z.string(),
-                status: z.string(),
-                amount: z.string(),
-                paidAmount: z.string().nullable(),
-                platformOrderId: z.string().nullable(),
-                createdAt: z.string(),
-                completedAt: z.string().nullable(),
-              })
-            ),
+            items: z.array(transactionListItemSchema),
             total: z.number(),
             limit: z.number(),
             offset: z.number(),
@@ -331,7 +395,11 @@ export async function registerPortalCustomersRoutes(app: FastifyInstance) {
       if (!user) return reply.status(401).send({ error: "Unauthorized" });
 
       const { id } = request.params as { id: string };
-      const { environment, limit, offset } = request.query as { environment: "test" | "live"; limit: number; offset: number };
+      const { environment, limit, offset } = request.query as {
+        environment: "test" | "live";
+        limit: number;
+        offset: number;
+      };
 
       const [wallet] = await db
         .select()
@@ -362,7 +430,11 @@ export async function registerPortalCustomersRoutes(app: FastifyInstance) {
           status: transactions.status,
           amount: transactions.amount,
           paidAmount: transactions.paidAmount,
+          currency: transactions.currency,
+          provider: transactions.provider,
           externalId: transactions.externalId,
+          walletId: transactions.walletId,
+          metadata: transactions.metadata,
           createdAt: transactions.createdAt,
           updatedAt: transactions.updatedAt,
         })
@@ -372,17 +444,14 @@ export async function registerPortalCustomersRoutes(app: FastifyInstance) {
         .limit(limit)
         .offset(offset);
 
+      const items = await presentTransactionListItems({
+        merchantId: user.merchantId,
+        environment,
+        rows,
+      });
+
       return {
-        items: rows.map((r) => ({
-          id: r.id,
-          type: r.type,
-          status: r.status,
-          amount: String(r.amount),
-          paidAmount: r.paidAmount ? String(r.paidAmount) : null,
-          platformOrderId: r.externalId,
-          createdAt: r.createdAt.toISOString(),
-          completedAt: r.status === "success" ? r.updatedAt.toISOString() : null,
-        })),
+        items,
         total: Number(totalResult?.count ?? 0),
         limit,
         offset,

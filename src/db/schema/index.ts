@@ -483,6 +483,34 @@ export const webhookEvents = pgTable(
   ]
 );
 
+/** Outbound deliveries Transacty POSTs to the merchant webhook URL. */
+export const merchantWebhookDeliveries = pgTable(
+  "merchant_webhook_deliveries",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    merchantId: uuid("merchant_id")
+      .notNull()
+      .references(() => merchants.id, { onDelete: "cascade" }),
+    eventType: text("event_type").notNull(),
+    transactionId: uuid("transaction_id"),
+    payload: text("payload").notNull(),
+    targetUrl: text("target_url").notNull(),
+    /** pending | success | failed */
+    status: text("status").notNull().default("pending"),
+    httpStatus: integer("http_status"),
+    responseBody: text("response_body"),
+    error: text("error"),
+    attempt: integer("attempt").notNull().default(1),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+  },
+  (t) => [
+    index("merchant_webhook_deliveries_merchant_created_idx").on(t.merchantId, t.createdAt),
+    index("merchant_webhook_deliveries_status_idx").on(t.status),
+    index("merchant_webhook_deliveries_tx_idx").on(t.transactionId),
+  ]
+);
+
 export const merchantBusinessProfiles = pgTable(
   "merchant_business_profiles",
   {

@@ -10,7 +10,7 @@
  * FX spread is not yet ledgered. Those show up as `disclosures` flags so the UI
  * can label the numbers "gross, not net". See docs/TREASURY_MANAGEMENT_RESEARCH.md.
  */
-import { and, eq, gte, inArray, lt, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, lt, ne, sql } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { wallets, ledgerEntries, transactions } from "../db/schema/index.js";
 import { PLATFORM_MERCHANT_ID } from "./billing/platform-wallet.js";
@@ -54,6 +54,12 @@ export interface TakeRateItem {
   takeRateBps: number | null;
 }
 
+export interface TreasuryLiquidityBucket {
+  currency: string;
+  amount: string;
+  count: number;
+}
+
 export interface TreasuryOverview {
   environment: TreasuryEnv;
   from: string;
@@ -67,6 +73,13 @@ export interface TreasuryOverview {
     byRail: VolumeByKeyItem[];
   };
   takeRate: TakeRateItem[];
+  /** Ledger-only liquidity snapshot (no upstream provider float). */
+  liquidity: {
+    pendingPayinByCurrency: TreasuryLiquidityBucket[];
+    pendingPayoutByCurrency: TreasuryLiquidityBucket[];
+    merchantBalancesByCurrency: TreasuryLiquidityBucket[];
+    note: string;
+  };
   disclosures: {
     /** Revenue is GROSS (before provider cost). */
     basis: "gross";
@@ -221,6 +234,68 @@ export async function buildTreasuryOverview(params: TreasuryOverviewParams): Pro
     });
   }
 
+  // 5. Liquidity snapshot (pending txs + merchant wallet liability).
+  const pendingRows = await db
+    .select({
+      currency: transactions.currency,
+      type: transactions.type,
+      total: sql<string>`sum(${transactions.amount})`,
+      count: sql<number>`count(*)`,
+    })
+    .from(transactions)
+    .where(
+      and(
+        eq(transactions.environment, environment),
+        eq(transactions.status, "pending"),
+        inArray(transactions.type, ["payin", "payout"])
+      )
+    )
+    .groupBy(transactions.currency, transactions.type);
+
+  const pendingPayin = new Map<string, { amount: string; count: number }>();
+  const pendingPayout = new Map<string, { amount: string; count: number }>();
+  for (const r of pendingRows) {
+    const currency = norm(r.currency);
+    const bucket = { amount: String(r.total ?? "0"), count: Number(r.count ?? 0) };
+    if (r.type === "payin") pendingPayin.set(currency, bucket);
+    else pendingPayout.set(currency, bucket);
+  }
+
+  const merchantWalletRows = await db
+    .select({
+      currency: wallets.currency,
+      total: sql<string>`sum(${wallets.balance})`,
+      count: sql<number>`count(*)`,
+    })
+    .from(wallets)
+    .where(
+      and(
+        eq(wallets.environment, environment),
+        eq(wallets.type, "merchant"),
+        eq(wallets.status, "active"),
+        ne(wallets.merchantId, PLATFORM_MERCHANT_ID)
+      )
+    )
+    .groupBy(wallets.currency);
+
+  const toBuckets = (m: Map<string, { amount: string; count: number }>): TreasuryLiquidityBucket[] =>
+    [...m.entries()]
+      .map(([currency, v]) => ({ currency, amount: v.amount, count: v.count }))
+      .sort((a, b) => a.currency.localeCompare(b.currency));
+
+  const liquidity = {
+    pendingPayinByCurrency: toBuckets(pendingPayin),
+    pendingPayoutByCurrency: toBuckets(pendingPayout),
+    merchantBalancesByCurrency: merchantWalletRows
+      .map((r) => ({
+        currency: norm(r.currency),
+        amount: String(r.total ?? "0"),
+        count: Number(r.count ?? 0),
+      }))
+      .sort((a, b) => a.currency.localeCompare(b.currency)),
+    note: "Pending amounts are open pay-in/payout txs. Merchant balances are sum of active merchant settlement wallets (excludes platform retained-earnings wallets). Provider float is not polled here.",
+  };
+
   return {
     environment,
     from: from.toISOString(),
@@ -229,6 +304,7 @@ export async function buildTreasuryOverview(params: TreasuryOverviewParams): Pro
     revenue,
     volume,
     takeRate,
+    liquidity,
     disclosures: {
       basis: "gross",
       netMarginAvailable: false,

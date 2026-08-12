@@ -130,7 +130,7 @@ export async function listMerchantMarkets(merchantId: string): Promise<MerchantM
   });
 }
 
-function walletActivationForMarket(market: MerchantMarketRow): WalletActivationStatus {
+export function walletActivationForMarket(market: MerchantMarketRow): WalletActivationStatus {
   if (market.entitlementStatus === "suspended") return "suspended";
   if (market.entitlementStatus === "approved") {
     if (market.kybStatus === "verified") return "active";
@@ -140,6 +140,228 @@ function walletActivationForMarket(market: MerchantMarketRow): WalletActivationS
     return "pending_kyb";
   }
   return "not_enabled";
+}
+
+export const MARKET_DISPLAY_NAMES: Record<MerchantMarket, string> = {
+  bangladesh: "Bangladesh",
+  india: "India",
+  europe: "Europe",
+  brazil: "Brazil",
+  pyusd: "PYUSD",
+};
+
+export const MARKET_BLOCKER_CODES = [
+  "not_requested",
+  "awaiting_review",
+  "kyb_pending",
+  "kyb_rejected",
+  "global_kyc_pending",
+  "suspended",
+  "wallet_not_provisioned",
+] as const;
+export type MarketBlockerCode = (typeof MARKET_BLOCKER_CODES)[number];
+
+export type MarketBlocker = { code: MarketBlockerCode; message: string };
+
+export type MerchantMarketBoardRow = MerchantMarketRow & {
+  displayName: string;
+  activationStatus: WalletActivationStatus;
+  canRequest: boolean;
+  ready: boolean;
+  unlockReason: string | null;
+  blockers: MarketBlocker[];
+  settlementCurrencies: string[];
+  walletsProvisioned: boolean;
+};
+
+function pushBlocker(blockers: MarketBlocker[], code: MarketBlockerCode, message: string): void {
+  if (blockers.some((b) => b.code === code)) return;
+  blockers.push({ code, message });
+}
+
+/** Derive dashboard blockers / unlock copy for one market. */
+export function deriveMarketBoardFields(params: {
+  market: MerchantMarketRow;
+  globalKycStatus: string;
+  walletsProvisioned: boolean;
+}): Pick<
+  MerchantMarketBoardRow,
+  | "displayName"
+  | "activationStatus"
+  | "canRequest"
+  | "ready"
+  | "unlockReason"
+  | "blockers"
+  | "settlementCurrencies"
+  | "walletsProvisioned"
+> {
+  const { market, globalKycStatus, walletsProvisioned } = params;
+  const displayName = MARKET_DISPLAY_NAMES[market.market];
+  const activationStatus = walletActivationForMarket(market);
+  const settlementCurrencies = [...MARKET_SETTLEMENT_CURRENCIES[market.market]];
+  const blockers: MarketBlocker[] = [];
+  const globalKycOk = globalKycStatus === "verified";
+
+  if (market.entitlementStatus === "suspended") {
+    pushBlocker(blockers, "suspended", `${displayName} is suspended. Contact support.`);
+  } else if (market.entitlementStatus === "disabled") {
+    pushBlocker(
+      blockers,
+      "not_requested",
+      `${displayName} is not enabled. Request access to start activation.`
+    );
+  } else if (
+    market.entitlementStatus === "requested" ||
+    market.entitlementStatus === "kyb_in_review"
+  ) {
+    pushBlocker(
+      blockers,
+      "awaiting_review",
+      `${displayName} access was requested and is waiting on Transacty review.`
+    );
+  }
+
+  if (market.kybStatus === "rejected") {
+    pushBlocker(
+      blockers,
+      "kyb_rejected",
+      `${displayName} KYB was rejected. Update documents or contact support.`
+    );
+  } else if (
+    market.entitlementStatus === "approved" &&
+    market.kybStatus !== "verified" &&
+    !globalKycOk
+  ) {
+    pushBlocker(
+      blockers,
+      "kyb_pending",
+      `${displayName} KYB must be verified before this service is usable.`
+    );
+    if (globalKycStatus === "pending" || globalKycStatus === "rejected") {
+      pushBlocker(
+        blockers,
+        "global_kyc_pending",
+        "Complete account KYC activation before live rails unlock."
+      );
+    }
+  } else if (
+    market.entitlementStatus === "approved" &&
+    market.kybStatus !== "verified" &&
+    globalKycOk
+  ) {
+    // Global KYC verified usually unlocks market API; still surface pending market KYB for clarity.
+    if (market.kybStatus === "pending" || market.kybStatus === "not_started") {
+      pushBlocker(
+        blockers,
+        "kyb_pending",
+        `${displayName} market KYB is still ${market.kybStatus.replace("_", " ")}.`
+      );
+    }
+  }
+
+  if (activationStatus === "active" && !walletsProvisioned) {
+    pushBlocker(
+      blockers,
+      "wallet_not_provisioned",
+      `${displayName} settlement wallet is not provisioned yet. Contact support.`
+    );
+  }
+
+  const canRequest = market.entitlementStatus === "disabled";
+  const hardBlocked = blockers.some(
+    (b) =>
+      b.code === "suspended" ||
+      b.code === "kyb_rejected" ||
+      b.code === "not_requested" ||
+      b.code === "awaiting_review" ||
+      b.code === "wallet_not_provisioned" ||
+      b.code === "global_kyc_pending" ||
+      (b.code === "kyb_pending" && !globalKycOk)
+  );
+  const ready =
+    market.entitlementStatus === "approved" &&
+    walletsProvisioned &&
+    (market.kybStatus === "verified" || globalKycOk) &&
+    market.kybStatus !== "rejected" &&
+    !hardBlocked;
+
+  const visibleBlockers = ready
+    ? blockers.filter((b) => b.code === "kyb_pending")
+    : blockers;
+
+  return {
+    displayName,
+    activationStatus,
+    canRequest,
+    ready,
+    unlockReason: ready ? null : (blockers[0]?.message ?? null),
+    blockers: visibleBlockers,
+    settlementCurrencies,
+    walletsProvisioned,
+  };
+}
+
+export async function getMerchantGlobalKycStatus(merchantId: string): Promise<string> {
+  const [row] = await db
+    .select({ kycStatus: merchants.kycStatus })
+    .from(merchants)
+    .where(eq(merchants.id, merchantId))
+    .limit(1);
+  return row?.kycStatus ?? "pending";
+}
+
+async function settlementWalletsExist(params: {
+  merchantId: string;
+  environment: "test" | "live";
+  market: MerchantMarket;
+}): Promise<boolean> {
+  const currencies = MARKET_SETTLEMENT_CURRENCIES[params.market].map((c) => c.trim().toUpperCase());
+  if (currencies.length === 0) return false;
+  const rows = await db
+    .select({ id: wallets.id, currency: wallets.currency })
+    .from(wallets)
+    .where(
+      and(
+        eq(wallets.merchantId, params.merchantId),
+        eq(wallets.environment, params.environment),
+        eq(wallets.type, "merchant"),
+        eq(wallets.status, "active"),
+        inArray(wallets.currency, currencies)
+      )
+    );
+  const have = new Set(rows.map((r) => r.currency.trim().toUpperCase()));
+  return currencies.every((c) => have.has(c));
+}
+
+export async function buildMerchantMarketBoard(params: {
+  merchantId: string;
+  environment?: "test" | "live";
+}): Promise<{
+  globalKycStatus: string;
+  items: MerchantMarketBoardRow[];
+}> {
+  const environment = params.environment ?? "live";
+  const [globalKycStatus, markets] = await Promise.all([
+    getMerchantGlobalKycStatus(params.merchantId),
+    listMerchantMarkets(params.merchantId),
+  ]);
+
+  const items: MerchantMarketBoardRow[] = [];
+  for (const market of markets) {
+    const walletsProvisioned = await settlementWalletsExist({
+      merchantId: params.merchantId,
+      environment,
+      market: market.market,
+    });
+    const derived = deriveMarketBoardFields({
+      market,
+      globalKycStatus,
+      walletsProvisioned,
+    });
+    items.push({ ...market, ...derived });
+  }
+
+  return { globalKycStatus, items };
 }
 
 export async function provisionSettlementWalletsForMarket(
@@ -333,11 +555,20 @@ function presentSlot(params: {
   environment: "test" | "live";
   wallet: WalletRow | null;
   pendingByCurrency: Map<string, string>;
+  globalKycStatus: string;
 }): PortalWalletBalanceItem {
   const { market, currency, wallet } = params;
-  const region = merchantWalletRegionForCurrency(currency) as PortalWalletRegion;
+  const region =
+    market.market === "pyusd"
+      ? ("pyusd" as PortalWalletRegion)
+      : (merchantWalletRegionForCurrency(currency) as PortalWalletRegion);
   const activationStatus = walletActivationForMarket(market);
   const walletActivated = wallet != null && activationStatus === "active";
+  const derived = deriveMarketBoardFields({
+    market,
+    globalKycStatus: params.globalKycStatus,
+    walletsProvisioned: wallet != null,
+  });
 
   const balance = wallet ? String(wallet.balance) : "0.00";
   const pendingRaw = wallet
@@ -345,7 +576,11 @@ function presentSlot(params: {
     : "0";
   const pendingBalance = normalizeMoneyAmountToTwoDecimals(pendingRaw);
   const lastUpdated = wallet?.updatedAt?.toISOString() ?? null;
-  const displayLabel = wallet?.label?.trim() || merchantWalletRegionLabel(region, currency);
+  const displayLabel =
+    wallet?.label?.trim() ||
+    (market.market === "pyusd"
+      ? MARKET_DISPLAY_NAMES.pyusd
+      : merchantWalletRegionLabel(region, currency));
 
   return {
     id: wallet?.id ?? syntheticWalletId(market.market, currency),
@@ -357,7 +592,10 @@ function presentSlot(params: {
     label: wallet?.label ?? null,
     displayLabel,
     region,
-    regionLabel: merchantWalletRegionLabel(region, currency),
+    regionLabel:
+      market.market === "pyusd"
+        ? MARKET_DISPLAY_NAMES.pyusd
+        : merchantWalletRegionLabel(region, currency),
     lastUpdated,
     updatedAt: lastUpdated,
     createdAt: (wallet?.createdAt ?? new Date(0)).toISOString(),
@@ -367,6 +605,8 @@ function presentSlot(params: {
     kybStatus: market.kybStatus,
     activationStatus,
     walletActivated,
+    unlockReason: derived.ready ? null : derived.unlockReason,
+    blockers: derived.ready ? [] : derived.blockers,
   };
 }
 
@@ -375,8 +615,11 @@ export async function buildPortalWalletCatalog(params: {
   merchantId: string;
   environment: "test" | "live";
   pendingByCurrency: Map<string, string>;
+  globalKycStatus?: string;
 }): Promise<PortalWalletBalanceItem[]> {
   const markets = await listMerchantMarkets(params.merchantId);
+  const globalKycStatus =
+    params.globalKycStatus ?? (await getMerchantGlobalKycStatus(params.merchantId));
   const currencies = markets.flatMap((m) =>
     MARKET_SETTLEMENT_CURRENCIES[m.market].map((currency) => ({ market: m, currency }))
   );
@@ -425,6 +668,7 @@ export async function buildPortalWalletCatalog(params: {
         environment: params.environment,
         wallet: w,
         pendingByCurrency: params.pendingByCurrency,
+        globalKycStatus,
       })
     );
   }
@@ -443,6 +687,35 @@ export async function buildPortalWalletCatalog(params: {
     if (am !== bm) return am - bm;
     return a.currency.localeCompare(b.currency);
   });
+}
+
+export async function buildMerchantServicesBoard(params: {
+  merchantId: string;
+  environment: "test" | "live";
+  pendingByCurrency: Map<string, string>;
+}): Promise<{
+  environment: "test" | "live";
+  globalKycStatus: string;
+  markets: MerchantMarketBoardRow[];
+  wallets: PortalWalletBalanceItem[];
+}> {
+  const { globalKycStatus, items: markets } = await buildMerchantMarketBoard({
+    merchantId: params.merchantId,
+    environment: params.environment,
+  });
+  const wallets = await buildPortalWalletCatalog({
+    merchantId: params.merchantId,
+    environment: params.environment,
+    pendingByCurrency: params.pendingByCurrency,
+    globalKycStatus,
+  });
+
+  return {
+    environment: params.environment,
+    globalKycStatus,
+    markets,
+    wallets,
+  };
 }
 
 export function filterBalanceItemsToApprovedMarkets(

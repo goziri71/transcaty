@@ -15,21 +15,27 @@ import { registerPortalWebhookRoutes } from "./webhook.js";
 import { registerPortalApiIpRulesRoutes } from "./api-ip-rules.js";
 import { registerPortalEurPayoutRoutes } from "./eur-payouts.js";
 import { registerPortalCpgPayoutRoutes } from "./cpg-payouts.js";
+import { registerPortalH2hPayinRoutes } from "./h2h-payins.js";
 import { registerPortalPayinsRoutes } from "./payins.js";
 import { registerPortalBrazilRoutes } from "./br-payments.js";
 import { registerPortalPyusdRoutes } from "./pyusd-payins.js";
 import { registerPortalAuditLogRoutes } from "./audit-log.js";
+import { registerPortalSecurityRoutes } from "./security.js";
+import { registerPortalFeesRoutes } from "./fees.js";
 
 export async function registerPortalRoutes(app: FastifyInstance) {
   await registerPortalAuthRoutes(app);
   await registerPortalMfaRoutes(app);
   await registerPortalMeRoutes(app);
+  await registerPortalSecurityRoutes(app);
+  await registerPortalFeesRoutes(app);
   await registerPortalKycRoutes(app);
   await registerPortalApiKeysRoutes(app);
   await registerPortalWebhookRoutes(app);
   await registerPortalApiIpRulesRoutes(app);
   await registerPortalEurPayoutRoutes(app);
   await registerPortalCpgPayoutRoutes(app);
+  await registerPortalH2hPayinRoutes(app);
   await registerPortalCustomersRoutes(app);
   await registerPortalTransactionsRoutes(app);
   await registerPortalPayinsRoutes(app);

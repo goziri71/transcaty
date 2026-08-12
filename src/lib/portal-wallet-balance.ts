@@ -18,6 +18,11 @@ export const portalWalletActivationStatusSchema = z.enum([
   "suspended",
 ]);
 
+export const portalWalletBlockerSchema = z.object({
+  code: z.string(),
+  message: z.string(),
+});
+
 export const portalWalletBalanceItemSchema = z.object({
   id: z.string(),
   currency: z.string(),
@@ -38,6 +43,9 @@ export const portalWalletBalanceItemSchema = z.object({
   kybStatus: z.string(),
   activationStatus: portalWalletActivationStatusSchema,
   walletActivated: z.boolean(),
+  /** Why this pocket is locked; null when usable. */
+  unlockReason: z.string().nullable(),
+  blockers: z.array(portalWalletBlockerSchema),
 });
 
 export type PortalWalletBalanceItem = z.infer<typeof portalWalletBalanceItemSchema>;
@@ -143,6 +151,8 @@ export function presentPortalWalletBalanceItem(
     kybStatus: "verified",
     activationStatus: "active",
     walletActivated: true,
+    unlockReason: null,
+    blockers: [],
   };
 }
 

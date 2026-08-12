@@ -253,6 +253,23 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
               platformOrderId: z.string().nullable(),
               customerWalletId: z.string().nullable(),
               refundOfTransactionId: z.string().nullable(),
+              provider: z.string().nullable(),
+              settlementCurrency: z.string(),
+              providerRefs: z.object({
+                instanceId: z.string().nullable(),
+                paymentIntentId: z.string().nullable(),
+                checkoutUrl: z.string().nullable(),
+                depositAddress: z.string().nullable(),
+                utr: z.string().nullable(),
+                networkSymbol: z.string().nullable(),
+              }),
+              statusTimeline: z.array(
+                z.object({
+                  at: z.string(),
+                  status: z.string(),
+                  label: z.string(),
+                })
+              ),
               metadata: metadataSchema.nullable(),
               createdAt: z.string(),
               completedAt: z.string().nullable(),
@@ -310,6 +327,27 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
         metadata: tx.metadata,
       });
 
+      const {
+        extractProviderRefs,
+        buildStatusTimeline,
+        presentTransactionListItemBase,
+      } = await import("../../src/lib/present-transaction.js");
+
+      const base = presentTransactionListItemBase({
+        id: tx.id,
+        type: tx.type,
+        status: tx.status,
+        amount: tx.amount,
+        paidAmount: tx.paidAmount,
+        currency: tx.currency,
+        provider: tx.provider,
+        externalId: tx.externalId,
+        walletId: tx.walletId,
+        metadata: tx.metadata,
+        createdAt: tx.createdAt,
+        updatedAt: tx.updatedAt,
+      });
+
       return {
         id: tx.id,
         type: tx.type,
@@ -319,6 +357,17 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
         platformOrderId: tx.externalId,
         customerWalletId: tx.walletId,
         refundOfTransactionId,
+        provider: tx.provider,
+        settlementCurrency: base.settlementCurrency,
+        providerRefs: extractProviderRefs({
+          externalId: tx.externalId,
+          metadata,
+        }),
+        statusTimeline: buildStatusTimeline({
+          status: tx.status,
+          createdAt: tx.createdAt,
+          updatedAt: tx.updatedAt,
+        }),
         metadata,
         createdAt: tx.createdAt.toISOString(),
         completedAt: tx.status === "success" ? tx.updatedAt.toISOString() : null,

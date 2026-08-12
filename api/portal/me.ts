@@ -14,22 +14,24 @@ import {
   merchantUsers,
 } from "../../src/db/schema/index.js";
 import {
-  limitsForMerchantWalletCurrency,
-  pickPrimaryPortalWalletItem,
-  portalWalletBalanceItemSchema,
-  portalWalletLimitsSchema,
-} from "../../src/lib/portal-wallet-balance.js";
-import { sumPendingPayinAmountsByCurrency } from "../../src/lib/merchant-pending-balance.js";
-import {
+  buildMerchantMarketBoard,
+  buildMerchantServicesBoard,
   buildPortalWalletCatalog,
   isMerchantMarket,
-  listMerchantMarkets,
+  MARKET_BLOCKER_CODES,
   MARKET_ENTITLEMENT_STATUSES,
   MARKET_KYB_STATUSES,
-  MARKET_SETTLEMENT_CURRENCIES,
   MERCHANT_MARKETS,
   requestMerchantMarket,
+  WALLET_ACTIVATION_STATUSES,
 } from "../../src/lib/merchant-markets.js";
+import {
+  portalWalletBalanceItemSchema,
+  portalWalletLimitsSchema,
+  pickPrimaryPortalWalletItem,
+  limitsForMerchantWalletCurrency,
+} from "../../src/lib/portal-wallet-balance.js";
+import { sumPendingPayinAmountsByCurrency } from "../../src/lib/merchant-pending-balance.js";
 import {
   buildReconciliationReport,
   reconciliationReportToCsv,
@@ -49,14 +51,58 @@ const portalBalanceTopLevelSchema = z.object({
   limits: portalWalletLimitsSchema,
 });
 
+const portalMarketBlockerSchema = z.object({
+  code: z.enum(MARKET_BLOCKER_CODES),
+  message: z.string(),
+});
+
 const portalMarketRowSchema = z.object({
   market: z.enum(MERCHANT_MARKETS),
+  displayName: z.string(),
   entitlementStatus: z.enum(MARKET_ENTITLEMENT_STATUSES),
   kybStatus: z.enum(MARKET_KYB_STATUSES),
+  activationStatus: z.enum(WALLET_ACTIVATION_STATUSES),
+  canRequest: z.boolean(),
+  ready: z.boolean(),
+  unlockReason: z.string().nullable(),
+  blockers: z.array(portalMarketBlockerSchema),
+  walletsProvisioned: z.boolean(),
   requestedAt: z.string().nullable(),
   approvedAt: z.string().nullable(),
   settlementCurrencies: z.array(z.string()),
 });
+
+function serializeMarketBoardRow(r: {
+  market: (typeof MERCHANT_MARKETS)[number];
+  displayName: string;
+  entitlementStatus: (typeof MARKET_ENTITLEMENT_STATUSES)[number];
+  kybStatus: (typeof MARKET_KYB_STATUSES)[number];
+  activationStatus: (typeof WALLET_ACTIVATION_STATUSES)[number];
+  canRequest: boolean;
+  ready: boolean;
+  unlockReason: string | null;
+  blockers: Array<{ code: string; message: string }>;
+  walletsProvisioned: boolean;
+  requestedAt: Date | null;
+  approvedAt: Date | null;
+  settlementCurrencies: string[];
+}) {
+  return {
+    market: r.market,
+    displayName: r.displayName,
+    entitlementStatus: r.entitlementStatus,
+    kybStatus: r.kybStatus,
+    activationStatus: r.activationStatus,
+    canRequest: r.canRequest,
+    ready: r.ready,
+    unlockReason: r.unlockReason,
+    blockers: r.blockers,
+    walletsProvisioned: r.walletsProvisioned,
+    requestedAt: r.requestedAt?.toISOString() ?? null,
+    approvedAt: r.approvedAt?.toISOString() ?? null,
+    settlementCurrencies: r.settlementCurrencies,
+  };
+}
 
 export async function registerPortalMeRoutes(app: FastifyInstance) {
   app.get(
@@ -309,8 +355,14 @@ export async function registerPortalMeRoutes(app: FastifyInstance) {
     "/portal/me/markets",
     {
       schema: {
+        querystring: z.object({
+          environment: z.enum(["test", "live"]).default("live"),
+        }),
         response: {
-          200: z.object({ items: z.array(portalMarketRowSchema) }),
+          200: z.object({
+            globalKycStatus: z.string(),
+            items: z.array(portalMarketRowSchema),
+          }),
           401: errorResponse,
         },
       },
@@ -318,17 +370,114 @@ export async function registerPortalMeRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const user = request.portalUser;
       if (!user) return reply.status(401).send({ error: "Unauthorized" });
-      const rows = await listMerchantMarkets(user.merchantId);
-      return reply.send({
-        items: rows.map((r) => ({
-          market: r.market,
-          entitlementStatus: r.entitlementStatus,
-          kybStatus: r.kybStatus,
-          requestedAt: r.requestedAt?.toISOString() ?? null,
-          approvedAt: r.approvedAt?.toISOString() ?? null,
-          settlementCurrencies: [...MARKET_SETTLEMENT_CURRENCIES[r.market]],
-        })),
+      const { environment } = request.query as { environment: "test" | "live" };
+      const board = await buildMerchantMarketBoard({
+        merchantId: user.merchantId,
+        environment,
       });
+      return reply.send({
+        globalKycStatus: board.globalKycStatus,
+        items: board.items.map(serializeMarketBoardRow),
+      });
+    }
+  );
+
+  app.get(
+    "/portal/me/services",
+    {
+      schema: {
+        querystring: z.object({
+          environment: z.enum(["test", "live"]).default("test"),
+        }),
+        response: {
+          200: z.object({
+            environment: z.enum(["test", "live"]),
+            globalKycStatus: z.string(),
+            markets: z.array(portalMarketRowSchema),
+            wallets: z.array(portalWalletBalanceItemSchema),
+          }),
+          401: errorResponse,
+        },
+      },
+    },
+    async (request, reply) => {
+      const user = request.portalUser;
+      if (!user) return reply.status(401).send({ error: "Unauthorized" });
+      const { environment } = request.query as { environment: "test" | "live" };
+      const pendingByCurrency = await sumPendingPayinAmountsByCurrency({
+        merchantId: user.merchantId,
+        environment,
+      });
+      const board = await buildMerchantServicesBoard({
+        merchantId: user.merchantId,
+        environment,
+        pendingByCurrency,
+      });
+      return reply.send({
+        environment: board.environment,
+        globalKycStatus: board.globalKycStatus,
+        markets: board.markets.map(serializeMarketBoardRow),
+        wallets: board.wallets,
+      });
+    }
+  );
+
+  const moneyCountsSchema = z.object({
+    pending: z.number(),
+    success: z.number(),
+    failed: z.number(),
+    total: z.number(),
+  });
+
+  app.get(
+    "/portal/me/money/overview",
+    {
+      schema: {
+        querystring: z.object({
+          environment: z.enum(["test", "live"]).default("test"),
+        }),
+        response: {
+          200: z.object({
+            environment: z.enum(["test", "live"]),
+            globalKycStatus: z.string(),
+            rails: z.array(
+              z.object({
+                market: z.enum(MERCHANT_MARKETS),
+                displayName: z.string(),
+                ready: z.boolean(),
+                unlockReason: z.string().nullable(),
+                settlementCurrencies: z.array(z.string()),
+                counts: z.object({
+                  payin: moneyCountsSchema,
+                  payout: moneyCountsSchema,
+                }),
+                capabilities: z.object({
+                  canCreatePayin: z.boolean(),
+                  canCreatePayout: z.boolean(),
+                  payinPath: z.string().nullable(),
+                  payoutPath: z.string().nullable(),
+                  statusPath: z.string().nullable(),
+                  integrationHint: z.string().nullable(),
+                }),
+                transactionsQuery: z.string(),
+              })
+            ),
+          }),
+          401: errorResponse,
+        },
+      },
+    },
+    async (request, reply) => {
+      const user = request.portalUser;
+      if (!user) return reply.status(401).send({ error: "Unauthorized" });
+      const { environment } = request.query as { environment: "test" | "live" };
+      const { buildPortalMoneyOverview } = await import("../../src/lib/portal-money-overview.js");
+      return reply.send(
+        await buildPortalMoneyOverview({
+          merchantId: user.merchantId,
+          environment,
+        })
+      );
     }
   );
 
@@ -351,15 +500,16 @@ export async function registerPortalMeRoutes(app: FastifyInstance) {
       if (!isMerchantMarket(marketParam)) {
         return reply.status(400).send({ error: "Bad Request", message: "Invalid market" });
       }
-      const row = await requestMerchantMarket(user.merchantId, marketParam);
-      return reply.send({
-        market: row.market,
-        entitlementStatus: row.entitlementStatus,
-        kybStatus: row.kybStatus,
-        requestedAt: row.requestedAt?.toISOString() ?? null,
-        approvedAt: row.approvedAt?.toISOString() ?? null,
-        settlementCurrencies: [...MARKET_SETTLEMENT_CURRENCIES[row.market]],
+      await requestMerchantMarket(user.merchantId, marketParam);
+      const board = await buildMerchantMarketBoard({
+        merchantId: user.merchantId,
+        environment: "live",
       });
+      const row = board.items.find((r) => r.market === marketParam);
+      if (!row) {
+        return reply.status(400).send({ error: "Bad Request", message: "Invalid market" });
+      }
+      return reply.send(serializeMarketBoardRow(row));
     }
   );
 

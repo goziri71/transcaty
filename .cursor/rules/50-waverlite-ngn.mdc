@@ -4,54 +4,91 @@ globs: services/domestic/nigeria/**/*,services/integrations/waverlite/**/*,api/p
 alwaysApply: false
 ---
 
-# Waverlite — Nigeria NGN (planned)
+# Waverlite — Nigeria NGN (study notes, not implemented)
 
-Docs: [Waverlite Live Postman](https://documenter.getpostman.com/view/3785878/2s847EQYsS#intro)  
-Base URL: `https://api.live.waverlite.com`  
-`Content-Type: application/json`  
-Auth header: `Private-Key: {{PRIVATE_KEY}}`
+Official docs: [docs.waverlite.com](https://docs.waverlite.com/)  
+Live base: `https://api.live.waverlite.com`  
+Auth: header `Private-Key` · JSON · success envelope `{ code: 2000, state: true, message, data }`
 
-## Scope locks (do not expand without explicit ask)
+## Scope locks
 
-- **In scope:** NGN **collection (pay-in)** and NGN **payout** only.
-- **Out of scope:** GHS/CAD/other Waverlite currencies, cards, FX, anything beyond NGA/NGN collect+payout.
-- **Isolation (same rule as Brazil / Tekko):** new package only — prefer `services/domestic/nigeria/` (or `services/integrations/waverlite/` if treated as vendor adapter). Do **not** edit PayOK (`services/domestic/**` BD/BR), Tylt, or Tekko packages. May **import** shared helpers (wallet get-or-create, money, webhook claim).
-- Additive routes only: e.g. `/v1/ng/*` or `/v1/ngn/*`, `/webhooks/waverlite/*`, portal module of its own — never share PayOK/Tylt/Tekko webhook paths.
+- **In:** NGN **collection** + NGN **payout** only (`country_code: NGA`, `currency_code: NGN`).
+- **Out:** convert/compare, exchange/trade, email transfer, wave transfer, gift card, invoice, intra, other countries/currencies.
+- Isolated package only. Do not edit PayOK / Tylt / Tekko.
 
-## Vendor facts captured so far (payout-heavy snippets)
+## How Waverlite's API is designed (vendor logic)
 
-### 3D-Authentication (required before wallet debit / withdrawal)
+Waverlite is wallet-centric. The account (`Private-Key`) owns many currency wallets (`wallet_key`). Every money movement is into or out of a wallet. You always send your own `reference` (max 50). They echo it on verify/list/webhook/3D-Auth. Success envelope is `{ code: 2000, state: true, message, data }`.
 
-Waverlite verifies debit authenticity via a public URL tree you host:
+**Quote then commit.** `currency/convert|compare` and `wallet/service-charge/*` are reads (rate/fee). Commit endpoints (`exchange/trade`, `payout/*/send`, `withdrawal/request`) move money. Several commits require a `wave_token` minted from a prior compare/quote step.
 
-1. **base** — public dir registered in Waverlite Settings → API & Webhook (e.g. `https://domain.com/waverlite`)
-2. **hook** — subdir named after account “3D-Authentication Hook”
-3. **pointer** — file named after the **transaction reference** (no extension), contents = that reference, created **before** initiating debit
+**Credits vs debits.** Deposit/request (and checkout) credit a wallet — no 3D-Auth, no `wave_token`. Anything that leaves a wallet is a debit: they first GET `{3D-base}/{hook}/{reference}` and expect that file to contain the same reference. Withdrawal also uses a pre-saved `account_id`. Direct-deposit/wave/exchange use `wave_token` on send.
 
-Transacty must implement this as an HTTP-served path (or equivalent) under our API/public URL — not by editing other rails.
+**Status is always by reference.** Each product has `.../transactions/verify` `{ reference }`. Wallet has `wallet/transaction/verify` for the ledger line. Deposit has an extra `confirm` for pending payer flows. Statuses seen: SUCCESSFUL, REVERSED (+ `reversal_reference`), DECLINED. Amounts split `amount` / `charge` / `settlement`.
 
-### Withdrawal (payout) APIs noted
+**Ids they invent:** `institution.identifier` (bank/rail, not a local sort code), `account_id` (saved beneficiary), `wallet_key`, `wave_token`, `wave_key`/`wave_tag`. Country is alpha-3 (`NGA`), currency ISO (`NGN`), method is a rail enum (`BANK_TRANSFER`, `MOBILE_MONEY`, …). Webhook notify uses `App-Key` and `{ reference: { account, deposit } }`, not `Private-Key`.
 
-| Action | Method | Path |
-|--------|--------|------|
-| Request | `POST` | `/1.0/withdrawal/request` |
-| Verify | `POST` | `/1.0/withdrawal/transactions/verify` (body/query `reference`) |
-| List | `GET` | `/1.0/withdrawal/transactions/list?page=&limit=` (+ optional `wallet_key`, `account_id`) |
+### Shared / wallet (needed)
 
-Request body shape (Nigeria bank transfer example): `wallet_key`, `account_id`, `amount`, `reference`; optional `authorization.basic.auth_pin`.
+| Use | Method | Path |
+|-----|--------|------|
+| Create NGN wallet | POST | `/1.0/wallet/create` `{ title, currency_code: "NGN" }` |
+| List / balance / statement / verify | GET | `/1.0/wallet/list`, `/balance`, `/statement`, `/verify` |
+| Fee quote | GET | `/1.0/wallet/service-charge/deposit` and `.../withdrawal` or `.../direct-deposit?country_code=NGA&currency_code=NGN` |
 
-Response envelope: `{ code, state, message, data }` — success often `code: 2000`, `state: true`. Statuses seen: `SUCCESSFUL`, `REVERSED`, `DECLINED`.
+### Collection (pay-in) — Deposit
 
-Currency in NGN examples: `currency.code: "NGN"`, `country_code: "NGA"`.
+| Use | Method | Path |
+|-----|--------|------|
+| Start collect | POST | `/1.0/deposit/request` |
+| List VA / deposit accounts | GET | `/1.0/deposit/account/list?country_code=NGA` |
+| List / verify / confirm | GET/POST | `/1.0/deposit/transactions/list`, `/verify`, `/confirm` |
 
-## Product decisions still TBD before build
+Docs say deposit supports bank transfer / mobile money. **No NGA+NGN+BANK_TRANSFER request example** in published pages (examples are BEN/XOF and CAN/Interac). We still treat deposit as the collection API, with `country_code: NGA`, `currency_code: NGN`, `wallet_key`, `amount`, `reference` (max 50), payer `profile`, `institution`.
 
-- How **collection** is exposed in Waverlite API (virtual account / transfer-in / webhook) — not fully specified in the payout snippets above; pull from Postman before coding pay-in.
-- Merchant market id (likely `nigeria`) + settlement currency **NGN** pocket.
-- Provider ids e.g. `waverlite-ng-payin` / `waverlite-ng-payout`.
-- Live vs test credentials (docs titled Live).
-- Portal + provider surfaces (mirror Brazil PayOK pattern once adapter exists).
+Webhook page [`/reference/webhook-notify`](https://docs.waverlite.com/reference/webhook-notify) shows `POST /1.0/webhooks/deposit` + `App-Key` and `{ reference: { account, deposit } }`. Unclear if that is **what they POST to us** or **what we POST to them**. Must confirm with Waverlite/ops before coding. Always verify via `/deposit/transactions/verify` before crediting Transacty.
+
+### Payout — Postman confirms Withdrawal is the NGN bank path
+
+Source: [Waverlite {Live} Postman](https://documenter.getpostman.com/view/3785878/2s847EQYsS#intro)
+
+**A. Withdrawal** — **enough to execute if `account_id` already exists.**
+
+- `POST /1.0/withdrawal/request` example labeled **NIGERIA (BANK_TRANSFER)**:
+  `{ wallet_key, account_id, amount, reference }` (schema also shows optional `authorization.basic.auth_pin`; Nigeria curl omits it)
+- Response: `country_code: NGA`, `currency.code: NGN`, Fidelity + account number, `status: SUCCESSFUL`
+- Verify: `method: BANK_TRANSFER`, same NGA/NGN shape
+- List statuses: `SUCCESSFUL` | `REVERSED` (has `reversal_reference`) | `DECLINED`
+- **3D-Auth pointer file must exist before debit** (intro). `account_id` is a **saved beneficiary**, not a raw NUBAN.
+
+**B. Direct-deposit payout** (name enquiry + send) — this is the clear **NGN bank** path:
+
+| Use | Path |
+|-----|------|
+| Name enquiry | `POST /1.0/payout/direct-deposit/recipient/verify` — example **is NGN**: `NGA` + `NGN` + `BANK_TRANSFER` + `institution.identifier` + `account_number` |
+| Send | `POST /1.0/payout/direct-deposit/send` — needs `wallet_key`, `country_code`, **`wave_token`**, `recipient`, `reference` (NGN send body not shown; schema in docs is messy) |
+| Verify / list | `/1.0/payout/direct-deposit/transactions/verify` and `/list` |
+
+`wave_token` is required on send; token mint is under Wallet → Wave Token (not fully specified in the pasted list).
+
+### Explicitly ignore from the pasted catalog
+
+Currency convert/compare · Exchange verify/list/trade · Email transfer * · Wave transfer * · Verify Wave Tag/Pass · Wallet collate/compare/PND · Gift/invoice/intra (nav only).
+
+## Postman tree extras (not fully pasted)
+
+Deposit now has **Account** (Request / Query / List), **Checkout** (Request / List / Verify), **Transactions**.  
+New path: `POST /1.0/deposit/account/query` `{ reference }` — no response sample. Checkout bodies not pasted.
+
+## Gaps before build
+
+- Exact NGN **deposit/request** or **checkout/request** body + response (VA vs one-off). Still no NGA example.
+- How to **create/save `account_id`** (beneficiary) for withdrawal to any NUBAN.
+- Resources / Nigerian bank `institution.identifier` list.
+- 3D-Auth hook string from Waverlite Settings → API & Webhook.
+- Webhook direction + inbound auth.
+- Whether we use Withdrawal (saved account) or Direct-deposit (name enquiry + `wave_token`) for merchant payouts.
 
 ## Status
 
-**Not implemented yet.** User asked to remember isolation + NGN-only scope before any coding.
+Docs studied. **Not implemented.** Isolation unchanged.

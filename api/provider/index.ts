@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
-import { and, count, desc, eq, ilike, inArray, or } from "drizzle-orm";
+import { and, count, desc, eq, ilike, inArray, or, sql } from "drizzle-orm";
 import { sanitizeIlikeSearchQuery } from "../../src/lib/security-config.js";
 import { db } from "../../src/db/index.js";
 import {
@@ -282,6 +282,18 @@ export async function registerProviderRoutes(app: FastifyInstance) {
                 takeRateBps: z.number().nullable(),
               })
             ),
+            liquidity: z.object({
+              pendingPayinByCurrency: z.array(
+                z.object({ currency: z.string(), amount: z.string(), count: z.number() })
+              ),
+              pendingPayoutByCurrency: z.array(
+                z.object({ currency: z.string(), amount: z.string(), count: z.number() })
+              ),
+              merchantBalancesByCurrency: z.array(
+                z.object({ currency: z.string(), amount: z.string(), count: z.number() })
+              ),
+              note: z.string(),
+            }),
             disclosures: z.object({
               basis: z.literal("gross"),
               netMarginAvailable: z.boolean(),
@@ -328,6 +340,8 @@ export async function registerProviderRoutes(app: FastifyInstance) {
                 suspended: z.number(),
               }),
               kycPending: z.number(),
+              marketKybPending: z.number(),
+              reconcileOpen: z.number(),
               approvalsPending: z.number(),
               transactions: z.object({
                 pending: z.number(),
@@ -365,6 +379,14 @@ export async function registerProviderRoutes(app: FastifyInstance) {
         db.select({ count: count() }).from(merchants).where(eq(merchants.status, "pending")),
         db.select({ count: count() }).from(merchants).where(eq(merchants.status, "suspended")),
         db.select({ count: count() }).from(merchants).where(eq(merchants.kycStatus, "pending")),
+      ]);
+      const {
+        countMarketKybPendingMerchants,
+        countReconcileQueueOpen,
+      } = await import("../../src/lib/provider-ops-queues.js");
+      const [marketKybPending, reconcileOpen] = await Promise.all([
+        countMarketKybPendingMerchants(),
+        countReconcileQueueOpen(),
       ]);
       const [approvalsPending] = await db
         .select({ count: count() })
@@ -425,6 +447,8 @@ export async function registerProviderRoutes(app: FastifyInstance) {
             suspended: Number(merchantsSuspended?.[0]?.count ?? 0),
           },
           kycPending: Number(kycPending?.[0]?.count ?? 0),
+          marketKybPending,
+          reconcileOpen,
           approvalsPending: Number(approvalsPending?.count ?? 0),
           transactions: {
             pending: Number(txPending?.[0]?.count ?? 0),
@@ -442,6 +466,128 @@ export async function registerProviderRoutes(app: FastifyInstance) {
         })),
         myActions,
       };
+    }
+  );
+
+  const reconcileActionSchema = z
+    .object({
+      method: z.enum(["GET", "POST"]),
+      path: z.string(),
+      body: z.record(z.string()).optional(),
+    })
+    .nullable();
+
+  app.get(
+    "/provider/kyc-queue",
+    {
+      schema: {
+        querystring: z.object({
+          reason: z.enum(["global", "market", "all"]).default("all"),
+          market: z.enum(["bangladesh", "india", "europe", "brazil", "pyusd"]).optional(),
+          limit: z.coerce.number().min(1).max(100).default(20),
+          offset: z.coerce.number().min(0).default(0),
+        }),
+        response: {
+          200: z.object({
+            items: z.array(
+              z.object({
+                merchantId: z.string(),
+                slug: z.string(),
+                name: z.string(),
+                status: z.string(),
+                globalKycStatus: z.string(),
+                queueReasons: z.array(
+                  z.enum(["global_kyc_pending", "market_requested", "market_kyb_in_review"])
+                ),
+                marketsNeedingReview: z.array(
+                  z.object({
+                    market: z.string(),
+                    displayName: z.string(),
+                    entitlementStatus: z.string(),
+                    kybStatus: z.string(),
+                    requestedAt: z.string().nullable(),
+                  })
+                ),
+                createdAt: z.string(),
+              })
+            ),
+            total: z.number(),
+            limit: z.number(),
+            offset: z.number(),
+          }),
+          401: errorResponse,
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!ensureProviderPermission(request, reply, "merchant.read")) return;
+      const q = request.query as {
+        reason: "global" | "market" | "all";
+        market?: "bangladesh" | "india" | "europe" | "brazil" | "pyusd";
+        limit: number;
+        offset: number;
+      };
+      const { buildKycQueue } = await import("../../src/lib/provider-ops-queues.js");
+      const result = await buildKycQueue(q);
+      return { ...result, limit: q.limit, offset: q.offset };
+    }
+  );
+
+  app.get(
+    "/provider/reconcile/queue",
+    {
+      schema: {
+        querystring: z.object({
+          environment: z.enum(["test", "live"]).optional(),
+          rail: z.enum(["bangladesh", "brazil", "india", "europe", "pyusd", "internal", "unknown"]).optional(),
+          limit: z.coerce.number().min(1).max(100).default(20),
+          offset: z.coerce.number().min(0).default(0),
+        }),
+        response: {
+          200: z.object({
+            items: z.array(
+              z.object({
+                id: z.string(),
+                merchantId: z.string(),
+                merchantName: z.string(),
+                type: z.string(),
+                status: z.string(),
+                amount: z.string(),
+                paidAmount: z.string().nullable(),
+                currency: z.string(),
+                environment: z.string(),
+                provider: z.string().nullable(),
+                platformOrderId: z.string().nullable(),
+                reviewRequired: z.boolean(),
+                reconcileStatus: z.enum(["open", "settled", "failed", "review_required"]),
+                rail: z.string(),
+                railLabel: z.string(),
+                ageSeconds: z.number(),
+                reconcileAction: reconcileActionSchema,
+                inspectAction: reconcileActionSchema,
+                createdAt: z.string(),
+                updatedAt: z.string(),
+              })
+            ),
+            total: z.number(),
+            limit: z.number(),
+            offset: z.number(),
+          }),
+          401: errorResponse,
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!ensureProviderPermission(request, reply, "tx.read")) return;
+      const q = request.query as {
+        environment?: "test" | "live";
+        rail?: "bangladesh" | "brazil" | "india" | "europe" | "pyusd" | "internal" | "unknown";
+        limit: number;
+        offset: number;
+      };
+      const { buildReconcileQueue } = await import("../../src/lib/provider-ops-queues.js");
+      const result = await buildReconcileQueue(q);
+      return { ...result, limit: q.limit, offset: q.offset };
     }
   );
 
@@ -773,9 +919,21 @@ export async function registerProviderRoutes(app: FastifyInstance) {
                 amount: z.string(),
                 paidAmount: z.string().nullable(),
                 currency: z.string(),
+                settlementCurrency: z.string(),
+                rail: z.string(),
+                railLabel: z.string(),
+                platformOrderId: z.string().nullable(),
+                customerWalletId: z.string().nullable(),
                 createdAt: z.string(),
+                completedAt: z.string().nullable(),
               })
             ),
+            txSummary: z.object({
+              total: z.number(),
+              pending: z.number(),
+              success: z.number(),
+              failed: z.number(),
+            }),
             actions: z.array(z.string()),
           }),
           401: errorResponse,
@@ -833,13 +991,40 @@ export async function registerProviderRoutes(app: FastifyInstance) {
             amount: transactions.amount,
             paidAmount: transactions.paidAmount,
             currency: transactions.currency,
+            provider: transactions.provider,
+            externalId: transactions.externalId,
+            walletId: transactions.walletId,
+            metadata: transactions.metadata,
             createdAt: transactions.createdAt,
+            updatedAt: transactions.updatedAt,
           })
           .from(transactions)
           .where(eq(transactions.walletId, walletId))
           .orderBy(desc(transactions.createdAt))
           .limit(50),
       ]);
+
+      const { presentTransactionListItems } = await import("../../src/lib/present-transaction.js");
+      const presentedTxs = await presentTransactionListItems({
+        merchantId,
+        environment: row.environment as "test" | "live",
+        rows: txRows,
+      });
+      const [txCounts] = await db
+        .select({
+          total: count(),
+          pending: sql<number>`count(*) filter (where ${transactions.status} = 'pending')`,
+          success: sql<number>`count(*) filter (where ${transactions.status} = 'success')`,
+          failed: sql<number>`count(*) filter (where ${transactions.status} = 'failed')`,
+        })
+        .from(transactions)
+        .where(eq(transactions.walletId, walletId));
+      const txSummary = {
+        total: Number(txCounts?.total ?? 0),
+        pending: Number(txCounts?.pending ?? 0),
+        success: Number(txCounts?.success ?? 0),
+        failed: Number(txCounts?.failed ?? 0),
+      };
 
       const actor = request.provider!;
       const actions = [
@@ -869,15 +1054,8 @@ export async function registerProviderRoutes(app: FastifyInstance) {
           referenceId: l.referenceId ?? null,
           createdAt: l.createdAt.toISOString(),
         })),
-        transactions: txRows.map((t) => ({
-          id: t.id,
-          type: t.type,
-          status: t.status,
-          amount: String(t.amount),
-          paidAmount: t.paidAmount ? String(t.paidAmount) : null,
-          currency: t.currency,
-          createdAt: t.createdAt.toISOString(),
-        })),
+        transactions: presentedTxs,
+        txSummary,
         actions,
       };
     }
@@ -1236,23 +1414,83 @@ export async function registerProviderRoutes(app: FastifyInstance) {
     "suspended",
   ] as const;
   const MARKET_KYB = ["not_started", "pending", "verified", "rejected"] as const;
+  const MARKET_ACTIVATION = ["active", "not_enabled", "pending_kyb", "suspended"] as const;
+  const MARKET_BLOCKERS = [
+    "not_requested",
+    "awaiting_review",
+    "kyb_pending",
+    "kyb_rejected",
+    "global_kyc_pending",
+    "suspended",
+    "wallet_not_provisioned",
+  ] as const;
 
   const providerMarketRowSchema = z.object({
     market: z.enum(MARKET_IDS),
+    displayName: z.string(),
     entitlementStatus: z.enum(MARKET_ENTITLEMENT),
     kybStatus: z.enum(MARKET_KYB),
+    activationStatus: z.enum(MARKET_ACTIVATION),
+    canRequest: z.boolean(),
+    ready: z.boolean(),
+    unlockReason: z.string().nullable(),
+    blockers: z.array(
+      z.object({
+        code: z.enum(MARKET_BLOCKERS),
+        message: z.string(),
+      })
+    ),
+    walletsProvisioned: z.boolean(),
     requestedAt: z.string().nullable(),
     approvedAt: z.string().nullable(),
     settlementCurrencies: z.array(z.string()),
   });
+
+  function serializeProviderMarketRow(r: {
+    market: (typeof MARKET_IDS)[number];
+    displayName: string;
+    entitlementStatus: (typeof MARKET_ENTITLEMENT)[number];
+    kybStatus: (typeof MARKET_KYB)[number];
+    activationStatus: (typeof MARKET_ACTIVATION)[number];
+    canRequest: boolean;
+    ready: boolean;
+    unlockReason: string | null;
+    blockers: Array<{ code: (typeof MARKET_BLOCKERS)[number]; message: string }>;
+    walletsProvisioned: boolean;
+    requestedAt: Date | null;
+    approvedAt: Date | null;
+    settlementCurrencies: string[];
+  }) {
+    return {
+      market: r.market,
+      displayName: r.displayName,
+      entitlementStatus: r.entitlementStatus,
+      kybStatus: r.kybStatus,
+      activationStatus: r.activationStatus,
+      canRequest: r.canRequest,
+      ready: r.ready,
+      unlockReason: r.unlockReason,
+      blockers: r.blockers,
+      walletsProvisioned: r.walletsProvisioned,
+      requestedAt: r.requestedAt?.toISOString() ?? null,
+      approvedAt: r.approvedAt?.toISOString() ?? null,
+      settlementCurrencies: r.settlementCurrencies,
+    };
+  }
 
   app.get(
     "/provider/merchants/:merchantId/markets",
     {
       schema: {
         params: z.object({ merchantId: merchantRefParamSchema }),
+        querystring: z.object({
+          environment: z.enum(["test", "live"]).default("live"),
+        }),
         response: {
-          200: z.object({ items: z.array(providerMarketRowSchema) }),
+          200: z.object({
+            globalKycStatus: z.string(),
+            items: z.array(providerMarketRowSchema),
+          }),
           401: errorResponse,
           404: errorResponse,
         },
@@ -1261,23 +1499,104 @@ export async function registerProviderRoutes(app: FastifyInstance) {
     async (request, reply) => {
       if (!ensureProviderPermission(request, reply, "merchant.read")) return;
       const { merchantId: merchantRef } = request.params as { merchantId: string };
+      const { environment } = request.query as { environment: "test" | "live" };
 
       const resolved = await resolveMerchantParam(merchantRef, reply);
       if (!resolved) return;
       const { merchantId } = resolved;
 
-      const { listMerchantMarkets, MARKET_SETTLEMENT_CURRENCIES } = await import(
-        "../../src/lib/merchant-markets.js"
-      );
-      const rows = await listMerchantMarkets(merchantId);
+      const { buildMerchantMarketBoard } = await import("../../src/lib/merchant-markets.js");
+      const board = await buildMerchantMarketBoard({ merchantId, environment });
       return {
-        items: rows.map((r) => ({
-          market: r.market,
-          entitlementStatus: r.entitlementStatus,
-          kybStatus: r.kybStatus,
-          requestedAt: r.requestedAt?.toISOString() ?? null,
-          approvedAt: r.approvedAt?.toISOString() ?? null,
-          settlementCurrencies: [...MARKET_SETTLEMENT_CURRENCIES[r.market]],
+        globalKycStatus: board.globalKycStatus,
+        items: board.items.map(serializeProviderMarketRow),
+      };
+    }
+  );
+
+  app.get(
+    "/provider/merchants/:merchantId/services",
+    {
+      schema: {
+        params: z.object({ merchantId: merchantRefParamSchema }),
+        querystring: z.object({
+          environment: z.enum(["test", "live"]).default("live"),
+        }),
+        response: {
+          200: z.object({
+            environment: z.enum(["test", "live"]),
+            globalKycStatus: z.string(),
+            markets: z.array(providerMarketRowSchema),
+            wallets: z.array(
+              z.object({
+                id: z.string(),
+                currency: z.string(),
+                balance: z.string(),
+                availableBalance: z.string(),
+                pendingBalance: z.string(),
+                status: z.string(),
+                displayLabel: z.string(),
+                market: z.enum(MARKET_IDS),
+                entitlementStatus: z.string(),
+                kybStatus: z.string(),
+                activationStatus: z.enum(MARKET_ACTIVATION),
+                walletActivated: z.boolean(),
+                unlockReason: z.string().nullable(),
+                blockers: z.array(
+                  z.object({
+                    code: z.string(),
+                    message: z.string(),
+                  })
+                ),
+              })
+            ),
+          }),
+          401: errorResponse,
+          404: errorResponse,
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!ensureProviderPermission(request, reply, "merchant.read")) return;
+      const { merchantId: merchantRef } = request.params as { merchantId: string };
+      const { environment } = request.query as { environment: "test" | "live" };
+
+      const resolved = await resolveMerchantParam(merchantRef, reply);
+      if (!resolved) return;
+      const { merchantId } = resolved;
+
+      const { buildMerchantServicesBoard } = await import("../../src/lib/merchant-markets.js");
+      const { sumPendingPayinAmountsByCurrency } = await import(
+        "../../src/lib/merchant-pending-balance.js"
+      );
+      const pendingByCurrency = await sumPendingPayinAmountsByCurrency({
+        merchantId,
+        environment,
+      });
+      const board = await buildMerchantServicesBoard({
+        merchantId,
+        environment,
+        pendingByCurrency,
+      });
+      return {
+        environment: board.environment,
+        globalKycStatus: board.globalKycStatus,
+        markets: board.markets.map(serializeProviderMarketRow),
+        wallets: board.wallets.map((w) => ({
+          id: w.id,
+          currency: w.currency,
+          balance: w.balance,
+          availableBalance: w.availableBalance,
+          pendingBalance: w.pendingBalance,
+          status: w.status,
+          displayLabel: w.displayLabel,
+          market: w.market,
+          entitlementStatus: w.entitlementStatus,
+          kybStatus: w.kybStatus,
+          activationStatus: w.activationStatus,
+          walletActivated: w.walletActivated,
+          unlockReason: w.unlockReason,
+          blockers: w.blockers,
         })),
       };
     }
@@ -1297,13 +1616,7 @@ export async function registerProviderRoutes(app: FastifyInstance) {
           reason: z.string().max(500).optional(),
         }),
         response: {
-          200: z.object({
-            market: z.enum(MARKET_IDS),
-            entitlementStatus: z.enum(MARKET_ENTITLEMENT),
-            kybStatus: z.enum(MARKET_KYB),
-            requestedAt: z.string().nullable(),
-            approvedAt: z.string().nullable(),
-          }),
+          200: providerMarketRowSchema,
           401: errorResponse,
           404: errorResponse,
         },
@@ -1325,8 +1638,10 @@ export async function registerProviderRoutes(app: FastifyInstance) {
       if (!resolved) return;
       const { merchantId } = resolved;
 
-      const { setMerchantMarketByProvider } = await import("../../src/lib/merchant-markets.js");
-      const row = await setMerchantMarketByProvider({
+      const { setMerchantMarketByProvider, buildMerchantMarketBoard } = await import(
+        "../../src/lib/merchant-markets.js"
+      );
+      await setMerchantMarketByProvider({
         merchantId,
         market,
         entitlementStatus: body.entitlementStatus,
@@ -1334,13 +1649,9 @@ export async function registerProviderRoutes(app: FastifyInstance) {
         actor: body.reason ? `provider:${body.reason}` : "provider",
       });
 
-      return {
-        market: row.market,
-        entitlementStatus: row.entitlementStatus,
-        kybStatus: row.kybStatus,
-        requestedAt: row.requestedAt?.toISOString() ?? null,
-        approvedAt: row.approvedAt?.toISOString() ?? null,
-      };
+      const board = await buildMerchantMarketBoard({ merchantId, environment: "live" });
+      const row = board.items.find((r) => r.market === market)!;
+      return serializeProviderMarketRow(row);
     }
   );
 
@@ -2127,17 +2438,34 @@ export async function registerProviderRoutes(app: FastifyInstance) {
             merchantId: z.string(),
             merchantName: z.string(),
             walletId: z.string().nullable(),
+            customer: z
+              .object({
+                walletId: z.string(),
+                label: z.string().nullable(),
+              })
+              .nullable(),
             type: z.string(),
             status: z.string(),
             amount: z.string(),
             paidAmount: z.string().nullable(),
             currency: z.string(),
+            settlementCurrency: z.string(),
             environment: z.string(),
             provider: z.string().nullable(),
             platformOrderId: z.string().nullable(),
             reviewRequired: z.boolean(),
+            reconcileStatus: z.enum(["open", "settled", "failed", "review_required"]),
             rail: transactionRailFieldsSchema.shape.rail,
             railLabel: z.string(),
+            fees: z
+              .object({
+                platformFee: z.string(),
+                feeType: z.enum(["payin", "payout"]),
+                feeStatus: z.enum(["none", "estimated", "applied"]),
+              })
+              .optional(),
+            netAmount: z.string().nullable().optional(),
+            totalWalletDebit: z.string().nullable().optional(),
             metadata: z.record(z.unknown()).nullable(),
             createdAt: z.string(),
             updatedAt: z.string(),
@@ -2184,22 +2512,77 @@ export async function registerProviderRoutes(app: FastifyInstance) {
         metadata: row.metadata,
       });
 
-      return {
+      const {
+        presentTransactionListItemBase,
+        reconcileStatusFromTransaction,
+      } = await import("../../src/lib/present-transaction.js");
+      const {
+        buildTransactionFeeBreakdown,
+        feeSummaryFromBreakdown,
+      } = await import("../../src/lib/billing/transaction-fee-breakdown.js");
+
+      const presented = presentTransactionListItemBase({
         id: row.id,
-        merchantId: row.merchantId,
-        merchantName: row.merchantName,
+        type: row.type,
+        status: row.status,
+        amount: row.amount,
+        paidAmount: row.paidAmount,
+        currency: row.currency,
+        provider: row.provider,
+        externalId: row.externalId,
         walletId: row.walletId,
+        metadata: row.metadata,
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
+      });
+
+      const feeBreakdown = await buildTransactionFeeBreakdown({
+        merchantId: row.merchantId,
+        environment: row.environment as "test" | "live",
+        transactionId: row.id,
         type: row.type,
         status: row.status,
         amount: String(row.amount),
         paidAmount: row.paidAmount ? String(row.paidAmount) : null,
         currency: row.currency,
+        provider: row.provider,
+        metadata: row.metadata,
+      });
+      const feeSummary = feeSummaryFromBreakdown(feeBreakdown);
+
+      let customer: { walletId: string; label: string | null } | null = null;
+      if (row.walletId) {
+        const [cw] = await db
+          .select({ id: wallets.id, label: wallets.label })
+          .from(wallets)
+          .where(eq(wallets.id, row.walletId))
+          .limit(1);
+        if (cw) customer = { walletId: cw.id, label: cw.label };
+      }
+
+      return {
+        id: row.id,
+        merchantId: row.merchantId,
+        merchantName: row.merchantName,
+        walletId: row.walletId,
+        customer,
+        type: row.type,
+        status: row.status,
+        amount: String(row.amount),
+        paidAmount: row.paidAmount ? String(row.paidAmount) : null,
+        currency: row.currency,
+        settlementCurrency: presented.settlementCurrency,
         environment: row.environment,
         provider: row.provider,
         platformOrderId: row.externalId,
         reviewRequired: isReviewRequired(row.metadata),
+        reconcileStatus: reconcileStatusFromTransaction({
+          status: row.status,
+          metadata: row.metadata,
+        }),
         rail: rail.rail,
         railLabel: rail.railLabel,
+        ...feeSummary,
         metadata: parseTransactionMetadata(row.metadata),
         createdAt: row.createdAt.toISOString(),
         updatedAt: row.updatedAt.toISOString(),
@@ -2370,6 +2753,7 @@ export async function registerProviderRoutes(app: FastifyInstance) {
         querystring: z.object({
           status: z.enum(APPROVAL_STATUS).optional(),
           actionType: z.enum(APPROVAL_ACTION).optional(),
+          merchantId: z.string().uuid().optional(),
           limit: z.coerce.number().min(1).max(100).default(20),
           offset: z.coerce.number().min(0).default(0),
         }),
@@ -2382,6 +2766,7 @@ export async function registerProviderRoutes(app: FastifyInstance) {
                 status: z.string(),
                 resourceType: z.string(),
                 resourceId: z.string(),
+                merchantId: z.string().nullable(),
                 ticketId: z.string().nullable(),
                 riskLevel: z.string(),
                 reason: z.string().nullable(),
@@ -2391,6 +2776,7 @@ export async function registerProviderRoutes(app: FastifyInstance) {
                 payload: z.record(z.unknown()),
                 createdAt: z.string(),
                 updatedAt: z.string(),
+                reviewPath: z.string(),
               })
             ),
             total: z.number(),
@@ -2404,46 +2790,58 @@ export async function registerProviderRoutes(app: FastifyInstance) {
     },
     async (request, reply) => {
       if (!ensureProviderPermission(request, reply, "approval.read")) return;
-      const { status, actionType, limit, offset } = request.query as {
+      const { status, actionType, merchantId, limit, offset } = request.query as {
         status?: (typeof APPROVAL_STATUS)[number];
         actionType?: (typeof APPROVAL_ACTION)[number];
+        merchantId?: string;
         limit: number;
         offset: number;
       };
       const conditions = [];
       if (status) conditions.push(eq(providerActionRequests.status, status));
       if (actionType) conditions.push(eq(providerActionRequests.actionType, actionType));
+      if (merchantId) {
+        conditions.push(sql`(${providerActionRequests.payload}::json->>'merchantId') = ${merchantId}`);
+      }
+
+      const whereClause = conditions.length ? and(...conditions) : undefined;
 
       const [totalResult] = await db
         .select({ count: count() })
         .from(providerActionRequests)
-        .where(conditions.length ? and(...conditions) : undefined);
+        .where(whereClause);
 
       const rows = await db
         .select()
         .from(providerActionRequests)
-        .where(conditions.length ? and(...conditions) : undefined)
+        .where(whereClause)
         .orderBy(desc(providerActionRequests.createdAt))
         .limit(limit)
         .offset(offset);
 
       return {
-        items: rows.map((r) => ({
-          id: r.id,
-          actionType: r.actionType,
-          status: r.status,
-          resourceType: r.resourceType,
-          resourceId: r.resourceId,
-          ticketId: r.ticketId,
-          riskLevel: r.riskLevel,
-          reason: r.reason,
-          rejectedReason: r.rejectedReason,
-          requestedBy: r.requestedBy,
-          approvedBy: r.approvedBy,
-          payload: parsePayload(r.payload),
-          createdAt: r.createdAt.toISOString(),
-          updatedAt: r.updatedAt.toISOString(),
-        })),
+        items: rows.map((r) => {
+          const payload = parsePayload(r.payload);
+          const mid = typeof payload.merchantId === "string" ? payload.merchantId : null;
+          return {
+            id: r.id,
+            actionType: r.actionType,
+            status: r.status,
+            resourceType: r.resourceType,
+            resourceId: r.resourceId,
+            merchantId: mid,
+            ticketId: r.ticketId,
+            riskLevel: r.riskLevel,
+            reason: r.reason,
+            rejectedReason: r.rejectedReason,
+            requestedBy: r.requestedBy,
+            approvedBy: r.approvedBy,
+            payload,
+            createdAt: r.createdAt.toISOString(),
+            updatedAt: r.updatedAt.toISOString(),
+            reviewPath: `/provider/approvals/${r.id}`,
+          };
+        }),
         total: Number(totalResult?.count ?? 0),
         limit,
         offset,

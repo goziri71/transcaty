@@ -52,6 +52,7 @@ export type PortalStepUpAction =
   | "api_keys.write"
   | "webhook.write"
   | "money.write"
+  | "audit.export"
   | "any";
 
 declare module "fastify" {

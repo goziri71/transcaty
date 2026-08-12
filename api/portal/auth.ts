@@ -679,6 +679,7 @@ export async function registerPortalAuthRoutes(app: FastifyInstance) {
     "api_keys.write",
     "webhook.write",
     "money.write",
+    "audit.export",
     "any",
   ] as const satisfies readonly PortalStepUpAction[];
 

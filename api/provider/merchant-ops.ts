@@ -310,9 +310,10 @@ export async function registerProviderMerchantOpsRoutes(app: FastifyInstance) {
       schema: {
         params: z.object({ merchantId: merchantRefParamSchema }),
         querystring: z.object({
-          limit: z.coerce.number().min(1).max(100).default(20),
+          limit: z.coerce.number().min(1).max(5000).default(20),
           offset: z.coerce.number().min(0).default(0),
           action: z.string().min(1).max(100).optional(),
+          format: z.enum(["json", "csv"]).default("json"),
         }),
         response: {
           200: z.object({
@@ -338,10 +339,11 @@ export async function registerProviderMerchantOpsRoutes(app: FastifyInstance) {
     async (request, reply) => {
       if (!ensurePermission(request, reply, "merchant.read")) return;
       const { merchantId: merchantRef } = request.params as { merchantId: string };
-      const { limit, offset, action } = request.query as {
+      const { limit, offset, action, format } = request.query as {
         limit: number;
         offset: number;
         action?: string;
+        format: "json" | "csv";
       };
 
       const merchantId = await merchantIdFromRef(merchantRef, reply);
@@ -360,8 +362,31 @@ export async function registerProviderMerchantOpsRoutes(app: FastifyInstance) {
         .from(merchantAuditLog)
         .where(and(...conditions))
         .orderBy(desc(merchantAuditLog.createdAt))
-        .limit(limit)
+        .limit(format === "csv" ? Math.min(limit, 5000) : Math.min(limit, 100))
         .offset(offset);
+
+      if (format === "csv") {
+        const header = ["id", "action", "resource", "actorEmail", "meta", "createdAt"];
+        const esc = (v: string) => (/[",\n\r]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
+        const lines = [header.join(",")];
+        for (const r of rows) {
+          lines.push(
+            [
+              r.id,
+              r.action,
+              r.resource ?? "",
+              r.actorEmail ?? "",
+              r.meta == null ? "" : JSON.stringify(r.meta),
+              r.createdAt.toISOString(),
+            ]
+              .map((c) => esc(String(c)))
+              .join(",")
+          );
+        }
+        reply.header("content-type", "text/csv; charset=utf-8");
+        reply.header("content-disposition", 'attachment; filename="merchant-audit-log.csv"');
+        return reply.send(lines.join("\n") + "\n");
+      }
 
       return {
         items: rows.map((r) => ({
@@ -418,6 +443,66 @@ export async function registerProviderMerchantOpsRoutes(app: FastifyInstance) {
         webhookUrl: m.webhookUrl,
         webhookConfigured: !!(m.webhookUrl && m.webhookSecretEnc),
       };
+    }
+  );
+
+  app.get(
+    "/provider/merchants/:merchantId/webhook/deliveries",
+    {
+      schema: {
+        params: z.object({ merchantId: merchantRefParamSchema }),
+        querystring: z.object({
+          limit: z.coerce.number().min(1).max(100).default(20),
+          offset: z.coerce.number().min(0).default(0),
+          status: z.enum(["pending", "success", "failed"]).optional(),
+        }),
+        response: {
+          200: z.object({
+            items: z.array(
+              z.object({
+                id: z.string(),
+                eventType: z.string(),
+                transactionId: z.string().nullable(),
+                targetUrl: z.string(),
+                status: z.string(),
+                httpStatus: z.number().nullable(),
+                responseBody: z.string().nullable(),
+                error: z.string().nullable(),
+                attempt: z.number(),
+                createdAt: z.string(),
+                deliveredAt: z.string().nullable(),
+              })
+            ),
+            total: z.number(),
+            lastError: z.string().nullable(),
+            limit: z.number(),
+            offset: z.number(),
+          }),
+          401: errorResponse,
+          404: errorResponse,
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!ensurePermission(request, reply, "merchant.read")) return;
+      const { merchantId: merchantRef } = request.params as { merchantId: string };
+      const q = request.query as {
+        limit: number;
+        offset: number;
+        status?: "pending" | "success" | "failed";
+      };
+
+      const merchantId = await merchantIdFromRef(merchantRef, reply);
+      if (!merchantId) return;
+
+      const { listMerchantWebhookDeliveries } = await import("../../src/lib/merchant-webhook.js");
+      const result = await listMerchantWebhookDeliveries({
+        merchantId,
+        limit: q.limit,
+        offset: q.offset,
+        status: q.status,
+      });
+      return { ...result, limit: q.limit, offset: q.offset };
     }
   );
 
