@@ -43,11 +43,11 @@ test("evaluateMerchantIpAllowlist blocks unknown IP in strict mode", () => {
   );
 });
 
-test("evaluateMerchantIpAllowlist allows matching IP in strict mode", () => {
+test("evaluateMerchantIpAllowlist allows high-octet exact IP in strict mode", () => {
   assert.deepEqual(
     evaluateMerchantIpAllowlist(
-      { enabled: true, enforceMode: "strict", cidrs: ["203.0.113.0/24"] },
-      "203.0.113.10"
+      { enabled: true, enforceMode: "strict", cidrs: ["223.239.59.244"] },
+      "223.239.59.244"
     ),
     { allowed: true }
   );
