@@ -227,7 +227,24 @@ export function merchantPaymentFlowErrorResponse(err: unknown): MerchantFacingRe
     };
   }
 
-  if (msg === "Tylt is not configured") {
+  if (
+    msg === "Tylt is not configured" ||
+    /Tylt credentials are not configured/i.test(msg) ||
+    /Tylt (pay-in|payout) credentials are not configured/i.test(msg) ||
+    /Tekko credentials not configured/i.test(msg)
+  ) {
+    return {
+      status: 503,
+      body: {
+        error: "Service Unavailable",
+        message: PAYMENT_UNAVAILABLE,
+        code: "payment_unavailable",
+      },
+      logDetail: msg,
+    };
+  }
+
+  if (/\b(tylt|tekko)\b/i.test(msg) && /request failed after/i.test(msg)) {
     return {
       status: 503,
       body: {

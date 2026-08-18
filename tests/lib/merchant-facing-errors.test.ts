@@ -78,4 +78,21 @@ describe("merchantPaymentFlowErrorResponse", () => {
     assert.equal(mapped.body.code, "payment_unavailable");
     assert.equal(mapped.logDetail, "TekkoStaticProxyNotConfiguredError");
   });
+
+  it("maps Tylt profile credential gaps to payment_unavailable", () => {
+    const err = new Error(
+      "Tylt credentials are not configured for profile eur_payin (set TYLT_*_EUR_PAYIN_API_KEY and TYLT_*_EUR_PAYIN_API_SECRET, or fallbacks)"
+    );
+    const mapped = merchantPaymentFlowErrorResponse(err);
+    assert.equal(mapped.status, 503);
+    assert.equal(mapped.body.code, "payment_unavailable");
+    assert.equal(mapped.logDetail, err.message);
+  });
+
+  it("maps Tylt outbound transport failures to payment_unavailable", () => {
+    const err = new Error("tylt POST /v2/prime-fiat/instance/payin request failed after 3 attempt(s): fetch failed");
+    const mapped = merchantPaymentFlowErrorResponse(err);
+    assert.equal(mapped.status, 503);
+    assert.equal(mapped.body.code, "payment_unavailable");
+  });
 });

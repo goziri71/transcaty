@@ -12,8 +12,10 @@ import {
 } from "../../../src/lib/billing/transaction-fee-breakdown.js";
 import { addAmount } from "../../../src/lib/money.js";
 import type { WebhookEvent } from "../../../src/lib/merchant-webhook.js";
+import { UpstreamProviderClientError } from "../../../src/lib/merchant-facing-errors.js";
 import { tyltSignedPostJson } from "./client.js";
-import type { TyltMerchantEnvironment } from "./config.js";
+import { pickTyltJsonPrimaryMessage } from "./h2h-upi.js";
+import { assertTyltConfiguredForProfile, type TyltMerchantEnvironment } from "./config.js";
 import {
   classifyEurPayinDecision,
   extractEurCreateInstanceResponse,
@@ -68,6 +70,8 @@ export async function createTyltEurPayinInstance(params: {
   cryptoAmount: string | null;
   rate: number | null;
 }> {
+  assertTyltConfiguredForProfile(params.environment, "eur_payin");
+
   const callBackUrl = `${params.baseUrl.replace(/\/$/, "")}/webhooks/tylt/eur-payin/${params.environment}`;
   const merchantDetails =
     params.merchantDetails ??
@@ -113,19 +117,40 @@ export async function createTyltEurPayinInstance(params: {
     cryptoUi: params.cryptoUi ?? 1,
   };
 
-  const { status, json } = await tyltSignedPostJson<Record<string, unknown>>({
-    environment: params.environment,
-    path: "/v2/prime-fiat/instance/payin",
-    body,
-    idempotencyKey: tx.id,
-    credentialProfile: "eur_payin",
-  });
+  let status: number;
+  let json: Record<string, unknown>;
+  try {
+    const posted = await tyltSignedPostJson<Record<string, unknown>>({
+      environment: params.environment,
+      path: "/v2/prime-fiat/instance/payin",
+      body,
+      idempotencyKey: tx.id,
+      credentialProfile: "eur_payin",
+    });
+    status = posted.status;
+    json = posted.json;
+  } catch (err) {
+    await db
+      .update(transactions)
+      .set({ status: "failed", updatedAt: new Date() })
+      .where(and(eq(transactions.id, tx.id), eq(transactions.status, "pending")));
+    throw err;
+  }
 
   const parsed = extractEurCreateInstanceResponse(json);
 
   if (status >= 400 || !parsed.instanceId || !parsed.checkoutUrl) {
     await db.update(transactions).set({ status: "failed", updatedAt: new Date() }).where(eq(transactions.id, tx.id));
-    throw new Error("Tylt EU pay-in create failed");
+    const merchantMsg =
+      pickTyltJsonPrimaryMessage(json) ??
+      "Payment partner could not create this pay-in. Check amount and merchant details.";
+    throw new UpstreamProviderClientError(
+      `tylt_eur_payin_create http=${status}`,
+      merchantMsg,
+      status >= 400 ? status : 502,
+      tx.id,
+      null
+    );
   }
 
   await db
