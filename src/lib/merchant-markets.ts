@@ -15,6 +15,7 @@ import {
 } from "./portal-wallet-balance.js";
 import { normalizeMoneyAmountToTwoDecimals } from "./money.js";
 import { getOrCreateMerchantWallet } from "../../services/integrations/tylt/crossramp-payin.js";
+import { isBangladeshPaymentsPaused } from "./bangladesh-rail-pause.js";
 
 export const MERCHANT_MARKETS = ["bangladesh", "india", "europe", "brazil", "pyusd"] as const;
 export type MerchantMarket = (typeof MERCHANT_MARKETS)[number];
@@ -158,6 +159,7 @@ export const MARKET_BLOCKER_CODES = [
   "global_kyc_pending",
   "suspended",
   "wallet_not_provisioned",
+  "provider_unavailable",
 ] as const;
 export type MarketBlockerCode = (typeof MARKET_BLOCKER_CODES)[number];
 
@@ -267,6 +269,14 @@ export function deriveMarketBoardFields(params: {
     );
   }
 
+  if (market.market === "bangladesh" && isBangladeshPaymentsPaused()) {
+    pushBlocker(
+      blockers,
+      "provider_unavailable",
+      "Bangladesh pay-in and payout are temporarily unavailable. Existing balances and transfers still work."
+    );
+  }
+
   const canRequest = market.entitlementStatus === "disabled";
   const hardBlocked = blockers.some(
     (b) =>
@@ -276,6 +286,7 @@ export function deriveMarketBoardFields(params: {
       b.code === "awaiting_review" ||
       b.code === "wallet_not_provisioned" ||
       b.code === "global_kyc_pending" ||
+      b.code === "provider_unavailable" ||
       (b.code === "kyb_pending" && !globalKycOk)
   );
   const ready =

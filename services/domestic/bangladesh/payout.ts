@@ -23,6 +23,7 @@ import {
 import { addAmount, assertPositive, cmpAmount, subAmount } from "../../../src/lib/money.js";
 import type { PayokEnvironment } from "./provider/config.js";
 import { assertPayoutAllowed } from "../../../src/lib/fraud-policy.js";
+import { assertBangladeshPaymentsEnabled } from "../../../src/lib/bangladesh-rail-pause.js";
 
 export class PayoutCreationError extends Error {
   transactionId: string;
@@ -139,6 +140,7 @@ export async function createPayoutOrder(params: {
   /** Dashboard-initiated payout (audit). */
   portalActor?: { merchantUserId: string; email: string };
 }) {
+  assertBangladeshPaymentsEnabled();
   assertPositive(params.amount);
 
   await assertPayoutAllowed({

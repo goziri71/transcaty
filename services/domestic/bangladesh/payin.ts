@@ -15,6 +15,7 @@ import {
 import { addAmount } from "../../../src/lib/money.js";
 import type { PayokEnvironment } from "./provider/config.js";
 import { assertPayinAllowed } from "../../../src/lib/fraud-policy.js";
+import { assertBangladeshPaymentsEnabled } from "../../../src/lib/bangladesh-rail-pause.js";
 
 export async function createPayinOrder(params: {
   merchantId: string;
@@ -29,6 +30,8 @@ export async function createPayinOrder(params: {
   /** When set, audit log includes portal user (dashboard-initiated pay-in). */
   portalActor?: { merchantUserId: string; email: string };
 }) {
+  assertBangladeshPaymentsEnabled();
+
   await assertPayinAllowed({
     merchantId: params.merchantId,
     environment: params.environment,

@@ -1423,6 +1423,7 @@ export async function registerProviderRoutes(app: FastifyInstance) {
     "global_kyc_pending",
     "suspended",
     "wallet_not_provisioned",
+    "provider_unavailable",
   ] as const;
 
   const providerMarketRowSchema = z.object({

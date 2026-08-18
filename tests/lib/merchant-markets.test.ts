@@ -48,7 +48,7 @@ describe("merchant-markets", () => {
   it("marks market ready when approved, KYC ok, wallet provisioned", () => {
     const row = deriveMarketBoardFields({
       market: {
-        market: "bangladesh",
+        market: "europe",
         entitlementStatus: "approved",
         kybStatus: "verified",
         requestedAt: null,
@@ -61,6 +61,29 @@ describe("merchant-markets", () => {
     assert.equal(row.unlockReason, null);
     assert.equal(row.canRequest, false);
     assert.equal(row.activationStatus, "active");
+  });
+
+  it("marks Bangladesh not ready while the PayOK rail is paused", () => {
+    const prev = process.env.BANGLADESH_PAYMENTS_DISABLED;
+    delete process.env.BANGLADESH_PAYMENTS_DISABLED;
+    try {
+      const row = deriveMarketBoardFields({
+        market: {
+          market: "bangladesh",
+          entitlementStatus: "approved",
+          kybStatus: "verified",
+          requestedAt: null,
+          approvedAt: new Date(),
+        },
+        globalKycStatus: "verified",
+        walletsProvisioned: true,
+      });
+      assert.equal(row.ready, false);
+      assert.equal(row.blockers[0]?.code, "provider_unavailable");
+    } finally {
+      if (prev === undefined) delete process.env.BANGLADESH_PAYMENTS_DISABLED;
+      else process.env.BANGLADESH_PAYMENTS_DISABLED = prev;
+    }
   });
 
   it("blocks suspended markets", () => {

@@ -256,6 +256,18 @@ export function merchantPaymentFlowErrorResponse(err: unknown): MerchantFacingRe
     };
   }
 
+  if (err instanceof Error && err.name === "BangladeshRailPausedError") {
+    return {
+      status: 503,
+      body: {
+        error: "Service Unavailable",
+        message: PAYMENT_UNAVAILABLE,
+        code: "payment_unavailable",
+      },
+      logDetail: err.name,
+    };
+  }
+
   if (
     err instanceof Error &&
     (err.name === "TekkoStaticProxyNotConfiguredError" || err.name === "TekkoStaticProxyInvalidError")
