@@ -138,5 +138,6 @@ Configure your webhook URL in the portal / `/v1/me/webhook` (HTTPS only).
 2. Encrypt private PEM: `npm run encrypt -- --file path/to/private.pem --name TEKKO_LIVE_PRIVATE_KEY_ENC`
 3. Copy webhook secret from Tekko → encrypt → `TEKKO_WEBHOOK_SECRET` / `_ENC`.
 4. Webhook URL: `{APP_BASE_URL}/webhooks/tekko/live`.
+5. Tekko IP allowlist: set `TEKKO_STATIC_PROXY_URL` (QuotaGuard HTTP CONNECT). Allowlist **both** QuotaGuard IPs with Tekko. Do not set process-wide `HTTP_PROXY`.
 
 - Provider: approve `pyusd` market; reconcile with `POST /provider/tekko/pyusd/reconcile`

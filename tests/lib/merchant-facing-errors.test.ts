@@ -69,4 +69,13 @@ describe("merchantPaymentFlowErrorResponse", () => {
     assert.equal(mapped.body.transactionId, "tx-br-1");
     assert.match(mapped.body.message ?? "", /Brazil\/PIX/i);
   });
+
+  it("maps missing Tekko static proxy to payment_unavailable", () => {
+    const err = new Error("Tekko static egress proxy is not configured");
+    err.name = "TekkoStaticProxyNotConfiguredError";
+    const mapped = merchantPaymentFlowErrorResponse(err);
+    assert.equal(mapped.status, 503);
+    assert.equal(mapped.body.code, "payment_unavailable");
+    assert.equal(mapped.logDetail, "TekkoStaticProxyNotConfiguredError");
+  });
 });

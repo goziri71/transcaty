@@ -91,7 +91,7 @@ export async function registerPortalPyusdRoutes(app: FastifyInstance) {
           metadata: z.record(z.string(), z.unknown()).optional(),
         }),
         response: {
-          200: z
+          201: z
             .object({
               transactionId: z.string(),
               paymentIntentId: z.string(),
@@ -132,7 +132,7 @@ export async function registerPortalPyusdRoutes(app: FastifyInstance) {
             )
           )
           .limit(1);
-        if (cached) return reply.status(200).send(JSON.parse(cached.responseSnapshot));
+        if (cached) return reply.status(201).send(JSON.parse(cached.responseSnapshot));
       }
 
       const body = request.body as {
@@ -204,7 +204,7 @@ export async function registerPortalPyusdRoutes(app: FastifyInstance) {
             /* duplicate key — ignore */
           }
         }
-        return reply.send(response);
+        return reply.status(201).send(response);
       } catch (err) {
         const rawMsg = err instanceof Error ? err.message : String(err);
         audit({

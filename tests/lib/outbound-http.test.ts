@@ -212,4 +212,13 @@ describe("outboundFetch", () => {
     );
     assert.equal(calls.length, 0, "fetch is never called when circuit is open");
   });
+
+  test("passes dispatcher through to fetch init", async () => {
+    const dispatcher = { kind: "proxy-agent-stub" };
+    mockFetch(() => new Response("ok", { status: 200 }));
+    await outboundFetch("https://example.test/x", { method: "GET" }, {
+      dispatcher: dispatcher as never,
+    });
+    assert.equal((calls[0]?.init as { dispatcher?: unknown }).dispatcher, dispatcher);
+  });
 });

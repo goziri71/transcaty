@@ -239,6 +239,21 @@ export function merchantPaymentFlowErrorResponse(err: unknown): MerchantFacingRe
     };
   }
 
+  if (
+    err instanceof Error &&
+    (err.name === "TekkoStaticProxyNotConfiguredError" || err.name === "TekkoStaticProxyInvalidError")
+  ) {
+    return {
+      status: 503,
+      body: {
+        error: "Service Unavailable",
+        message: PAYMENT_UNAVAILABLE,
+        code: "payment_unavailable",
+      },
+      logDetail: err.name,
+    };
+  }
+
   return {
     status: 500,
     body: { error: "Internal", message: GENERIC_INTERNAL, code: "internal_error" },

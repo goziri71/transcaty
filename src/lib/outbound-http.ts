@@ -19,6 +19,7 @@
  * across an outboundFetch. Always commit the local debit first, call this
  * helper, then post the success/refund in a second transaction.
  */
+import type { Dispatcher } from "undici";
 
 const DEFAULT_TIMEOUT_MS = parseEnvInt("OUTBOUND_HTTP_TIMEOUT_MS", 25_000, 1_000);
 const DEFAULT_RETRIES = parseEnvInt("OUTBOUND_HTTP_RETRIES", 2, 0);
@@ -66,6 +67,11 @@ export interface OutboundFetchOptions {
   maxResponseBytes?: number;
   /** Provider-friendly label included in error messages and metrics. */
   label?: string;
+  /**
+   * Optional undici dispatcher (e.g. ProxyAgent). Applied only to this call —
+   * never set as a process-wide proxy. PayOK/Tylt/webhooks omit this.
+   */
+  dispatcher?: Dispatcher;
 }
 
 export interface OutboundFetchResult {
@@ -212,11 +218,15 @@ export async function outboundFetch(
     const signal = AbortSignal.timeout(timeoutMs);
     let res: Response;
     try {
-      res = await fetch(url, {
+      const fetchInit: RequestInit = {
         ...init,
         headers: baseHeaders,
         signal,
-      });
+      };
+      if (options.dispatcher) {
+        fetchInit.dispatcher = options.dispatcher;
+      }
+      res = await fetch(url, fetchInit);
     } catch (err) {
       lastError = err;
       if (options.circuit) {

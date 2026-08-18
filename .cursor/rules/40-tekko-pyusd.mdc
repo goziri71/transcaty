@@ -31,6 +31,8 @@ alwaysApply: false
 
 `TEKKO_LIVE_KEY_ID` / `TEKKO_KEY_ID`, `TEKKO_LIVE_PRIVATE_KEY` (or `_ENC` / path), `TEKKO_WEBHOOK_SECRET`, optional `TEKKO_BASE_URL`, circuit `PROVIDER_CIRCUIT_TEKKO_*`.
 
+Tekko outbound IP allowlist: `TEKKO_STATIC_PROXY_URL` (or `QUOTAGUARDSTATIC_URL`) — HTTP CONNECT only, attached solely in `tekko/client.ts`. Do not set process-wide `HTTP_PROXY`. Production fails closed if unset (`TEKKO_STATIC_PROXY_REQUIRED`, default true when `NODE_ENV=production`). Allowlist both QuotaGuard IPs with Tekko.
+
 ### Credential onboarding (required before live calls work)
 
 1. **Ed25519 keypair** already generated — keep **private** key in env (`TEKKO_LIVE_PRIVATE_KEY` / `_ENC` / path). Encrypt with `npm run encrypt -- --file private.pem`.

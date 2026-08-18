@@ -8,6 +8,7 @@ import {
 import { outboundFetch } from "../../../src/lib/outbound-http.js";
 import { getTekkoLiveConfig, tekkoSignPath, type TekkoConfig } from "./config.js";
 import { signTekkoPlatformRequest } from "./sign.js";
+import { getTekkoStaticProxyDispatcher } from "./static-proxy.js";
 
 const TEKKO_CIRCUIT = getProviderCircuit(TEKKO_CIRCUIT_KEY);
 
@@ -74,6 +75,7 @@ export async function tekkoPlatformRequest(params: {
       label: params.label ?? `tekko ${params.method} ${rel}`,
       idempotencyKey,
       retries: params.method === "GET" ? 2 : 1,
+      dispatcher: getTekkoStaticProxyDispatcher(),
     }
   );
 
