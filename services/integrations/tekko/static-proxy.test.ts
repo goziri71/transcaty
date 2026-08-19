@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, test } from "node:test";
 import {
+  describeTekkoStaticProxy,
   getTekkoStaticProxyDispatcher,
   resetTekkoStaticProxyForTests,
   TekkoStaticProxyInvalidError,
@@ -67,5 +68,17 @@ describe("tekko static proxy", () => {
     const agent = getTekkoStaticProxyDispatcher();
     assert.ok(agent);
     assert.equal(getTekkoStaticProxyDispatcher(), agent);
+  });
+
+  test("describeTekkoStaticProxy omits userinfo", () => {
+    process.env.TEKKO_STATIC_PROXY_REQUIRED = "false";
+    process.env.TEKKO_STATIC_PROXY_URL = "http://user:pass@proxy.quotaguard.com:9293";
+    const d = describeTekkoStaticProxy();
+    assert.equal(d.configured, true);
+    assert.equal(d.hostname, "proxy.quotaguard.com");
+    assert.equal(d.port, "9293");
+    assert.equal(d.hasUser, true);
+    assert.equal(d.source, "TEKKO_STATIC_PROXY_URL");
+    assert.equal(JSON.stringify(d).includes("pass"), false);
   });
 });

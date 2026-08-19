@@ -46,6 +46,53 @@ export function readTekkoStaticProxyUrl(): string | undefined {
   );
 }
 
+export type TekkoStaticProxySource =
+  | "TEKKO_STATIC_PROXY_URL"
+  | "TEKKO_STATIC_PROXY_URL_ENC"
+  | "QUOTAGUARDSTATIC_URL"
+  | "QUOTAGUARDSTATIC_URL_ENC";
+
+/** Host/port only — never includes userinfo. For ops diagnostics. */
+export function describeTekkoStaticProxy(): {
+  required: boolean;
+  configured: boolean;
+  source: TekkoStaticProxySource | null;
+  protocol: string | null;
+  hostname: string | null;
+  port: string | null;
+  hasUser: boolean;
+} {
+  const required = staticProxyRequired();
+  let source: TekkoStaticProxySource | null = null;
+  if (process.env.TEKKO_STATIC_PROXY_URL?.trim()) source = "TEKKO_STATIC_PROXY_URL";
+  else if (process.env.TEKKO_STATIC_PROXY_URL_ENC?.trim()) source = "TEKKO_STATIC_PROXY_URL_ENC";
+  else if (process.env.QUOTAGUARDSTATIC_URL?.trim()) source = "QUOTAGUARDSTATIC_URL";
+  else if (process.env.QUOTAGUARDSTATIC_URL_ENC?.trim()) source = "QUOTAGUARDSTATIC_URL_ENC";
+
+  const raw = readTekkoStaticProxyUrl();
+  if (!raw) {
+    return {
+      required,
+      configured: false,
+      source,
+      protocol: null,
+      hostname: null,
+      port: null,
+      hasUser: false,
+    };
+  }
+  const parsed = validateTekkoStaticProxyUrl(raw);
+  return {
+    required,
+    configured: true,
+    source,
+    protocol: parsed.protocol.replace(/:$/, ""),
+    hostname: parsed.hostname,
+    port: parsed.port || (parsed.protocol === "https:" ? "443" : "80"),
+    hasUser: Boolean(parsed.username),
+  };
+}
+
 export function validateTekkoStaticProxyUrl(raw: string): URL {
   let parsed: URL;
   try {
