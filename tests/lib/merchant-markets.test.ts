@@ -5,9 +5,25 @@ import {
   marketForCurrency,
   isMerchantMarket,
   deriveMarketBoardFields,
+  pickOwningMarketForSharedCurrency,
+  type MerchantMarketRow,
 } from "../../src/lib/merchant-markets.js";
 
 describe("merchant-markets", () => {
+  function marketRow(
+    market: MerchantMarketRow["market"],
+    entitlementStatus: MerchantMarketRow["entitlementStatus"],
+    kybStatus: MerchantMarketRow["kybStatus"] = "verified"
+  ): MerchantMarketRow {
+    return {
+      market,
+      entitlementStatus,
+      kybStatus,
+      requestedAt: null,
+      approvedAt: entitlementStatus === "approved" ? new Date() : null,
+    };
+  }
+
   it("maps currencies to markets", () => {
     assert.equal(marketForCurrency("BDT"), "bangladesh");
     assert.equal(marketForCurrency("USDT"), "india");
@@ -100,5 +116,21 @@ describe("merchant-markets", () => {
     });
     assert.equal(row.ready, false);
     assert.equal(row.blockers[0]?.code, "suspended");
+  });
+
+  it("attributes shared USDC to PYUSD when Europe is disabled", () => {
+    const owner = pickOwningMarketForSharedCurrency(
+      [marketRow("europe", "disabled"), marketRow("pyusd", "approved")],
+      "USDC"
+    );
+    assert.equal(owner?.market, "pyusd");
+  });
+
+  it("keeps Europe as USDC owner when both Europe and PYUSD are active", () => {
+    const owner = pickOwningMarketForSharedCurrency(
+      [marketRow("europe", "approved"), marketRow("pyusd", "approved")],
+      "USDC"
+    );
+    assert.equal(owner?.market, "europe");
   });
 });

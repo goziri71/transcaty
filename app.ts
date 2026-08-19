@@ -124,6 +124,7 @@ import {
 } from "./src/lib/merchant-markets.js";
 import {
   limitsForMerchantWalletCurrency,
+  pickPrimaryPortalWalletItem,
   portalWalletBalanceItemSchema,
   presentPortalWalletBalanceItem,
 } from "./src/lib/portal-wallet-balance.js";
@@ -3662,6 +3663,7 @@ export async function buildApp() {
       schema: {
         response: {
           200: z.object({
+            environment: z.enum(["test", "live"]),
             balance: z.string(),
             availableBalance: z.string(),
             pendingBalance: z.string(),
@@ -3671,6 +3673,7 @@ export async function buildApp() {
               payin: z.object({ min: z.number(), max: z.number() }),
               payout: z.object({ min: z.number(), max: z.number() }),
             }),
+            items: z.array(portalWalletBalanceItemSchema),
           }),
           401: errorResponse,
         },
@@ -3679,11 +3682,15 @@ export async function buildApp() {
     async (request, reply) => {
       const m = request.merchant;
       if (!m) return reply.status(401).send({ error: "Unauthorized" });
-      const [wallet] = await db
+      const rows = await db
         .select({
-          balance: wallets.balance,
+          id: wallets.id,
           currency: wallets.currency,
+          balance: wallets.balance,
+          status: wallets.status,
+          label: wallets.label,
           updatedAt: wallets.updatedAt,
+          createdAt: wallets.createdAt,
         })
         .from(wallets)
         .where(
@@ -3693,32 +3700,47 @@ export async function buildApp() {
             eq(wallets.type, "merchant"),
             eq(wallets.status, "active")
           )
+        );
+      const pendingByCurrency = await sumPendingPayinAmountsByCurrency({
+        merchantId: m.merchantId,
+        environment: m.environment,
+      });
+      const items = rows.map((row) =>
+        presentPortalWalletBalanceItem(
+          {
+            id: row.id,
+            currency: row.currency,
+            balance: String(row.balance),
+            status: row.status,
+            label: row.label,
+            updatedAt: row.updatedAt,
+            createdAt: row.createdAt,
+          },
+          pendingByCurrency
         )
-        .orderBy(sql`(case when ${wallets.currency} = 'BDT' then 0 else 1 end)`)
-        .limit(1);
-      if (!wallet) {
+      );
+      const primary = pickPrimaryPortalWalletItem(items);
+      if (!primary) {
         return reply.status(200).send({
+          environment: m.environment,
           balance: "0",
           availableBalance: "0",
           pendingBalance: "0",
           currency: "BDT",
           lastUpdated: null,
           limits: limitsForMerchantWalletCurrency("BDT"),
+          items: [],
         });
       }
-      const pendingByCurrency = await sumPendingPayinAmountsByCurrency({
-        merchantId: m.merchantId,
-        environment: m.environment,
-      });
-      const bal = String(wallet.balance);
-      const pendingBalance = pendingByCurrency.get(wallet.currency) ?? "0";
       return {
-        balance: bal,
-        availableBalance: bal,
-        pendingBalance,
-        currency: wallet.currency,
-        lastUpdated: wallet.updatedAt?.toISOString() ?? null,
-        limits: limitsForMerchantWalletCurrency(wallet.currency),
+        environment: m.environment,
+        balance: primary.balance,
+        availableBalance: primary.availableBalance,
+        pendingBalance: primary.pendingBalance,
+        currency: primary.currency,
+        lastUpdated: primary.lastUpdated,
+        limits: primary.limits,
+        items,
       };
     }
   );

@@ -166,6 +166,9 @@ export function pickPrimaryPortalWalletItem(
     const aAct = a.walletActivated ? 0 : 1;
     const bAct = b.walletActivated ? 0 : 1;
     if (aAct !== bAct) return aAct - bAct;
+    const aFunded = Number(a.balance) > 0 ? 0 : 1;
+    const bFunded = Number(b.balance) > 0 ? 0 : 1;
+    if (aFunded !== bFunded) return aFunded - bFunded;
     const aBdt = a.currency.toUpperCase() === "BDT" ? 0 : 1;
     const bBdt = b.currency.toUpperCase() === "BDT" ? 0 : 1;
     if (aBdt !== bBdt) return aBdt - bBdt;

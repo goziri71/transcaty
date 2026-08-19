@@ -143,6 +143,35 @@ export function walletActivationForMarket(market: MerchantMarketRow): WalletActi
   return "not_enabled";
 }
 
+const WALLET_ACTIVATION_RANK: Record<WalletActivationStatus, number> = {
+  active: 0,
+  pending_kyb: 1,
+  suspended: 2,
+  not_enabled: 3,
+};
+
+/**
+ * Europe and PYUSD both settle USDC (one wallet row). Attribute the card to the
+ * market that is actually usable — not whichever appears first in MERCHANT_MARKETS.
+ * If both are active, Europe stays the owner (payouts spend that pocket).
+ */
+export function pickOwningMarketForSharedCurrency(
+  markets: MerchantMarketRow[],
+  currency: string
+): MerchantMarketRow | null {
+  const key = currency.trim().toUpperCase();
+  const owners = markets.filter((m) =>
+    MARKET_SETTLEMENT_CURRENCIES[m.market].some((c) => c.trim().toUpperCase() === key)
+  );
+  if (owners.length === 0) return null;
+  return [...owners].sort((a, b) => {
+    const rankA = WALLET_ACTIVATION_RANK[walletActivationForMarket(a)];
+    const rankB = WALLET_ACTIVATION_RANK[walletActivationForMarket(b)];
+    if (rankA !== rankB) return rankA - rankB;
+    return MERCHANT_MARKETS.indexOf(a.market) - MERCHANT_MARKETS.indexOf(b.market);
+  })[0]!;
+}
+
 export const MARKET_DISPLAY_NAMES: Record<MerchantMarket, string> = {
   bangladesh: "Bangladesh",
   india: "India",
@@ -380,7 +409,9 @@ export async function provisionSettlementWalletsForMarket(
   market: MerchantMarket
 ): Promise<void> {
   const currencies = MARKET_SETTLEMENT_CURRENCIES[market];
-  for (const environment of ["test", "live"] as const) {
+  // Tekko PYUSD is live-only; do not create a test USDC pocket that can never be credited.
+  const environments: Array<"test" | "live"> = market === "pyusd" ? ["live"] : ["test", "live"];
+  for (const environment of environments) {
     for (const currency of currencies) {
       await getOrCreateMerchantWallet({ merchantId, environment, currency });
     }
@@ -588,10 +619,7 @@ function presentSlot(params: {
   const pendingBalance = normalizeMoneyAmountToTwoDecimals(pendingRaw);
   const lastUpdated = wallet?.updatedAt?.toISOString() ?? null;
   const displayLabel =
-    wallet?.label?.trim() ||
-    (market.market === "pyusd"
-      ? MARKET_DISPLAY_NAMES.pyusd
-      : merchantWalletRegionLabel(region, currency));
+    wallet?.label?.trim() || merchantWalletRegionLabel(region, currency);
 
   return {
     id: wallet?.id ?? syntheticWalletId(market.market, currency),
@@ -603,10 +631,7 @@ function presentSlot(params: {
     label: wallet?.label ?? null,
     displayLabel,
     region,
-    regionLabel:
-      market.market === "pyusd"
-        ? MARKET_DISPLAY_NAMES.pyusd
-        : merchantWalletRegionLabel(region, currency),
+    regionLabel: merchantWalletRegionLabel(region, currency),
     lastUpdated,
     updatedAt: lastUpdated,
     createdAt: (wallet?.createdAt ?? new Date(0)).toISOString(),
@@ -631,11 +656,11 @@ export async function buildPortalWalletCatalog(params: {
   const markets = await listMerchantMarkets(params.merchantId);
   const globalKycStatus =
     params.globalKycStatus ?? (await getMerchantGlobalKycStatus(params.merchantId));
-  const currencies = markets.flatMap((m) =>
-    MARKET_SETTLEMENT_CURRENCIES[m.market].map((currency) => ({ market: m, currency }))
-  );
-
-  const currencyList = [...new Set(currencies.map((c) => c.currency.trim().toUpperCase()))];
+  const currencyList = [
+    ...new Set(
+      markets.flatMap((m) => MARKET_SETTLEMENT_CURRENCIES[m.market].map((c) => c.trim().toUpperCase()))
+    ),
+  ];
   const walletRows =
     currencyList.length === 0
       ? []
@@ -665,17 +690,14 @@ export async function buildPortalWalletCatalog(params: {
   );
 
   const items: PortalWalletBalanceItem[] = [];
-  const seenCurrencies = new Set<string>();
-  for (const { market, currency } of currencies) {
-    const key = currency.trim().toUpperCase();
-    // europe + pyusd both settle USDC — one balance card per currency.
-    if (seenCurrencies.has(key)) continue;
-    seenCurrencies.add(key);
+  for (const key of currencyList) {
+    const market = pickOwningMarketForSharedCurrency(markets, key);
+    if (!market) continue;
     const w = walletByCurrency.get(key) ?? null;
     items.push(
       presentSlot({
         market,
-        currency,
+        currency: key,
         environment: params.environment,
         wallet: w,
         pendingByCurrency: params.pendingByCurrency,

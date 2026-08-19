@@ -49,6 +49,29 @@ describe("portal-wallet-balance", () => {
     assert.equal(primary?.currency, "BDT");
   });
 
+  it("prefers a funded USDC pocket over empty BDT", () => {
+    const usdc = presentPortalWalletBalanceItem({
+      id: "c",
+      currency: "USDC",
+      balance: "50.00",
+      status: "active",
+      label: null,
+      updatedAt: new Date("2026-01-01"),
+      createdAt: new Date("2026-01-01"),
+    });
+    const emptyBdt = presentPortalWalletBalanceItem({
+      id: "d",
+      currency: "BDT",
+      balance: "0",
+      status: "active",
+      label: null,
+      updatedAt: new Date("2026-01-01"),
+      createdAt: new Date("2026-01-01"),
+    });
+    const primary = pickPrimaryPortalWalletItem([emptyBdt, usdc]);
+    assert.equal(primary?.currency, "USDC");
+  });
+
   it("presents full balance card fields", () => {
     const item = presentPortalWalletBalanceItem({
       id: "w1",
