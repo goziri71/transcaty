@@ -7,7 +7,7 @@ import { and, desc, eq } from "drizzle-orm";
 import { db } from "../../src/db/index.js";
 import { merchantBlacklist } from "../../src/db/schema/index.js";
 import { audit } from "../../src/lib/audit.js";
-import { canProviderAccess } from "../../src/lib/provider-auth.js";
+import { canProviderActionContext } from "../../src/lib/provider-auth.js";
 import { merchantRefParamSchema, resolveMerchantId } from "../../src/lib/merchant-ref.js";
 
 const errorResponse = z.object({
@@ -57,8 +57,12 @@ export async function registerProviderMerchantRiskRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const actor = request.provider;
       if (!actor) return reply.status(401).send({ error: "Unauthorized" });
-      if (!canProviderAccess(actor.role, "merchant.status.write")) {
-        return reply.status(403).send({ error: "Forbidden", message: "Insufficient role" });
+      if (!canProviderActionContext(actor, "merchant.status.write")) {
+        const message =
+          actor.authType === "api_key"
+            ? "API-key sessions cannot perform this action; use a JWT session"
+            : "Insufficient role permission";
+        return reply.status(403).send({ error: "Forbidden", message });
       }
       const { merchantId: merchantRef } = request.params as { merchantId: string };
       const merchantId = await merchantIdFromRef(merchantRef, reply);
@@ -105,8 +109,12 @@ export async function registerProviderMerchantRiskRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const actor = request.provider;
       if (!actor) return reply.status(401).send({ error: "Unauthorized" });
-      if (!canProviderAccess(actor.role, "merchant.status.write")) {
-        return reply.status(403).send({ error: "Forbidden", message: "Insufficient role" });
+      if (!canProviderActionContext(actor, "merchant.status.write")) {
+        const message =
+          actor.authType === "api_key"
+            ? "API-key sessions cannot perform this action; use a JWT session"
+            : "Insufficient role permission";
+        return reply.status(403).send({ error: "Forbidden", message });
       }
       const { merchantId: merchantRef } = request.params as { merchantId: string };
       const merchantId = await merchantIdFromRef(merchantRef, reply);
@@ -175,8 +183,12 @@ export async function registerProviderMerchantRiskRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const actor = request.provider;
       if (!actor) return reply.status(401).send({ error: "Unauthorized" });
-      if (!canProviderAccess(actor.role, "merchant.status.write")) {
-        return reply.status(403).send({ error: "Forbidden", message: "Insufficient role" });
+      if (!canProviderActionContext(actor, "merchant.status.write")) {
+        const message =
+          actor.authType === "api_key"
+            ? "API-key sessions cannot perform this action; use a JWT session"
+            : "Insufficient role permission";
+        return reply.status(403).send({ error: "Forbidden", message });
       }
       const { merchantId: merchantRef, entryId } = request.params as { merchantId: string; entryId: string };
       const merchantId = await merchantIdFromRef(merchantRef, reply);

@@ -1,13 +1,11 @@
 import type { FastifyRequest } from "fastify";
 
-/** First hop from X-Forwarded-For when present (Render/Cloudflare), else socket IP. */
+/**
+ * Client IP as resolved by Fastify's `trustProxy` config (see app.ts), which
+ * walks X-Forwarded-For from the trusted-proxy end inward using `proxy-addr`.
+ * Do NOT parse X-Forwarded-For manually here — the leftmost entry is fully
+ * attacker-controlled and must never be trusted for allowlist/security decisions.
+ */
 export function getTrustedClientIp(request: FastifyRequest): string {
-  const forwarded = request.headers["x-forwarded-for"];
-  if (typeof forwarded === "string" && forwarded.trim()) {
-    return forwarded.split(",")[0]!.trim();
-  }
-  if (Array.isArray(forwarded) && forwarded[0]) {
-    return String(forwarded[0]).split(",")[0]!.trim();
-  }
   return request.ip;
 }

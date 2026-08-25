@@ -12,6 +12,7 @@ import {
   getMerchantApiIpRules,
   upsertMerchantApiIpRules,
 } from "../../src/lib/merchant-api-ip-rules.js";
+import { requirePortalAdminRole } from "../../src/lib/portal-roles.js";
 
 const ENV = ["test", "live"] as const;
 
@@ -100,6 +101,7 @@ export async function registerPortalApiIpRulesRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const user = request.portalUser;
       if (!user) return reply.status(401).send({ error: "Unauthorized" });
+      if (!(await requirePortalAdminRole(request, reply))) return;
 
       if (!(await requireVerifiedMerchant(user.merchantId, reply))) return;
 

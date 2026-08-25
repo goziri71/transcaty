@@ -52,8 +52,7 @@ export type PortalStepUpAction =
   | "api_keys.write"
   | "webhook.write"
   | "money.write"
-  | "audit.export"
-  | "any";
+  | "audit.export";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -302,7 +301,9 @@ export function verifyPortalStepUpToken(
       issuer: PORTAL_JWT_ISSUER,
       clockTolerance: CLOCK_TOLERANCE_SEC,
     }) as { merchantUserId: string; action: PortalStepUpAction; jti?: string };
-    if (decoded.action !== action && decoded.action !== "any") return null;
+    // Exact match only — a step-up token proven for one sensitive action must
+    // never authorize a different one (see security review: scoping bypass).
+    if (decoded.action !== action) return null;
     if (!decoded.merchantUserId) return null;
     return { merchantUserId: decoded.merchantUserId, jti: decoded.jti ?? "" };
   } catch {

@@ -5,6 +5,7 @@ import { db } from "../../src/db/index.js";
 import { providerUsers } from "../../src/db/schema/index.js";
 import {
   PROVIDER_ROLES,
+  bumpProviderSessionVersion,
   canProviderAccess,
   getProviderApiKey,
   getProviderPermissions,
@@ -82,6 +83,7 @@ export async function registerProviderAuthRoutes(app: FastifyInstance) {
           role: providerUsers.role,
           status: providerUsers.status,
           mfaEnabled: providerUsers.mfaEnabled,
+          sessionVersion: providerUsers.sessionVersion,
         })
         .from(providerUsers)
         .where(eq(providerUsers.email, email))
@@ -149,6 +151,7 @@ export async function registerProviderAuthRoutes(app: FastifyInstance) {
         providerUserId: user.id,
         email: user.email,
         role: user.role as ProviderRole,
+        sessionVersion: user.sessionVersion,
       });
 
       const providerBase = (
@@ -228,6 +231,7 @@ export async function registerProviderAuthRoutes(app: FastifyInstance) {
           mfaSecretEnc: providerUsers.mfaSecretEnc,
           fullName: providerUsers.fullName,
           status: providerUsers.status,
+          sessionVersion: providerUsers.sessionVersion,
         })
         .from(providerUsers)
         .where(eq(providerUsers.id, pending.providerUserId))
@@ -262,6 +266,7 @@ export async function registerProviderAuthRoutes(app: FastifyInstance) {
         providerUserId: pending.providerUserId,
         email: pending.email,
         role: pending.role,
+        sessionVersion: u.sessionVersion,
       });
 
       const providerBase = (
@@ -601,6 +606,12 @@ export async function registerProviderAuthRoutes(app: FastifyInstance) {
           status: providerUsers.status,
         });
 
+      if (body.password) {
+        // Password change invalidates any JWTs issued before it, closing the
+        // window where a stolen token would keep working post-reset.
+        await bumpProviderSessionVersion(userId);
+      }
+
       audit({
         action: "config.changed",
         actor: actor.providerUserId ?? "provider:api_key",
@@ -669,11 +680,10 @@ export async function registerProviderAuthRoutes(app: FastifyInstance) {
   const STEP_UP_ACTIONS = [
     "wallet.adjust",
     "tx.status.write",
-  "merchant.kyc.write",
-  "merchant.pricing.write",
-  "merchant.rates.write",
-  "merchant.ip_whitelist.write",
-  "any",
+    "merchant.kyc.write",
+    "merchant.pricing.write",
+    "merchant.rates.write",
+    "merchant.ip_whitelist.write",
   ] as const satisfies readonly ProviderStepUpAction[];
 
   app.post(
@@ -682,7 +692,7 @@ export async function registerProviderAuthRoutes(app: FastifyInstance) {
       schema: {
         body: z.object({
           code: z.string().min(6).max(12),
-          action: z.enum(STEP_UP_ACTIONS).default("any"),
+          action: z.enum(STEP_UP_ACTIONS),
         }),
         response: {
           200: z.object({
@@ -863,10 +873,12 @@ export async function registerProviderAuthRoutes(app: FastifyInstance) {
         return reply.status(400).send({ error: "Bad Request", message: result.reason });
       }
 
+      await bumpProviderSessionVersion(result.userId);
+
       audit({
         action: "auth.password_reset_completed",
         resource: result.userId,
-        meta: { realm: "provider" },
+        meta: { realm: "provider", sessionsRevoked: true },
       });
 
       return reply.send({ ok: true });

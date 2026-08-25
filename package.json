@@ -17,6 +17,7 @@
     "db:check": "tsx scripts/db-check.ts",
     "db:backfill-slugs": "tsx scripts/backfill-merchant-slugs.ts",
     "db:migrate-merchant-markets": "tsx scripts/migrate-merchant-markets.ts",
+    "db:migrate-provider-session-version": "tsx scripts/migrate-provider-session-version.ts",
     "db:push": "drizzle-kit push",
     "db:seed-merchant": "tsx scripts/seed-merchant.ts",
     "db:seed-portal-user": "tsx scripts/seed-portal-user.ts",

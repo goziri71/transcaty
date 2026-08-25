@@ -129,19 +129,12 @@ describe("portal JWT (P4 hardening)", () => {
       action: "wallet.adjust",
     });
     assert.ok(provider.verifyProviderStepUpToken(tokenForWalletAdjust, "wallet.adjust"));
-    // Different action: rejected.
+    // Different action: rejected. There is no wildcard action — a step-up
+    // proven for one sensitive action must never authorize a different one.
     assert.equal(
       provider.verifyProviderStepUpToken(tokenForWalletAdjust, "tx.status.write"),
       null
     );
-
-    // 'any' tokens are accepted for any action.
-    const anyToken = provider.signProviderStepUpToken({
-      providerUserId: "p1",
-      action: "any",
-    });
-    assert.ok(provider.verifyProviderStepUpToken(anyToken, "wallet.adjust"));
-    assert.ok(provider.verifyProviderStepUpToken(anyToken, "tx.status.write"));
   });
 
   it("provider session token rejects step-up audience", async () => {

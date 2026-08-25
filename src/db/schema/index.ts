@@ -656,6 +656,8 @@ export const providerUsers = pgTable(
     mfaEnabled: boolean("mfa_enabled").notNull().default(false),
     mfaPending: boolean("mfa_pending").notNull().default(false),
     mfaSecretEnc: text("mfa_secret_enc"),
+    /** Bumped on revoke-all (e.g. password reset); JWT claim `sv` must match or session is rejected. */
+    sessionVersion: integer("session_version").notNull().default(0),
     lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

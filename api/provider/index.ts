@@ -2067,6 +2067,7 @@ export async function registerProviderRoutes(app: FastifyInstance) {
           .select()
           .from(wallets)
           .where(and(eq(wallets.id, walletId), eq(wallets.type, "customer")))
+          .for("update")
           .limit(1);
         if (!wallet) return { error: "WALLET_NOT_FOUND" as const };
 
@@ -2236,6 +2237,7 @@ export async function registerProviderRoutes(app: FastifyInstance) {
           .select()
           .from(wallets)
           .where(and(eq(wallets.merchantId, merchantId), eq(wallets.environment, body.environment), eq(wallets.type, "merchant")))
+          .for("update")
           .limit(1);
         if (!wallet) return { error: "WALLET_NOT_FOUND" as const };
 

@@ -2,7 +2,7 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcrypt";
 import { randomUUID, timingSafeEqual } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { providerUsers } from "../db/schema/index.js";
 import { getSecret } from "./encryption.js";
@@ -13,6 +13,7 @@ export const PROVIDER_JWT_AUDIENCE = "transacty.provider.session";
 export const PROVIDER_MFA_PENDING_AUDIENCE = "transacty.provider.mfa_pending";
 export const PROVIDER_STEP_UP_AUDIENCE = "transacty.provider.step_up";
 const PROVIDER_CLOCK_TOLERANCE_SEC = 30;
+const SESSION_VERSION_CACHE_TTL_MS = 5_000;
 
 /** Constant-time string compare for secret material. Returns false on
  * length mismatch instead of throwing. */
@@ -152,15 +153,24 @@ export type ProviderSessionToken = {
   role: ProviderRole;
   jti: string;
   expiresAt: Date;
+  sessionVersion: number;
 };
 
 export function signProviderToken(payload: {
   providerUserId: string;
   email: string;
   role: ProviderRole;
+  sessionVersion?: number;
 }): string {
+  const sv = payload.sessionVersion ?? 0;
   return jwt.sign(
-    { ...payload, purpose: "provider_session" as const },
+    {
+      providerUserId: payload.providerUserId,
+      email: payload.email,
+      role: payload.role,
+      sv,
+      purpose: "provider_session" as const,
+    },
     getProviderJwtSecret(),
     {
       expiresIn: PROVIDER_JWT_EXPIRY,
@@ -182,6 +192,7 @@ interface ProviderTokenPayload {
   exp?: number;
   iss?: string;
   aud?: string | string[];
+  sv?: number;
 }
 
 function decodeProviderToken(token: string, audience?: string): ProviderTokenPayload | null {
@@ -194,6 +205,56 @@ function decodeProviderToken(token: string, audience?: string): ProviderTokenPay
   } catch {
     return null;
   }
+}
+
+const providerSessionVersionCache = new Map<string, { version: number; expiresAt: number }>();
+
+/** Test seam: stub session-version lookup without a live DB. */
+type ProviderSessionVersionLookupFn = (userId: string) => Promise<number | null>;
+let providerSessionVersionLookupOverride: ProviderSessionVersionLookupFn | null = null;
+export function __setProviderSessionVersionLookupForTesting(
+  fn: ProviderSessionVersionLookupFn | null
+): void {
+  providerSessionVersionLookupOverride = fn;
+  providerSessionVersionCache.clear();
+}
+
+export function invalidateProviderSessionVersionCache(userId: string): void {
+  providerSessionVersionCache.delete(userId);
+}
+
+async function loadProviderSessionVersion(userId: string): Promise<number | null> {
+  if (providerSessionVersionLookupOverride) {
+    return providerSessionVersionLookupOverride(userId);
+  }
+  const now = Date.now();
+  const cached = providerSessionVersionCache.get(userId);
+  if (cached && cached.expiresAt > now) return cached.version;
+  const [row] = await db
+    .select({ sessionVersion: providerUsers.sessionVersion })
+    .from(providerUsers)
+    .where(eq(providerUsers.id, userId))
+    .limit(1);
+  if (!row) return null;
+  providerSessionVersionCache.set(userId, {
+    version: row.sessionVersion,
+    expiresAt: now + SESSION_VERSION_CACHE_TTL_MS,
+  });
+  return row.sessionVersion;
+}
+
+/** Bump session epoch so all existing provider JWTs for this user fail verification. */
+export async function bumpProviderSessionVersion(userId: string): Promise<number> {
+  const [row] = await db
+    .update(providerUsers)
+    .set({
+      sessionVersion: sql`${providerUsers.sessionVersion} + 1`,
+      updatedAt: new Date(),
+    })
+    .where(eq(providerUsers.id, userId))
+    .returning({ sessionVersion: providerUsers.sessionVersion });
+  invalidateProviderSessionVersionCache(userId);
+  return row?.sessionVersion ?? 0;
 }
 
 /**
@@ -218,12 +279,19 @@ export async function verifyProviderToken(
   if (decoded.jti && (await isJtiRevoked("provider", decoded.jti))) {
     return null;
   }
+
+  const tokenSv = decoded.sv ?? 0;
+  const currentSv = await loadProviderSessionVersion(decoded.providerUserId);
+  if (currentSv == null) return null;
+  if (tokenSv !== currentSv) return null;
+
   return {
     providerUserId: decoded.providerUserId,
     email: decoded.email,
     role: decoded.role,
     jti: decoded.jti ?? "",
     expiresAt: decoded.exp ? new Date(decoded.exp * 1000) : new Date(0),
+    sessionVersion: tokenSv,
   };
 }
 
@@ -288,8 +356,7 @@ export type ProviderStepUpAction =
   | "merchant.kyc.write"
   | "merchant.pricing.write"
   | "merchant.rates.write"
-  | "merchant.ip_whitelist.write"
-  | "any";
+  | "merchant.ip_whitelist.write";
 
 export function signProviderStepUpToken(payload: {
   providerUserId: string;
@@ -318,7 +385,9 @@ export function verifyProviderStepUpToken(
       issuer: PROVIDER_JWT_ISSUER,
       clockTolerance: PROVIDER_CLOCK_TOLERANCE_SEC,
     }) as { providerUserId: string; action: ProviderStepUpAction; jti?: string };
-    if (decoded.action !== action && decoded.action !== "any") return null;
+    // Exact match only — a step-up token proven for one sensitive action must
+    // never authorize a different one (see security review: scoping bypass).
+    if (decoded.action !== action) return null;
     if (!decoded.providerUserId) return null;
     return { providerUserId: decoded.providerUserId, jti: decoded.jti ?? "" };
   } catch {
@@ -426,8 +495,10 @@ export async function providerAuth(request: FastifyRequest, reply: FastifyReply)
       .split(",")
       .map((v) => normalizeIp(v.trim()))
       .filter(Boolean);
-    const forwarded = (request.headers["x-forwarded-for"] as string | undefined)?.split(",")[0]?.trim();
-    const requestIp = normalizeIp(forwarded || request.ip || "");
+    // request.ip is resolved via Fastify's trustProxy config (see app.ts), which
+    // correctly picks the address nearest the trusted proxy rather than trusting
+    // a client-supplied X-Forwarded-For entry.
+    const requestIp = normalizeIp(request.ip || "");
     if (!allowlist.includes(requestIp)) {
       return reply.status(403).send({
         error: "Forbidden",

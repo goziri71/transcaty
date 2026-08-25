@@ -680,7 +680,6 @@ export async function registerPortalAuthRoutes(app: FastifyInstance) {
     "webhook.write",
     "money.write",
     "audit.export",
-    "any",
   ] as const satisfies readonly PortalStepUpAction[];
 
   app.post(
@@ -689,7 +688,7 @@ export async function registerPortalAuthRoutes(app: FastifyInstance) {
       schema: {
         body: z.object({
           code: z.string().min(6).max(12),
-          action: z.enum(STEP_UP_ACTIONS).default("any"),
+          action: z.enum(STEP_UP_ACTIONS),
         }),
         response: {
           200: z.object({

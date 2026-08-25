@@ -166,7 +166,15 @@ export async function buildApp() {
   const allowDebugBody = debugBodyEnvSet && !isProduction;
   const debugTyltWebhookBodyEnvSet = process.env.TYLT_WEBHOOK_DEBUG_BODY === "1";
   const allowTyltWebhookDebugBody = debugTyltWebhookBodyEnvSet && !isProduction;
+  // Trust exactly the reverse-proxy hop count in front of this service (Render's
+  // edge by default) so `request.ip` resolves to the real client IP instead of an
+  // attacker-supplied X-Forwarded-For entry. Override via TRUST_PROXY_HOPS if a
+  // CDN/extra proxy is added in front of Render.
+  const trustProxyHopsRaw = Number(process.env.TRUST_PROXY_HOPS ?? "1");
+  const trustProxyHops = Number.isInteger(trustProxyHopsRaw) && trustProxyHopsRaw > 0 ? trustProxyHopsRaw : 1;
+
   const app = Fastify({
+    trustProxy: trustProxyHops,
     logger: {
       level: process.env.LOG_LEVEL ?? "info",
       redact: {
