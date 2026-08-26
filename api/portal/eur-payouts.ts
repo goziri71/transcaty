@@ -349,9 +349,30 @@ export async function registerPortalEurPayoutRoutes(app: FastifyInstance) {
           merchantId: user.merchantId,
         });
         if (res.status >= 400) {
+          const merchantMsg =
+            pickTyltJsonPrimaryMessage(res.json) ??
+            (res.status >= 500
+              ? "Payout approval is temporarily unavailable. Try again shortly."
+              : "Payout approval rejected");
+          request.log.warn(
+            {
+              transactionId,
+              status: res.status,
+              upstreamMessage: merchantMsg,
+              merchantId: user.merchantId,
+            },
+            "portal eur payout approve rejected"
+          );
+          if (res.status >= 500) {
+            return reply.status(503).send({
+              error: "Service Unavailable",
+              message: merchantMsg,
+              code: "payment_unavailable",
+            });
+          }
           return reply.status(400).send({
             error: "Bad Request",
-            message: pickTyltJsonPrimaryMessage(res.json) ?? "Payout approval rejected",
+            message: merchantMsg,
             code: "payment_provider_rejected",
           });
         }

@@ -12,6 +12,7 @@ describe("portal-wallet-balance", () => {
     assert.equal(merchantWalletRegionForCurrency("BDT"), "bangladesh");
     assert.equal(merchantWalletRegionForCurrency("usdt"), "india");
     assert.equal(merchantWalletRegionForCurrency("USDC"), "europe");
+    assert.equal(merchantWalletRegionForCurrency("PYUSD-USDC"), "pyusd");
   });
 
   it("uses Bangladesh limits for BDT", () => {
@@ -70,6 +71,22 @@ describe("portal-wallet-balance", () => {
     });
     const primary = pickPrimaryPortalWalletItem([emptyBdt, usdc]);
     assert.equal(primary?.currency, "USDC");
+  });
+
+  it("presents PYUSD-USDC as its own card", () => {
+    const item = presentPortalWalletBalanceItem({
+      id: "p1",
+      currency: "PYUSD-USDC",
+      balance: "12.00",
+      status: "active",
+      label: null,
+      updatedAt: new Date("2026-01-01"),
+      createdAt: new Date("2026-01-01"),
+    });
+    assert.equal(item.region, "pyusd");
+    assert.equal(item.market, "pyusd");
+    assert.equal(item.displayLabel, "PYUSD USDC");
+    assert.equal(item.regionLabel, "PYUSD USDC");
   });
 
   it("presents full balance card fields", () => {

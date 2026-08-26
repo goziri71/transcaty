@@ -28,13 +28,14 @@ describe("merchant-markets", () => {
     assert.equal(marketForCurrency("BDT"), "bangladesh");
     assert.equal(marketForCurrency("USDT"), "india");
     assert.equal(marketForCurrency("USDC"), "europe");
+    assert.equal(marketForCurrency("PYUSD-USDC"), "pyusd");
   });
 
   it("defines settlement currencies per market", () => {
     assert.deepEqual(MARKET_SETTLEMENT_CURRENCIES.bangladesh, ["BDT"]);
     assert.deepEqual(MARKET_SETTLEMENT_CURRENCIES.india, ["USDT"]);
     assert.deepEqual(MARKET_SETTLEMENT_CURRENCIES.europe, ["USDC"]);
-    assert.deepEqual(MARKET_SETTLEMENT_CURRENCIES.pyusd, ["USDC"]);
+    assert.deepEqual(MARKET_SETTLEMENT_CURRENCIES.pyusd, ["PYUSD-USDC"]);
   });
 
   it("validates market ids", () => {
@@ -118,10 +119,18 @@ describe("merchant-markets", () => {
     assert.equal(row.blockers[0]?.code, "suspended");
   });
 
-  it("attributes shared USDC to PYUSD when Europe is disabled", () => {
+  it("attributes USDC to Europe even when PYUSD is the only approved market", () => {
     const owner = pickOwningMarketForSharedCurrency(
       [marketRow("europe", "disabled"), marketRow("pyusd", "approved")],
       "USDC"
+    );
+    assert.equal(owner?.market, "europe");
+  });
+
+  it("attributes PYUSD-USDC to PYUSD when both Europe and PYUSD are active", () => {
+    const owner = pickOwningMarketForSharedCurrency(
+      [marketRow("europe", "approved"), marketRow("pyusd", "approved")],
+      "PYUSD-USDC"
     );
     assert.equal(owner?.market, "pyusd");
   });

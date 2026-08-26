@@ -11,12 +11,12 @@ export function providerToFeeRail(provider: string | null | undefined, currency:
   if (p.startsWith("payok")) return "bangladesh";
   if (p === "tylt-cpg-payout" || p === "tylt-cpg-payin") return "cpg_crypto";
   if (p === "tylt-eur-payout" || p === "tylt-eur-payin" || p.startsWith("tylt-eur")) return "europe";
-  // PYUSD collects as PYUSD but settles USDC — reuse europe USDC fee schedules when present.
+  // PYUSD collects as PYUSD and settles PYUSD-USDC — reuse europe USDC fee schedules.
   if (p === "tekko-pyusd-payin" || p.startsWith("tekko-")) return "europe";
   if (p.startsWith("tylt-")) return "india";
   if (c === "BDT") return "bangladesh";
   if (c === "BRL") return "brazil";
-  if (c === "EUR" || c === "USDC" || c === "PYUSD") return "europe";
+  if (c === "EUR" || c === "USDC" || c === "PYUSD" || c === "PYUSD-USDC") return "europe";
   if (c === "USDT" || c === "INR") return "india";
   return "bangladesh";
 }

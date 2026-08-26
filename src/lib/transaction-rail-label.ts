@@ -143,7 +143,7 @@ export function presentTransactionRail(params: {
     return { currency, rail: "brazil", railLabel: "Brazil" };
   }
 
-  if (currency === "PYUSD") {
+  if (currency === "PYUSD" || currency === "PYUSD-USDC") {
     return { currency, rail: "pyusd", railLabel: "PYUSD pay-in" };
   }
 

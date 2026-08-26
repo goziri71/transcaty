@@ -232,8 +232,8 @@ If the dashboard itself creates payments (not the merchant's backend):
 
 | Endpoint | Body |
 |----------|------|
-| `POST /portal/me/br/payins` | `{ environment, amount, paymentMethodCode?: "PIX", returnUrl, customer, goodsInfo }` |
-| `POST /portal/me/br/payouts` | `{ environment, amount, benificiaryAccountInfo, cardHolderInfo }` → `201` with `reference`, `recipient.masked` |
+| `POST /portal/me/br/payins` | `{ environment, amount, paymentMethodCode?: "PIX", returnUrl, customer, goodsInfo }` → `201` |
+| `POST /portal/me/br/payouts` | `{ environment, amount, benificiaryAccountInfo, cardHolderInfo }` → `201` with `reference`, `recipient.masked`. Requires **`Idempotency-Key`**. |
 
 Both gate on the `brazil` market and BRL limits, same as `/v1/br/*`.
 

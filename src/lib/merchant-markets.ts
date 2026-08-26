@@ -16,6 +16,11 @@ import {
 import { normalizeMoneyAmountToTwoDecimals } from "./money.js";
 import { getOrCreateMerchantWallet } from "../../services/integrations/tylt/crossramp-payin.js";
 import { isBangladeshPaymentsPaused } from "./bangladesh-rail-pause.js";
+import { PLATFORM_MERCHANT_ID } from "./billing/platform-wallet.js";
+import {
+  PYUSD_SETTLEMENT_CURRENCY,
+  PYUSD_SETTLEMENT_DISPLAY_NAME,
+} from "./pyusd-settlement.js";
 
 export const MERCHANT_MARKETS = ["bangladesh", "india", "europe", "brazil", "pyusd"] as const;
 export type MerchantMarket = (typeof MERCHANT_MARKETS)[number];
@@ -46,8 +51,8 @@ export const MARKET_SETTLEMENT_CURRENCIES: Record<MerchantMarket, readonly strin
   india: ["USDT"],
   europe: ["USDC"],
   brazil: ["BRL"],
-  /** PYUSD checkout settles to the merchant USDC pocket (shared with europe wallet row). */
-  pyusd: ["USDC"],
+  /** Tekko PYUSD proceeds — not the Europe Tylt USDC pocket. */
+  pyusd: [PYUSD_SETTLEMENT_CURRENCY],
 };
 
 export function marketForCurrency(currency: string): MerchantMarket | null {
@@ -56,6 +61,7 @@ export function marketForCurrency(currency: string): MerchantMarket | null {
   if (region === "india") return "india";
   if (region === "europe") return "europe";
   if (region === "brazil") return "brazil";
+  if (region === "pyusd") return "pyusd";
   return null;
 }
 
@@ -151,9 +157,9 @@ const WALLET_ACTIVATION_RANK: Record<WalletActivationStatus, number> = {
 };
 
 /**
- * Europe and PYUSD both settle USDC (one wallet row). Attribute the card to the
- * market that is actually usable — not whichever appears first in MERCHANT_MARKETS.
- * If both are active, Europe stays the owner (payouts spend that pocket).
+ * Pick the market card that owns a settlement currency. After the PYUSD split,
+ * USDC is Europe-only and PYUSD-USDC is PYUSD-only. If two markets ever settle
+ * the same code, prefer the more usable entitlement.
  */
 export function pickOwningMarketForSharedCurrency(
   markets: MerchantMarketRow[],
@@ -409,11 +415,31 @@ export async function provisionSettlementWalletsForMarket(
   market: MerchantMarket
 ): Promise<void> {
   const currencies = MARKET_SETTLEMENT_CURRENCIES[market];
-  // Tekko PYUSD is live-only; do not create a test USDC pocket that can never be credited.
+  // Tekko PYUSD is live-only; do not create a test PYUSD-USDC pocket that can never be credited.
   const environments: Array<"test" | "live"> = market === "pyusd" ? ["live"] : ["test", "live"];
   for (const environment of environments) {
     for (const currency of currencies) {
-      await getOrCreateMerchantWallet({ merchantId, environment, currency });
+      const wallet = await getOrCreateMerchantWallet({ merchantId, environment, currency });
+      if (
+        currency === PYUSD_SETTLEMENT_CURRENCY &&
+        (wallet.label == null || wallet.label.trim() === "")
+      ) {
+        await db
+          .update(wallets)
+          .set({ label: PYUSD_SETTLEMENT_DISPLAY_NAME, updatedAt: new Date() })
+          .where(eq(wallets.id, wallet.id));
+      }
+    }
+  }
+  if (market === "pyusd") {
+    try {
+      await getOrCreateMerchantWallet({
+        merchantId: PLATFORM_MERCHANT_ID,
+        environment: "live",
+        currency: PYUSD_SETTLEMENT_CURRENCY,
+      });
+    } catch {
+      // Merchant pocket still works; fee apply skips if the platform row is missing.
     }
   }
 }
@@ -654,6 +680,10 @@ export async function buildPortalWalletCatalog(params: {
   globalKycStatus?: string;
 }): Promise<PortalWalletBalanceItem[]> {
   const markets = await listMerchantMarkets(params.merchantId);
+  const pyusdMarket = markets.find((m) => m.market === "pyusd");
+  if (pyusdMarket?.entitlementStatus === "approved") {
+    await provisionSettlementWalletsForMarket(params.merchantId, "pyusd");
+  }
   const globalKycStatus =
     params.globalKycStatus ?? (await getMerchantGlobalKycStatus(params.merchantId));
   const currencyList = [

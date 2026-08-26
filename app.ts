@@ -110,6 +110,8 @@ import {
   getTekkoPyusdPaymentIntentStatus,
   readTekkoWebhookHeaders,
   TEKKO_PYUSD_PROVIDER,
+  TEKKO_SETTLEMENT_CURRENCY,
+  TEKKO_SETTLEMENT_DISPLAY_NAME,
   verifyTekkoWebhookSignature,
 } from "./services/integrations/tekko/index.js";
 import { LIMITS } from "./src/lib/limits.js";
@@ -2825,7 +2827,7 @@ export async function buildApp() {
       })
   );
 
-  // --- Tekko PYUSD (Ethereum) → USDC settlement ---
+  // --- Tekko PYUSD (Ethereum) → PYUSD-USDC settlement (not Europe USDC) ---
   app.post("/v1/pyusd/payment-intents", {
     schema: {
       body: z.object({
@@ -2842,7 +2844,8 @@ export async function buildApp() {
           settlementStatus: z.string().nullable(),
           amount: z.string(),
           currency: z.literal("PYUSD"),
-          settlementCurrency: z.literal("USDC"),
+          settlementCurrency: z.literal(TEKKO_SETTLEMENT_CURRENCY),
+          settlementCurrencyLabel: z.literal(TEKKO_SETTLEMENT_DISPLAY_NAME),
           network: z.literal("ethereum"),
           depositAddress: z.string(),
           expiresAt: z.string().nullable(),
@@ -2897,7 +2900,8 @@ export async function buildApp() {
             settlementStatus: result.settlementStatus,
             amount: result.amount,
             currency: "PYUSD" as const,
-            settlementCurrency: "USDC" as const,
+            settlementCurrency: TEKKO_SETTLEMENT_CURRENCY,
+            settlementCurrencyLabel: TEKKO_SETTLEMENT_DISPLAY_NAME,
             network: "ethereum" as const,
             depositAddress: result.depositAddress,
             expiresAt: result.expiresAt,
@@ -2930,7 +2934,8 @@ export async function buildApp() {
           amount: z.string(),
           paidAmount: z.string().nullable(),
           currency: z.string(),
-          settlementCurrency: z.literal("USDC"),
+          settlementCurrency: z.literal(TEKKO_SETTLEMENT_CURRENCY),
+          settlementCurrencyLabel: z.literal(TEKKO_SETTLEMENT_DISPLAY_NAME),
           network: z.literal("ethereum"),
           depositAddress: z.string().nullable(),
           expiresAt: z.string().nullable(),
@@ -2962,7 +2967,8 @@ export async function buildApp() {
       }
       return {
         ...view,
-        settlementCurrency: "USDC" as const,
+        settlementCurrency: TEKKO_SETTLEMENT_CURRENCY,
+        settlementCurrencyLabel: TEKKO_SETTLEMENT_DISPLAY_NAME,
         network: "ethereum" as const,
       };
     } catch (err) {
@@ -3119,9 +3125,29 @@ export async function buildApp() {
             merchantId: m.merchantId,
           });
           if (res.status >= 400) {
+            const merchantMsg =
+              pickTyltJsonPrimaryMessage(res.json) ??
+              (res.status >= 500
+                ? "Payout approval is temporarily unavailable. Try again shortly."
+                : "Payout approval rejected");
+            app.log.warn(
+              {
+                transactionId,
+                status: res.status,
+                upstreamMessage: merchantMsg,
+              },
+              "tylt EUR payout approve rejected"
+            );
+            if (res.status >= 500) {
+              return reply.status(503).send({
+                error: "Service Unavailable",
+                message: merchantMsg,
+                code: "payment_unavailable",
+              });
+            }
             return reply.status(400).send({
               error: "Bad Request",
-              message: pickTyltJsonPrimaryMessage(res.json) ?? "Payout approval rejected",
+              message: merchantMsg,
               code: "payment_provider_rejected",
             });
           }

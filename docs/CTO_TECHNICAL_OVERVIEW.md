@@ -239,7 +239,7 @@ Monthly billing runs via **pg-boss cron** (1st of month).
 | Product | Merchant API | Currency |
 |---------|--------------|----------|
 | EUR pay-in | `/v1/eur/payin-instances` | EUR quote → **USDC** settlement |
-| EUR payout | `/v1/eur/payout-instances` (+ approve step) | USDC wallet debited |
+| EUR payout | `/v1/eur/payout-instances` (+ approve step) | Europe **USDC** wallet debited (not PYUSD-USDC) |
 
 **Code:** `eur-payin.ts`, `eur-payout.ts`, `eur-open-banking.ts`.
 
@@ -301,6 +301,7 @@ We separate **“which countries a merchant may use”** from **“which process
 | Bangladesh | BDT |
 | India | USDT (UPI settlement credits USDT; payer may pay INR fiat) |
 | Europe | USDC |
+| PYUSD | PYUSD-USDC (display PYUSD USDC; not Europe USDC) |
 
 **Table:** `merchant_markets` — states: `disabled` → `requested` → `kyb_in_review` → `approved` / `suspended`.
 

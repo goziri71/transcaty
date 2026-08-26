@@ -60,6 +60,7 @@ export function merchantWalletRegionForCurrency(currency: string): PortalWalletR
   if (c === "USDT") return "india";
   if (c === "INR") return "other";
   if (c === "USDC" || c === "EUR" || c === "GBP") return "europe";
+  if (c === "PYUSD-USDC") return "pyusd";
   if (c === "BRL") return "brazil";
   return "other";
 }
@@ -79,7 +80,7 @@ export function merchantWalletRegionLabel(region: PortalWalletRegion, currency: 
       if (c === "GBP") return "Europe (GBP)";
       return `Europe (${c})`;
     case "pyusd":
-      return "PYUSD → USDC";
+      return "PYUSD USDC";
     default:
       return c || "Other";
   }
@@ -105,6 +106,10 @@ export function limitsForMerchantWalletCurrency(currency: string): PayinPayoutLi
   if (c === "USDC") {
     const l = LIMITS.tyltEurOpenBanking.EUR;
     return { payin: { ...l }, payout: { ...l } };
+  }
+  if (c === "PYUSD-USDC") {
+    const l = LIMITS.tekkoPyusd.payin;
+    return { payin: { ...l }, payout: { min: l.min, max: l.max } };
   }
   if (c === "BRL") {
     return { payin: { ...LIMITS.payokBr.payin }, payout: { ...LIMITS.payokBr.payout } };

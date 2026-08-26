@@ -323,20 +323,16 @@ export async function registerPortalCustomersRoutes(app: FastifyInstance) {
 
       const { id } = request.params as { id: string };
       const { environment } = request.query as { environment: "test" | "live" };
-      const body = request.body as { status: string; reason?: string };
+      const body = request.body as { status: (typeof WALLET_STATUS)[number]; reason?: string };
 
-      const [wallet] = await db
-        .select()
-        .from(wallets)
-        .where(
-          and(
-            eq(wallets.id, id),
-            eq(wallets.merchantId, user.merchantId),
-            eq(wallets.environment, environment),
-            eq(wallets.type, "customer")
-          )
-        )
-        .limit(1);
+      const ownedCustomerWallet = and(
+        eq(wallets.id, id),
+        eq(wallets.merchantId, user.merchantId),
+        eq(wallets.environment, environment),
+        eq(wallets.type, "customer")
+      );
+
+      const [wallet] = await db.select().from(wallets).where(ownedCustomerWallet).limit(1);
 
       if (!wallet) {
         return reply.status(404).send({ error: "Not found", message: "Customer not found" });
@@ -351,10 +347,15 @@ export async function registerPortalCustomersRoutes(app: FastifyInstance) {
 
       const previousStatus = wallet.status;
 
-      await db
+      const [updated] = await db
         .update(wallets)
-        .set({ status: body.status as "active" | "frozen" | "pending" | "closed", updatedAt: new Date() })
-        .where(eq(wallets.id, id));
+        .set({ status: body.status, updatedAt: new Date() })
+        .where(ownedCustomerWallet)
+        .returning({ id: wallets.id });
+
+      if (!updated) {
+        return reply.status(404).send({ error: "Not found", message: "Customer not found" });
+      }
 
       audit({
         action: "portal.customer.wallet_status_changed",

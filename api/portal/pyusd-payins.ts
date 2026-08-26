@@ -1,6 +1,6 @@
 /**
  * Portal PYUSD (Tekko) one-time checkout. Isolated from Brazil/Bangladesh portal routes.
- * Settle currency is USDC (shared pocket with Europe). Live-only upstream.
+ * Settle currency is PYUSD-USDC (display: PYUSD USDC), isolated from Europe USDC. Live-only upstream.
  */
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
@@ -11,6 +11,8 @@ import {
   createTekkoPyusdPaymentIntent,
   getTekkoPyusdPaymentIntentStatus,
   TEKKO_PYUSD_PROVIDER,
+  TEKKO_SETTLEMENT_CURRENCY,
+  TEKKO_SETTLEMENT_DISPLAY_NAME,
 } from "../../services/integrations/tekko/index.js";
 import { LIMITS } from "../../src/lib/limits.js";
 import { audit } from "../../src/lib/audit.js";
@@ -34,12 +36,21 @@ const merchantFacingError = errorResponse.extend({
   code: z.string().optional(),
 });
 
-/** Gate portal PYUSD flows on KYC + the `pyusd` market entitlement. */
+/** Gate portal PYUSD flows on live-only Tekko, KYC, and the `pyusd` market. */
 async function requirePortalPyusdAccess(
   merchantId: string,
   environment: "test" | "live",
   reply: FastifyReply
 ): Promise<boolean> {
+  if (environment === "test") {
+    reply.status(503).send({
+      error: "Service Unavailable",
+      message: "PYUSD checkout is only available in the live environment",
+      code: "payment_unavailable",
+    });
+    return false;
+  }
+
   const kycRequired = process.env.KYC_REQUIRED === "true";
 
   if (environment === "live" || kycRequired) {
@@ -99,7 +110,8 @@ export async function registerPortalPyusdRoutes(app: FastifyInstance) {
               settlementStatus: z.string().nullable(),
               amount: z.string(),
               currency: z.literal("PYUSD"),
-              settlementCurrency: z.literal("USDC"),
+              settlementCurrency: z.literal(TEKKO_SETTLEMENT_CURRENCY),
+              settlementCurrencyLabel: z.literal(TEKKO_SETTLEMENT_DISPLAY_NAME),
               network: z.literal("ethereum"),
               depositAddress: z.string(),
               expiresAt: z.string().nullable(),
@@ -184,7 +196,8 @@ export async function registerPortalPyusdRoutes(app: FastifyInstance) {
             settlementStatus: result.settlementStatus,
             amount: result.amount,
             currency: "PYUSD" as const,
-            settlementCurrency: "USDC" as const,
+            settlementCurrency: TEKKO_SETTLEMENT_CURRENCY,
+            settlementCurrencyLabel: TEKKO_SETTLEMENT_DISPLAY_NAME,
             network: "ethereum" as const,
             depositAddress: result.depositAddress,
             expiresAt: result.expiresAt,
@@ -241,7 +254,8 @@ export async function registerPortalPyusdRoutes(app: FastifyInstance) {
             amount: z.string(),
             paidAmount: z.string().nullable(),
             currency: z.string(),
-            settlementCurrency: z.literal("USDC"),
+            settlementCurrency: z.literal(TEKKO_SETTLEMENT_CURRENCY),
+            settlementCurrencyLabel: z.literal(TEKKO_SETTLEMENT_DISPLAY_NAME),
             network: z.literal("ethereum"),
             depositAddress: z.string().nullable(),
             expiresAt: z.string().nullable(),
@@ -276,7 +290,8 @@ export async function registerPortalPyusdRoutes(app: FastifyInstance) {
         }
         return {
           ...view,
-          settlementCurrency: "USDC" as const,
+          settlementCurrency: TEKKO_SETTLEMENT_CURRENCY,
+          settlementCurrencyLabel: TEKKO_SETTLEMENT_DISPLAY_NAME,
           network: "ethereum" as const,
         };
       } catch (err) {

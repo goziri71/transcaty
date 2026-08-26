@@ -23,6 +23,7 @@ import {
   attachFeeBreakdown,
 } from "../../src/lib/billing/transaction-fee-breakdown.js";
 import { requirePortalMoneyGuards } from "../../src/lib/portal-roles.js";
+import { withIdempotency } from "../../src/lib/idempotency.js";
 
 const errorResponse = z.object({
   error: z.string(),
@@ -107,7 +108,7 @@ export async function registerPortalBrazilRoutes(app: FastifyInstance) {
           }),
         }),
         response: {
-          200: z
+          201: z
             .object({
               transactionId: z.string(),
               status: z.string(),
@@ -144,7 +145,7 @@ export async function registerPortalBrazilRoutes(app: FastifyInstance) {
             )
           )
           .limit(1);
-        if (cached) return reply.status(200).send(JSON.parse(cached.responseSnapshot));
+        if (cached) return reply.status(201).send(JSON.parse(cached.responseSnapshot));
       }
 
       const body = request.body as {
@@ -217,7 +218,7 @@ export async function registerPortalBrazilRoutes(app: FastifyInstance) {
             /* duplicate key — ignore */
           }
         }
-        return reply.send(response);
+        return reply.status(201).send(response);
       } catch (err) {
         const rawMsg = err instanceof Error ? err.message : String(err);
         audit({
@@ -274,6 +275,7 @@ export async function registerPortalBrazilRoutes(app: FastifyInstance) {
           400: payoutErrorResponse,
           401: errorResponse,
           403: errorResponse,
+          409: errorResponse,
           503: payoutErrorResponse,
           500: payoutErrorResponse,
         },
@@ -305,50 +307,55 @@ export async function registerPortalBrazilRoutes(app: FastifyInstance) {
 
       const baseUrl = process.env.APP_BASE_URL ?? `http://localhost:${process.env.PORT ?? 3000}`;
       try {
-        const result = await createBrazilPayoutOrder({
-          merchantId: user.merchantId,
-          environment: body.environment,
-          amount: body.amount,
-          baseUrl,
-          benificiaryAccountInfo: body.benificiaryAccountInfo,
-          cardHolderInfo: body.cardHolderInfo,
-          portalActor: { merchantUserId: user.merchantUserId, email: user.email },
-        });
-
-        queueTransactionalEmail({
-          kind: "merchant_portal_payout",
-          to: user.email,
-          amount: body.amount,
-          transactionId: result.transactionId,
-          recipientMasked: maskRecipient(body.benificiaryAccountInfo.number),
-        }).catch(() => {});
-
-        const breakdown = await buildTransactionFeeBreakdown({
-          merchantId: user.merchantId,
-          environment: body.environment,
-          transactionId: result.transactionId,
-          type: "payout",
-          status: "pending",
-          amount: body.amount,
-          currency: "BRL",
-          provider: "payok-br-payout",
-        });
-
-        return reply.status(201).send(
-          attachFeeBreakdown(
-            {
-              transactionId: result.transactionId,
-              reference: result.transactionId,
-              status: result.status ?? "pending",
-              amount: body.amount,
-              platformOrderId: result.platformOrderId ?? null,
+        const response = await withIdempotency(
+          { request, reply, merchantId: user.merchantId, body, required: true },
+          async () => {
+            const result = await createBrazilPayoutOrder({
+              merchantId: user.merchantId,
               environment: body.environment,
-              recipient: { masked: maskRecipient(body.benificiaryAccountInfo.number) },
-              estimatedCompletion: null,
-            },
-            breakdown
-          )
+              amount: body.amount,
+              baseUrl,
+              benificiaryAccountInfo: body.benificiaryAccountInfo,
+              cardHolderInfo: body.cardHolderInfo,
+              portalActor: { merchantUserId: user.merchantUserId, email: user.email },
+            });
+
+            queueTransactionalEmail({
+              kind: "merchant_portal_payout",
+              to: user.email,
+              amount: body.amount,
+              transactionId: result.transactionId,
+              recipientMasked: maskRecipient(body.benificiaryAccountInfo.number),
+            }).catch(() => {});
+
+            const breakdown = await buildTransactionFeeBreakdown({
+              merchantId: user.merchantId,
+              environment: body.environment,
+              transactionId: result.transactionId,
+              type: "payout",
+              status: "pending",
+              amount: body.amount,
+              currency: "BRL",
+              provider: "payok-br-payout",
+            });
+
+            return attachFeeBreakdown(
+              {
+                transactionId: result.transactionId,
+                reference: result.transactionId,
+                status: result.status ?? "pending",
+                amount: body.amount,
+                platformOrderId: result.platformOrderId ?? null,
+                environment: body.environment,
+                recipient: { masked: maskRecipient(body.benificiaryAccountInfo.number) },
+                estimatedCompletion: null,
+              },
+              breakdown
+            );
+          }
         );
+        if (response === undefined) return;
+        return reply.status(201).send(response);
       } catch (err) {
         const rawMsg = err instanceof Error ? err.message : String(err);
         audit({

@@ -16,8 +16,8 @@ describe("providerToFeeRail", () => {
     assert.equal(providerToFeeRail(null, "BRL"), "brazil");
   });
 
-  it("maps tekko-pyusd-payin to europe (USDC settlement fee schedules)", () => {
-    assert.equal(providerToFeeRail("tekko-pyusd-payin", "USDC"), "europe");
+  it("maps tekko-pyusd-payin to europe fee schedules (PYUSD-USDC pocket)", () => {
+    assert.equal(providerToFeeRail("tekko-pyusd-payin", "PYUSD-USDC"), "europe");
     assert.equal(providerToFeeRail("tekko-pyusd-payin", "PYUSD"), "europe");
   });
 });

@@ -1,4 +1,4 @@
-const CURRENCY_PRIORITY = ["BDT", "USDT", "USDC", "INR", "EUR", "GBP"] as const;
+const CURRENCY_PRIORITY = ["BDT", "USDT", "USDC", "PYUSD-USDC", "INR", "EUR", "GBP"] as const;
 
 export type MerchantWalletBalanceRow = {
   environment: string;

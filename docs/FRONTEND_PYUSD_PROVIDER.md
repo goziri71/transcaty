@@ -9,7 +9,7 @@ How Transacty ops manages the **`pyusd`** market and Tekko PYUSD pay-ins in the 
 | `GET` | `/provider/merchants/:merchantId/markets` |
 | `PATCH` | `/provider/merchants/:merchantId/markets/pyusd` |
 
-`MARKET_IDS` includes `pyusd`. Settlement currencies: **`["USDC"]`** (same USDC pocket as Europe when both approved).
+`MARKET_IDS` includes `pyusd`. Settlement currencies: **`["PYUSD-USDC"]`** (display **PYUSD USDC**). Europe **USDC** is a separate wallet.
 
 Approve example:
 
@@ -36,13 +36,13 @@ Permission: `merchant.kyc.write`.
 
 Permission: `tx.reconcile`.
 
-Polls Tekko; credits merchant **USDC** once when `settlementStatus` is settled (idempotent). Queues merchant `payin.completed` / `payin.failed` when status transitions.
+Polls Tekko; credits merchant **PYUSD-USDC** once when `settlementStatus` is settled (idempotent). Queues merchant `payin.completed` / `payin.failed` when status transitions.
 
 Response `outcome`: `finalized` | `not_terminal` | `skipped` (`already_terminal` | `wrong_rail`).
 
 ## UI checklist
 
 - [ ] Payment markets panel: fifth row **PYUSD** (request → approve/suspend)
-- [ ] Note: settles to **USDC** (shared with Europe wallet card)
+- [ ] Note: settles to **PYUSD USDC** (`PYUSD-USDC`), not the Europe USDC card
 - [ ] Tx detail: show PYUSD rail label; Reconcile button → `POST /provider/tekko/pyusd/reconcile`
 - [ ] Live-only upstream (no Tekko sandbox)

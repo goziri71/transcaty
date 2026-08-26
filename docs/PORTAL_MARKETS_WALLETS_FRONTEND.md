@@ -476,7 +476,7 @@ Ops **approves payment markets** (Bangladesh / India / Europe / Brazil / **PYUSD
 
 **No step-up MFA** on market PATCH (unlike wallet adjustments).
 
-**PYUSD note:** market `pyusd` settles **USDC** (shared pocket with Europe). Portal create: [`FRONTEND_PYUSD_PORTAL.md`](./FRONTEND_PYUSD_PORTAL.md). Provider reconcile: [`FRONTEND_PYUSD_PROVIDER.md`](./FRONTEND_PYUSD_PROVIDER.md).
+**PYUSD note:** market `pyusd` settles **PYUSD-USDC** (display **PYUSD USDC**), a separate wallet from Europe **USDC**. Portal create: [`FRONTEND_PYUSD_PORTAL.md`](./FRONTEND_PYUSD_PORTAL.md). Provider reconcile: [`FRONTEND_PYUSD_PROVIDER.md`](./FRONTEND_PYUSD_PROVIDER.md).
 
 ### End-to-end flow
 

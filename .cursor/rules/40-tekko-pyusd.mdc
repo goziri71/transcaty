@@ -1,5 +1,5 @@
 ---
-description: Tekko PYUSD integration context for fixes (live-only, USDC settle, portal/provider surfaces)
+description: Tekko PYUSD integration context for fixes (live-only, PYUSD-USDC settle, portal/provider surfaces)
 globs: services/integrations/tekko/**/*,api/portal/pyusd-payins.ts,docs/*PYUSD*,docs/MERCHANT_PYUSD*
 alwaysApply: false
 ---
@@ -9,8 +9,9 @@ alwaysApply: false
 ## Product locks
 
 - Collect: one-time **PYUSD** on **Ethereum** only.
-- Settle: merchant **USDC** ledger (no merchant PYUSD balance/withdraw).
-- Credit USDC only when Tekko `settlementStatus === settled` (or verified settle via poll/reconcile). Do **not** credit on unpaid `customer.wallet.credited` alone. Dedupe via webhook claim + `pending` update + ledger reference check.
+- Settle: merchant **PYUSD-USDC** ledger (display **PYUSD USDC**). Do **not** credit Europe `USDC`. No merchant PYUSD/PYUSD-USDC withdraw in this phase.
+- Credit PYUSD-USDC only when Tekko `settlementStatus === settled` (or verified settle via poll/reconcile). Do **not** credit on unpaid `customer.wallet.credited` alone. Dedupe via webhook claim + `pending` update + ledger reference check.
+- EUR payout / Europe CPG spend **USDC** only. PYUSD-USDC cannot fund Tylt.
 - Tekko has **no sandbox**: real calls are **live-only**; `test` fails closed (`payment_unavailable`).
 - Isolation: do **not** edit `services/integrations/tylt/**` or `services/domestic/**` PayOK for Tekko work (may import shared helpers like wallet get-or-create).
 
@@ -25,7 +26,8 @@ alwaysApply: false
 | Webhooks | `POST /webhooks/tekko/:environment` |
 | Provider | `MARKET_IDS` includes `pyusd`; `POST /provider/tekko/pyusd/reconcile` |
 | Migration | `drizzle/0027_tekko_customer_id.sql` → `merchants.tekko_customer_id` |
-| Market | `pyusd` settles `["USDC"]` in `src/lib/merchant-markets.ts` (shared USDC card with europe) |
+| Market | `pyusd` settles `["PYUSD-USDC"]` in `src/lib/merchant-markets.ts` (separate from Europe `USDC`) |
+| Currency constant | `src/lib/pyusd-settlement.ts` |
 
 ## Env (code expects these — ops must complete Tekko dashboard setup)
 

@@ -73,9 +73,15 @@ describe("presentTransactionRail", () => {
   it("infers PYUSD from tekko metadata when provider missing", () => {
     const p = presentTransactionRail({
       provider: null,
-      currency: "USDC",
+      currency: "PYUSD-USDC",
       metadata: JSON.stringify({ rail: "tekko", tekkoProduct: "pyusd_payin" }),
     });
+    assert.equal(p.rail, "pyusd");
+    assert.equal(p.railLabel, "PYUSD pay-in");
+  });
+
+  it("labels settled PYUSD-USDC as PYUSD rail", () => {
+    const p = presentTransactionRail({ provider: null, currency: "PYUSD-USDC" });
     assert.equal(p.rail, "pyusd");
     assert.equal(p.railLabel, "PYUSD pay-in");
   });

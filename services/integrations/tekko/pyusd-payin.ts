@@ -1,5 +1,6 @@
 /**
- * Tekko PYUSD one-time checkout → settle USDC on merchant wallet.
+ * Tekko PYUSD one-time checkout → settle PYUSD-USDC on a dedicated merchant wallet.
+ * Europe Tylt USDC is a separate pocket; EUR payout cannot debit this one.
  */
 import { and, eq } from "drizzle-orm";
 import { db } from "../../../src/db/index.js";
@@ -13,15 +14,39 @@ import {
   feeBreakdownToWebhookFields,
 } from "../../../src/lib/billing/transaction-fee-breakdown.js";
 import type { WebhookEvent } from "../../../src/lib/merchant-webhook.js";
+import {
+  PYUSD_SETTLEMENT_CURRENCY,
+  PYUSD_SETTLEMENT_DISPLAY_NAME,
+} from "../../../src/lib/pyusd-settlement.js";
+import { PLATFORM_MERCHANT_ID } from "../../../src/lib/billing/platform-wallet.js";
 import { getOrCreateMerchantWallet } from "../tylt/crossramp-payin.js";
 import { getTekkoLiveConfig } from "./config.js";
 import { tekkoGet, tekkoPost } from "./client.js";
 import { ensureTekkoCustomerForMerchant } from "./customers.js";
 
 export const TEKKO_PYUSD_PROVIDER = "tekko-pyusd-payin";
-export const TEKKO_SETTLEMENT_CURRENCY = "USDC";
+export const TEKKO_SETTLEMENT_CURRENCY = PYUSD_SETTLEMENT_CURRENCY;
+export const TEKKO_SETTLEMENT_DISPLAY_NAME = PYUSD_SETTLEMENT_DISPLAY_NAME;
 export const TEKKO_COLLECT_CURRENCY = "PYUSD";
 export const TEKKO_NETWORK = "ethereum";
+
+async function ensurePyusdUsdcWallet(params: {
+  merchantId: string;
+  environment: "test" | "live";
+}) {
+  const wallet = await getOrCreateMerchantWallet({
+    merchantId: params.merchantId,
+    environment: params.environment,
+    currency: TEKKO_SETTLEMENT_CURRENCY,
+  });
+  if (wallet.label == null || wallet.label.trim() === "") {
+    await db
+      .update(wallets)
+      .set({ label: TEKKO_SETTLEMENT_DISPLAY_NAME, updatedAt: new Date() })
+      .where(eq(wallets.id, wallet.id));
+  }
+  return wallet;
+}
 
 export type TekkoMerchantEnvironment = "test" | "live";
 
@@ -117,6 +142,7 @@ export async function createTekkoPyusdPaymentIntent(params: {
   depositAddress: string;
   expiresAt: string | null;
   environment: TekkoMerchantEnvironment;
+  settlementCurrency: typeof TEKKO_SETTLEMENT_CURRENCY;
 }> {
   assertTekkoLiveEnvironment(params.environment);
 
@@ -227,6 +253,7 @@ export async function createTekkoPyusdPaymentIntent(params: {
     depositAddress: intent.depositAddress,
     expiresAt: intent.expiresAt ?? null,
     environment: params.environment,
+    settlementCurrency: TEKKO_SETTLEMENT_CURRENCY,
   };
 }
 
@@ -393,6 +420,8 @@ function presentStatus(
     expiresAt: extra.expiresAt,
     environment: tx.environment,
     settled: tx.status === "success",
+    settlementCurrency: TEKKO_SETTLEMENT_CURRENCY,
+    settlementCurrencyLabel: TEKKO_SETTLEMENT_DISPLAY_NAME,
   };
 }
 
@@ -444,7 +473,8 @@ async function markTekkoPyusdFailed(transactionId: string, paymentStatus: string
 }
 
 /**
- * Credit merchant USDC once. Safe under concurrent webhooks/polls via status guard + ledger check.
+ * Credit merchant PYUSD-USDC once. Safe under concurrent webhooks/polls via status guard + ledger check.
+ * Does not touch Europe USDC.
  */
 export async function settleTekkoPyusdTransaction(params: {
   transactionId: string;
@@ -469,11 +499,19 @@ export async function settleTekkoPyusdTransaction(params: {
     throw new Error("Invalid Tekko settlement amount");
   }
 
-  const wallet = await getOrCreateMerchantWallet({
+  const wallet = await ensurePyusdUsdcWallet({
     merchantId: tx.merchantId,
     environment: tx.environment as "test" | "live",
-    currency: TEKKO_SETTLEMENT_CURRENCY,
   });
+  try {
+    await getOrCreateMerchantWallet({
+      merchantId: PLATFORM_MERCHANT_ID,
+      environment: tx.environment as "test" | "live",
+      currency: TEKKO_SETTLEMENT_CURRENCY,
+    });
+  } catch {
+    // Fee apply skips if the platform PYUSD-USDC pocket is missing.
+  }
 
   const result = await db.transaction(async (txDb) => {
     const [updated] = await txDb
@@ -607,7 +645,7 @@ export type TekkoPyusdReconcileResult =
     };
 
 /**
- * Provider reconcile: poll Tekko and settle USDC when settlement is complete.
+ * Provider reconcile: poll Tekko and settle PYUSD-USDC when settlement is complete.
  * Mirrors PayOK / Tylt reconcile outcome shapes.
  */
 export async function reconcileTekkoPyusdPayinByTransactionId(

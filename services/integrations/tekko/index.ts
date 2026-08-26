@@ -15,6 +15,7 @@ export { ensureTekkoCustomerForMerchant, tekkoExternalIdForMerchant } from "./cu
 export {
   TEKKO_PYUSD_PROVIDER,
   TEKKO_SETTLEMENT_CURRENCY,
+  TEKKO_SETTLEMENT_DISPLAY_NAME,
   TEKKO_COLLECT_CURRENCY,
   TEKKO_NETWORK,
   assertTekkoLiveEnvironment,

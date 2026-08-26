@@ -1,6 +1,6 @@
 /**
  * Tekko inbound webhooks: HMAC-SHA256(timestamp + "." + rawBody, whsec).
- * PYUSD: credit USDC only when settlement is complete.
+ * PYUSD: credit PYUSD-USDC only when settlement is complete.
  */
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { and, eq } from "drizzle-orm";
@@ -200,7 +200,7 @@ export async function applyTekkoWebhookPayload(
       });
     }
 
-    // Paid but not settled yet — no USDC credit.
+    // Paid but not settled yet — no PYUSD-USDC credit.
     return null;
   }
 

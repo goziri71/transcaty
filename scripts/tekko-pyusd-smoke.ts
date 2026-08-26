@@ -210,7 +210,7 @@ async function main(): Promise<void> {
   );
   pass("reconcileTekkoPyusdPayinByTransactionId", JSON.stringify(recon));
 
-  console.log("\nDone. No USDC was credited (intent is unpaid / not settled).");
+  console.log("\nDone. No PYUSD-USDC was credited (intent is unpaid / not settled).");
   console.log(results.join("\n"));
 }
 

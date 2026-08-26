@@ -34,6 +34,7 @@ import { resolveTyltEurMerchantDetails, type TyltEurMerchantDetails } from "./eu
 import { mergeTransactionMetadata, parseTransactionMetadata } from "./crossramp-payin.js";
 
 const RAIL = "tylt";
+/** Europe Tylt pocket only — never PYUSD-USDC. */
 const SETTLEMENT_CURRENCY = "USDC";
 
 export { TYLT_PRODUCT_EUR_PAYOUT };

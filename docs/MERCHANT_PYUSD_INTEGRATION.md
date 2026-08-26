@@ -1,6 +1,6 @@
 # PYUSD (Tekko) — merchant integration guide
 
-How to accept **one-time PYUSD** payments on **Ethereum** via Transacty. Settled proceeds credit your merchant **USDC** wallet (not a PYUSD balance).
+How to accept **one-time PYUSD** payments on **Ethereum** via Transacty. Settled proceeds credit a dedicated **PYUSD USDC** wallet (`PYUSD-USDC`), not Europe **USDC**.
 
 | Audience | Surface | Auth |
 |----------|---------|------|
@@ -10,7 +10,7 @@ How to accept **one-time PYUSD** payments on **Ethereum** via Transacty. Settled
 
 > **Live only:** Tekko has no sandbox. Use a **live** API key / portal `environment: "live"`. `test` returns a fail-safe unavailable error.
 
-> Market gate: merchant must have the **`pyusd`** market **approved**. Settlement uses the same **USDC** pocket as Europe.
+> Market gate: merchant must have the **`pyusd`** market **approved**. Settlement uses **`PYUSD-USDC`** (display **PYUSD USDC**). Europe **USDC** is a separate pocket; EUR payouts cannot spend PYUSD proceeds.
 
 SPA handoff: [`FRONTEND_PYUSD_PORTAL.md`](./FRONTEND_PYUSD_PORTAL.md) · Provider admin: [`FRONTEND_PYUSD_PROVIDER.md`](./FRONTEND_PYUSD_PROVIDER.md)
 
@@ -21,8 +21,8 @@ SPA handoff: [`FRONTEND_PYUSD_PORTAL.md`](./FRONTEND_PYUSD_PORTAL.md) · Provide
 | Concept | Meaning |
 |---------|---------|
 | **Collect** | Payer sends **PYUSD** on **Ethereum** to a Tekko deposit address |
-| **Settle** | After Tekko reports settlement complete, Transacty credits **USDC** once |
-| **Spend** | Use existing USDC balance / payouts — no merchant PYUSD withdraw via Tekko |
+| **Settle** | After Tekko reports settlement complete, Transacty credits **PYUSD-USDC** once |
+| **Spend** | PYUSD-USDC is not EUR-payoutable. No merchant Tekko withdraw in this phase |
 | **Credit rule** | Funds are **not** spendable on unpaid/`customer.wallet.credited` alone. Credit happens when `settlementStatus` is `settled` (webhook or poll) |
 | **Network** | **Ethereum only** in this phase |
 
@@ -89,7 +89,8 @@ Same session as other dashboard money routes. Create requires portal money role 
   "settlementStatus": "awaiting_payment",
   "amount": "25.00",
   "currency": "PYUSD",
-  "settlementCurrency": "USDC",
+  "settlementCurrency": "PYUSD-USDC",
+  "settlementCurrencyLabel": "PYUSD USDC",
   "network": "ethereum",
   "depositAddress": "0x…",
   "expiresAt": "…",
@@ -108,9 +109,9 @@ Show the payer the **deposit address** + **amount** (QR / copy). Network is alwa
 | API | `GET /v1/pyusd/payment-intents/:transactionId` |
 | Portal | `GET /portal/me/pyusd/payment-intents/:transactionId` |
 
-Returns Transacty status plus upstream payment/settlement fields. When settlement completes (including if a webhook was missed), Transacty may settle USDC on poll.
+Returns Transacty status plus upstream payment/settlement fields. When settlement completes (including if a webhook was missed), Transacty may settle **PYUSD-USDC** on poll.
 
-`settled: true` means the USDC ledger credit succeeded.
+`settled: true` means the PYUSD-USDC ledger credit succeeded.
 
 Also: `GET /portal/me/transactions?rail=pyusd`.
 
@@ -120,7 +121,7 @@ Also: `GET /portal/me/transactions?rail=pyusd`.
 
 After settlement Transacty sends your configured merchant webhook:
 
-- `payin.completed` — USDC credited (`currency: "USDC"`, `paidAmount` = net USDC)
+- `payin.completed` — PYUSD-USDC credited (`currency: "PYUSD-USDC"`, `paidAmount` = net USDC equivalent)
 - `payin.failed` — expired / failed intent
 
 Configure your webhook URL in the portal / `/v1/me/webhook` (HTTPS only).
@@ -141,3 +142,4 @@ Configure your webhook URL in the portal / `/v1/me/webhook` (HTTPS only).
 5. Tekko IP allowlist: set `TEKKO_STATIC_PROXY_URL` (QuotaGuard HTTP CONNECT). Allowlist **both** QuotaGuard IPs with Tekko. Do not set process-wide `HTTP_PROXY`.
 
 - Provider: approve `pyusd` market; reconcile with `POST /provider/tekko/pyusd/reconcile`
+- **Wallet split:** new settles credit `PYUSD-USDC` only. EUR payouts debit Europe `USDC` only. Any PYUSD that already settled to shared `USDC` before this split stays on that Europe row (not moved automatically).

@@ -1,6 +1,6 @@
 # PYUSD — merchant portal frontend handoff
 
-Portal JWT surfaces for **one-time PYUSD** checkout (Tekko). Settles to merchant **USDC**. Live-only (no Tekko sandbox).
+Portal JWT surfaces for **one-time PYUSD** checkout (Tekko). Settles to merchant **PYUSD USDC** (`currency: "PYUSD-USDC"`). Live-only (no Tekko sandbox).
 
 ## Markets & wallets
 
@@ -8,16 +8,16 @@ Portal JWT surfaces for **one-time PYUSD** checkout (Tekko). Settles to merchant
 |--------|----------|
 | List markets | `GET /portal/me/markets` — includes `market: "pyusd"` |
 | Request access | `POST /portal/me/markets/pyusd/request` |
-| Wallets / balance | `GET /portal/me/wallets` / `GET /portal/me/balance` — after approve, **USDC** pocket (shared with Europe) |
+| Wallets / balance | `GET /portal/me/wallets` / `GET /portal/me/balance` — after approve, a **PYUSD USDC** card (`currency: "PYUSD-USDC"`, `region: "pyusd"`). Europe **USDC** is a separate card. |
 
-Do **not** invent a PYUSD merchant balance card. Copy: “PYUSD collects → USDC settles”.
+Show two USDC-related cards when both markets are enabled: **USDC** (Europe) and **PYUSD USDC** (Tekko). Do not merge them. Copy: “PYUSD collects → PYUSD USDC settles. EUR payouts use Europe USDC only.”
 
 ## Create & poll (money routes)
 
 | Method | Path | Notes |
 |--------|------|-------|
 | `POST` | `/portal/me/pyusd/payment-intents` | Requires money role + MFA step-up per existing portal money guards; send `Idempotency-Key` |
-| `GET` | `/portal/me/pyusd/payment-intents/:transactionId` | Poll; may settle USDC if webhook missed |
+| `GET` | `/portal/me/pyusd/payment-intents/:transactionId` | Poll; may settle PYUSD-USDC if webhook missed |
 
 **Create body:**
 
@@ -31,9 +31,9 @@ Do **not** invent a PYUSD merchant balance card. Copy: “PYUSD collects → USD
 }
 ```
 
-`environment: "test"` fails closed (`payment_unavailable`) — Tekko has no sandbox.
+`environment: "test"` (create body or GET query) fails closed with `503` `payment_unavailable` — Tekko has no sandbox. Omit GET `environment` or send `live`.
 
-**Create response highlights:** `depositAddress`, `amount`, `currency: "PYUSD"`, `settlementCurrency: "USDC"`, `network: "ethereum"`, `paymentIntentId`, `expiresAt`.
+**Create response highlights:** `depositAddress`, `amount`, `currency: "PYUSD"`, `settlementCurrency: "PYUSD-USDC"`, `settlementCurrencyLabel: "PYUSD USDC"`, `network: "ethereum"`, `paymentIntentId`, `expiresAt`.
 
 UI: show Ethereum deposit address + amount (QR/copy). No payout wizard for PYUSD.
 
@@ -48,4 +48,4 @@ Detail: `rail: "pyusd"`, `railLabel: "PYUSD pay-in"`.
 - [ ] Create payment intent form (live only, amount, merchantReference)
 - [ ] Show deposit address / expiry; poll status endpoint
 - [ ] Tx list chip `rail=pyusd`
-- [ ] USDC wallet shows settled proceeds (no separate PYUSD wallet)
+- [ ] PYUSD USDC wallet (`PYUSD-USDC`) shows settled proceeds; Europe USDC is unchanged
