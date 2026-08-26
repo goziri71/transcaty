@@ -6,7 +6,7 @@ Implementation guide for **merchant portal** and **provider admin** SPAs after t
 
 **Related docs:** [AUTH_HARDENING.md](./AUTH_HARDENING.md) (provider step-up baseline), [FRONTEND_HANDOFF_JUNE_2026.md](./FRONTEND_HANDOFF_JUNE_2026.md), [PORTAL_FRONTEND_SPEC.md](./PORTAL_FRONTEND_SPEC.md).
 
-**Backend ops:** run `npm run db:migrate` (includes `merchant_users.session_version`). Optional env:
+**Backend ops:** run `npm run db:migrate` (includes `merchant_users.session_version` **and** `provider_users.session_version`). Admin login (`POST /provider/auth/login`) fails with a 500 on `provider_users.session_version` until 0029 is applied. One-off: `npm run db:migrate-provider-session-version`. Optional env:
 
 | Env | Effect |
 |-----|--------|
