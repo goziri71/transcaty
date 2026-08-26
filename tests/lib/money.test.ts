@@ -5,6 +5,7 @@ import {
   assertNonNegative,
   assertPositive,
   cmpAmount,
+  committedAmountMatchingProviderEcho,
   fromCents,
   gteAmount,
   normalizeMoneyAmountToTwoDecimals,
@@ -79,4 +80,24 @@ test("assertNonNegative allows zero, rejects negatives", () => {
   assertNonNegative("0.00");
   assertNonNegative("0.01");
   assert.throws(() => assertNonNegative("-0.01"));
+});
+
+test("committedAmountMatchingProviderEcho accepts missing echo and matching amounts", () => {
+  assert.equal(committedAmountMatchingProviderEcho("10.00", undefined), "10.00");
+  assert.equal(committedAmountMatchingProviderEcho("10.00", null), "10.00");
+  assert.equal(committedAmountMatchingProviderEcho("10.00", ""), "10.00");
+  assert.equal(committedAmountMatchingProviderEcho("10", "10.00"), "10.00");
+  assert.equal(committedAmountMatchingProviderEcho("10.00", 10), "10.00");
+  assert.equal(committedAmountMatchingProviderEcho("10.5", "10.50"), "10.50");
+});
+
+test("committedAmountMatchingProviderEcho fails closed on mismatch or unusable echo", () => {
+  assert.throws(
+    () => committedAmountMatchingProviderEcho("10.00", "9.99"),
+    /Provider amount mismatch/
+  );
+  assert.throws(
+    () => committedAmountMatchingProviderEcho("10.00", { value: "10.00" }),
+    /unexpected amount type/
+  );
 });

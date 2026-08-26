@@ -13,7 +13,7 @@ import {
   feeBreakdownToWebhookFields,
   formatTransactionFeeBreakdown,
 } from "../../../src/lib/billing/transaction-fee-breakdown.js";
-import { addAmount } from "../../../src/lib/money.js";
+import { addAmount, committedAmountMatchingProviderEcho } from "../../../src/lib/money.js";
 import type { PayokEnvironment } from "../bangladesh/provider/config.js";
 import { assertPayinAllowed } from "../../../src/lib/fraud-policy.js";
 import { UpstreamProviderClientError } from "../../../src/lib/merchant-facing-errors.js";
@@ -75,7 +75,13 @@ export async function createPayinOrder(params: {
     language: "EN",
   });
 
-  const res = body as { code?: string; message?: string; paymentInfo?: { content?: string; type?: string }; platformOrderId?: string };
+  const res = body as {
+    code?: string;
+    message?: string;
+    amount?: unknown;
+    paymentInfo?: { content?: string; type?: string };
+    platformOrderId?: string;
+  };
   if (status !== 200 || res.code === "FAIL") {
     await db.update(transactions).set({ status: "failed" }).where(eq(transactions.id, tx.id));
     const detail = JSON.stringify(res);
@@ -93,6 +99,31 @@ export async function createPayinOrder(params: {
       );
     }
     throw new Error(`Payok create order failed: ${detail}`);
+  }
+
+  const committedAmount = String(tx.amount);
+  let amount: string;
+  try {
+    amount = committedAmountMatchingProviderEcho(committedAmount, res.amount);
+  } catch (err) {
+    await db
+      .update(transactions)
+      .set({ status: "failed", externalId: res.platformOrderId, updatedAt: new Date() })
+      .where(eq(transactions.id, tx.id));
+    audit({
+      action: "payment.failed",
+      resource: tx.id,
+      merchantId: params.merchantId,
+      merchantUserId: params.portalActor?.merchantUserId,
+      actorEmail: params.portalActor?.email,
+      meta: {
+        reason: "provider_amount_mismatch",
+        platformOrderId: res.platformOrderId,
+        requestedAmount: committedAmount,
+        message: err instanceof Error ? err.message : String(err),
+      },
+    });
+    throw err;
   }
 
   await db
@@ -114,6 +145,7 @@ export async function createPayinOrder(params: {
 
   return {
     transactionId: tx.id,
+    amount,
     paymentInfo: res.paymentInfo,
     platformOrderId: res.platformOrderId,
   };

@@ -148,7 +148,7 @@ export async function registerPortalPayinsRoutes(app: FastifyInstance) {
               transactionId: result.transactionId,
               type: "payin",
               status: "pending",
-              amount: body.amount,
+              amount: result.amount,
               currency: "BDT",
               provider: "payok-bd-payin",
             });
@@ -156,7 +156,7 @@ export async function registerPortalPayinsRoutes(app: FastifyInstance) {
               {
                 ...result,
                 status: "pending",
-                amount: body.amount,
+                amount: result.amount,
                 expiresAt,
                 environment: body.environment,
               },

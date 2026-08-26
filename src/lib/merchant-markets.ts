@@ -194,6 +194,7 @@ export const MARKET_BLOCKER_CODES = [
   "global_kyc_pending",
   "suspended",
   "wallet_not_provisioned",
+  "live_only",
   "provider_unavailable",
 ] as const;
 export type MarketBlockerCode = (typeof MARKET_BLOCKER_CODES)[number];
@@ -221,6 +222,8 @@ export function deriveMarketBoardFields(params: {
   market: MerchantMarketRow;
   globalKycStatus: string;
   walletsProvisioned: boolean;
+  /** Portal env being viewed. PYUSD has no test pocket — do not treat that as unprovisioned. */
+  environment?: "test" | "live";
 }): Pick<
   MerchantMarketBoardRow,
   | "displayName"
@@ -233,11 +236,13 @@ export function deriveMarketBoardFields(params: {
   | "walletsProvisioned"
 > {
   const { market, globalKycStatus, walletsProvisioned } = params;
+  const environment = params.environment ?? "live";
   const displayName = MARKET_DISPLAY_NAMES[market.market];
   const activationStatus = walletActivationForMarket(market);
   const settlementCurrencies = [...MARKET_SETTLEMENT_CURRENCIES[market.market]];
   const blockers: MarketBlocker[] = [];
   const globalKycOk = globalKycStatus === "verified";
+  const pyusdTestView = market.market === "pyusd" && environment === "test";
 
   if (market.entitlementStatus === "suspended") {
     pushBlocker(blockers, "suspended", `${displayName} is suspended. Contact support.`);
@@ -296,7 +301,15 @@ export function deriveMarketBoardFields(params: {
     }
   }
 
-  if (activationStatus === "active" && !walletsProvisioned) {
+  if (pyusdTestView && market.entitlementStatus === "approved") {
+    pushBlocker(
+      blockers,
+      "live_only",
+      "PYUSD checkout is only available in the live environment. Switch to live to use this wallet."
+    );
+  }
+
+  if (activationStatus === "active" && !walletsProvisioned && !pyusdTestView) {
     pushBlocker(
       blockers,
       "wallet_not_provisioned",
@@ -320,6 +333,7 @@ export function deriveMarketBoardFields(params: {
       b.code === "not_requested" ||
       b.code === "awaiting_review" ||
       b.code === "wallet_not_provisioned" ||
+      b.code === "live_only" ||
       b.code === "global_kyc_pending" ||
       b.code === "provider_unavailable" ||
       (b.code === "kyb_pending" && !globalKycOk)
@@ -363,13 +377,15 @@ async function settlementWalletsExist(params: {
 }): Promise<boolean> {
   const currencies = MARKET_SETTLEMENT_CURRENCIES[params.market].map((c) => c.trim().toUpperCase());
   if (currencies.length === 0) return false;
+  // PYUSD has no test pocket (Tekko is live-only). Provision status is always the live wallet.
+  const environment = params.market === "pyusd" ? "live" : params.environment;
   const rows = await db
     .select({ id: wallets.id, currency: wallets.currency })
     .from(wallets)
     .where(
       and(
         eq(wallets.merchantId, params.merchantId),
-        eq(wallets.environment, params.environment),
+        eq(wallets.environment, environment),
         eq(wallets.type, "merchant"),
         eq(wallets.status, "active"),
         inArray(wallets.currency, currencies)
@@ -403,6 +419,7 @@ export async function buildMerchantMarketBoard(params: {
       market,
       globalKycStatus,
       walletsProvisioned,
+      environment,
     });
     items.push({ ...market, ...derived });
   }
@@ -636,6 +653,7 @@ function presentSlot(params: {
     market,
     globalKycStatus: params.globalKycStatus,
     walletsProvisioned: wallet != null,
+    environment: params.environment,
   });
 
   const balance = wallet ? String(wallet.balance) : "0.00";

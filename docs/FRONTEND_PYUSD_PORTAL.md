@@ -8,9 +8,11 @@ Portal JWT surfaces for **one-time PYUSD** checkout (Tekko). Settles to merchant
 |--------|----------|
 | List markets | `GET /portal/me/markets` — includes `market: "pyusd"` |
 | Request access | `POST /portal/me/markets/pyusd/request` |
-| Wallets / balance | `GET /portal/me/wallets` / `GET /portal/me/balance` — after approve, a **PYUSD USDC** card (`currency: "PYUSD-USDC"`, `region: "pyusd"`). Europe **USDC** is a separate card. |
+| Wallets / balance | `GET /portal/me/wallets` / `GET /portal/me/balance` — after approve, a **PYUSD USDC** card (`currency: "PYUSD-USDC"`, `region: "pyusd"`). Europe **USDC** is a separate card. Use **`environment=live`**. Test has no PYUSD pocket (`live_only`). |
 
 Show two USDC-related cards when both markets are enabled: **USDC** (Europe) and **PYUSD USDC** (Tekko). Do not merge them. Copy: “PYUSD collects → PYUSD USDC settles. EUR payouts use Europe USDC only.”
+
+If `entitlementStatus` is `approved` but the test catalog shows `walletActivated: false` + `live_only`, the market is approved — switch the dashboard to **live**. Do not treat that as “not approved.”
 
 ## Create & poll (money routes)
 

@@ -22,7 +22,7 @@ Each **market** row now includes:
 | `canRequest` | Show **Request access** when `true` |
 | `ready` | Usable for money flows |
 | `unlockReason` | Single sentence why locked (`null` when ready) |
-| `blockers[]` | `{ code, message }` codes: `not_requested`, `awaiting_review`, `kyb_pending`, `kyb_rejected`, `global_kyc_pending`, `suspended`, `wallet_not_provisioned` |
+| `blockers[]` | `{ code, message }` codes: `not_requested`, `awaiting_review`, `kyb_pending`, `kyb_rejected`, `global_kyc_pending`, `suspended`, `wallet_not_provisioned`, `live_only` |
 | `walletsProvisioned` | Settlement wallet exists for env |
 
 `GET /portal/me/markets` and `GET /provider/merchants/:id/markets` return the same enriched market rows (+ `globalKycStatus`). Optional `?environment=` defaults to `live` (wallet provision check).
@@ -476,7 +476,7 @@ Ops **approves payment markets** (Bangladesh / India / Europe / Brazil / **PYUSD
 
 **No step-up MFA** on market PATCH (unlike wallet adjustments).
 
-**PYUSD note:** market `pyusd` settles **PYUSD-USDC** (display **PYUSD USDC**), a separate wallet from Europe **USDC**. Portal create: [`FRONTEND_PYUSD_PORTAL.md`](./FRONTEND_PYUSD_PORTAL.md). Provider reconcile: [`FRONTEND_PYUSD_PROVIDER.md`](./FRONTEND_PYUSD_PROVIDER.md).
+**PYUSD note:** market `pyusd` settles **PYUSD-USDC** (display **PYUSD USDC**), a separate wallet from Europe **USDC**. Tekko has no sandbox: the settlement pocket is **live-only**. On `?environment=test`, an approved PYUSD card stays `entitlementStatus: "approved"` with blocker `live_only` (switch to live) — not `wallet_not_provisioned`. Portal create: [`FRONTEND_PYUSD_PORTAL.md`](./FRONTEND_PYUSD_PORTAL.md). Provider reconcile: [`FRONTEND_PYUSD_PROVIDER.md`](./FRONTEND_PYUSD_PROVIDER.md).
 
 ### End-to-end flow
 

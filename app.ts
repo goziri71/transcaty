@@ -1645,7 +1645,7 @@ export async function buildApp() {
               transactionId: result.transactionId,
               type: "payin",
               status: "pending",
-              amount: body.amount,
+              amount: result.amount,
               currency: "BDT",
               provider: "payok-bd-payin",
             });
@@ -1653,7 +1653,7 @@ export async function buildApp() {
               {
                 ...result,
                 status: "pending",
-                amount: body.amount,
+                amount: result.amount,
                 expiresAt,
               },
               breakdown
@@ -1759,7 +1759,7 @@ export async function buildApp() {
               transactionId: result.transactionId,
               type: "payin",
               status: "pending",
-              amount: body.amount,
+              amount: result.amount,
               currency: "BRL",
               provider: "payok-br-payin",
             });
@@ -1767,7 +1767,7 @@ export async function buildApp() {
               {
                 ...result,
                 status: "pending",
-                amount: body.amount,
+                amount: result.amount,
                 expiresAt,
               },
               breakdown

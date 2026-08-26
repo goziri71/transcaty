@@ -119,6 +119,42 @@ describe("merchant-markets", () => {
     assert.equal(row.blockers[0]?.code, "suspended");
   });
 
+  it("does not treat missing test PYUSD pocket as unprovisioned", () => {
+    const row = deriveMarketBoardFields({
+      market: {
+        market: "pyusd",
+        entitlementStatus: "approved",
+        kybStatus: "verified",
+        requestedAt: null,
+        approvedAt: new Date(),
+      },
+      globalKycStatus: "verified",
+      walletsProvisioned: false,
+      environment: "test",
+    });
+    assert.equal(row.activationStatus, "active");
+    assert.equal(row.ready, false);
+    assert.equal(row.blockers.some((b) => b.code === "wallet_not_provisioned"), false);
+    assert.equal(row.blockers.some((b) => b.code === "live_only"), true);
+  });
+
+  it("still flags missing live PYUSD pocket as unprovisioned", () => {
+    const row = deriveMarketBoardFields({
+      market: {
+        market: "pyusd",
+        entitlementStatus: "approved",
+        kybStatus: "verified",
+        requestedAt: null,
+        approvedAt: new Date(),
+      },
+      globalKycStatus: "verified",
+      walletsProvisioned: false,
+      environment: "live",
+    });
+    assert.equal(row.blockers.some((b) => b.code === "wallet_not_provisioned"), true);
+    assert.equal(row.blockers.some((b) => b.code === "live_only"), false);
+  });
+
   it("attributes USDC to Europe even when PYUSD is the only approved market", () => {
     const owner = pickOwningMarketForSharedCurrency(
       [marketRow("europe", "disabled"), marketRow("pyusd", "approved")],

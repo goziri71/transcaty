@@ -108,3 +108,29 @@ export function assertNonNegative(amount: string): void {
 export function gteAmount(a: string, b: string): boolean {
   return cmpAmount(a, b) >= 0;
 }
+
+/**
+ * After a provider create succeeds, return the committed request amount.
+ * If the provider echoed an amount, it must match at two-decimal precision.
+ * Missing/empty echo is allowed (PayOK create does not document `amount`).
+ * Unexpected types or mismatches throw so callers can fail the local tx closed.
+ */
+export function committedAmountMatchingProviderEcho(committed: string, echoed: unknown): string {
+  const committedNorm = normalizeMoneyAmountToTwoDecimals(committed);
+  if (echoed == null) return committedNorm;
+  if (typeof echoed === "string" && !echoed.trim()) return committedNorm;
+
+  let echoedNorm: string;
+  if (typeof echoed === "string") {
+    echoedNorm = normalizeMoneyAmountToTwoDecimals(echoed);
+  } else if (typeof echoed === "number" && Number.isFinite(echoed)) {
+    echoedNorm = normalizeMoneyAmountToTwoDecimals(String(echoed));
+  } else {
+    throw new Error(`Provider returned unexpected amount type: ${typeof echoed}`);
+  }
+
+  if (cmpAmount(echoedNorm, committedNorm) !== 0) {
+    throw new Error(`Provider amount mismatch: requested ${committedNorm} got ${echoedNorm}`);
+  }
+  return committedNorm;
+}
