@@ -23,6 +23,7 @@ import { getOrCreateMerchantWallet } from "../tylt/crossramp-payin.js";
 import { getTekkoLiveConfig } from "./config.js";
 import { tekkoGet, tekkoPost } from "./client.js";
 import { ensureTekkoCustomerForMerchant } from "./customers.js";
+import { logTekkoPyusdFailure } from "./diagnostics.js";
 
 export const TEKKO_PYUSD_PROVIDER = "tekko-pyusd-payin";
 export const TEKKO_SETTLEMENT_CURRENCY = PYUSD_SETTLEMENT_CURRENCY;
@@ -207,6 +208,24 @@ export async function createTekkoPyusdPaymentIntent(params: {
       .set({ status: "failed", updatedAt: new Date() })
       .where(eq(transactions.id, tx.id));
     const detail = pickTekkoMessage(res.json, `Tekko create payment intent failed (${res.status})`);
+    logTekkoPyusdFailure(
+      { error: (obj, msg) => console.error(msg ?? "pyusd.tekko.failure", obj) },
+      {
+        surface: "tekko.create_upstream",
+        err: new Error(detail),
+        merchantId: params.merchantId,
+        environment: params.environment,
+        merchantReference: params.merchantReference,
+        amount: params.amount,
+        transactionId: tx.id,
+        httpStatus: res.status,
+        logDetail: detail,
+        extra: {
+          hasPaymentIntentId: Boolean(intent?.paymentIntentId),
+          hasDepositAddress: Boolean(intent?.depositAddress),
+        },
+      }
+    );
     if (res.status >= 400 && res.status < 500) {
       throw new UpstreamProviderClientError(detail, detail, res.status, tx.id, null);
     }

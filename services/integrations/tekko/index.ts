@@ -33,3 +33,9 @@ export {
   applyTekkoWebhookPayload,
   tekkoWebhookSecretConfigured,
 } from "./webhooks.js";
+export {
+  tekkoOpsSnapshot,
+  classifyTekkoPyusdError,
+  logTekkoPyusdFailure,
+} from "./diagnostics.js";
+export type { TekkoPyusdFailSurface, TekkoOpsSnapshot, LogTekkoPyusdFailureParams } from "./diagnostics.js";

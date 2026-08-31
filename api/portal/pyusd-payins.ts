@@ -10,6 +10,7 @@ import { merchants, idempotencyKeys } from "../../src/db/schema/index.js";
 import {
   createTekkoPyusdPaymentIntent,
   getTekkoPyusdPaymentIntentStatus,
+  logTekkoPyusdFailure,
   TEKKO_PYUSD_PROVIDER,
   TEKKO_SETTLEMENT_CURRENCY,
   TEKKO_SETTLEMENT_DISPLAY_NAME,
@@ -43,6 +44,16 @@ async function requirePortalPyusdAccess(
   reply: FastifyReply
 ): Promise<boolean> {
   if (environment === "test") {
+    const gateErr = new Error("PYUSD checkout is only available in the live environment");
+    logTekkoPyusdFailure(reply.request.log, {
+      surface: "portal.gate",
+      err: gateErr,
+      merchantId,
+      environment,
+      httpStatus: 503,
+      merchantCode: "payment_unavailable",
+      logDetail: "test_environment_rejected",
+    });
     reply.status(503).send({
       error: "Service Unavailable",
       message: "PYUSD checkout is only available in the live environment",
@@ -228,10 +239,17 @@ export async function registerPortalPyusdRoutes(app: FastifyInstance) {
           meta: { message: rawMsg, market: "pyusd" },
         });
         const mapped = merchantPaymentFlowErrorResponse(err);
-        request.log.warn(
-          { logDetail: mapped.logDetail ?? rawMsg, merchantId: user.merchantId },
-          "portal pyusd payin failed"
-        );
+        logTekkoPyusdFailure(request.log, {
+          surface: "portal.create",
+          err,
+          merchantId: user.merchantId,
+          environment: body.environment,
+          merchantReference: body.merchantReference,
+          amount: body.amount,
+          httpStatus: mapped.status,
+          merchantCode: mapped.body.code,
+          logDetail: mapped.logDetail ?? rawMsg,
+        });
         sendMerchantFacingReply(reply, mapped);
       }
     }
@@ -296,6 +314,16 @@ export async function registerPortalPyusdRoutes(app: FastifyInstance) {
         };
       } catch (err) {
         const mapped = merchantPaymentFlowErrorResponse(err);
+        logTekkoPyusdFailure(request.log, {
+          surface: "portal.get",
+          err,
+          merchantId: user.merchantId,
+          environment: env,
+          transactionId,
+          httpStatus: mapped.status,
+          merchantCode: mapped.body.code,
+          logDetail: mapped.logDetail,
+        });
         sendMerchantFacingReply(reply, mapped);
         return;
       }

@@ -279,7 +279,7 @@ export function merchantPaymentFlowErrorResponse(err: unknown): MerchantFacingRe
         message: PAYMENT_UNAVAILABLE,
         code: "payment_unavailable",
       },
-      logDetail: err.name,
+      logDetail: `${err.name}: ${err.message}`,
     };
   }
 

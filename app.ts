@@ -108,6 +108,7 @@ import {
   createTekkoPyusdPaymentIntent,
   getTekkoLiveConfig,
   getTekkoPyusdPaymentIntentStatus,
+  logTekkoPyusdFailure,
   readTekkoWebhookHeaders,
   TEKKO_PYUSD_PROVIDER,
   TEKKO_SETTLEMENT_CURRENCY,
@@ -2912,11 +2913,18 @@ export async function buildApp() {
       if (response === undefined) return;
       return response;
     } catch (err) {
-      app.log.error(err);
       const mapped = merchantPaymentFlowErrorResponse(err);
-      if (mapped.logDetail) {
-        app.log.warn({ logDetail: mapped.logDetail }, "v1 pyusd payin merchant-facing error detail");
-      }
+      logTekkoPyusdFailure(app.log, {
+        surface: "v1.create",
+        err,
+        merchantId: m.merchantId,
+        environment: m.environment,
+        merchantReference: body.merchantReference,
+        amount: body.amount,
+        httpStatus: mapped.status,
+        merchantCode: mapped.body.code,
+        logDetail: mapped.logDetail,
+      });
       sendMerchantFacingReply(reply, mapped);
       return;
     }
@@ -2973,6 +2981,16 @@ export async function buildApp() {
       };
     } catch (err) {
       const mapped = merchantPaymentFlowErrorResponse(err);
+      logTekkoPyusdFailure(app.log, {
+        surface: "v1.get",
+        err,
+        merchantId: m.merchantId,
+        environment: m.environment,
+        transactionId,
+        httpStatus: mapped.status,
+        merchantCode: mapped.body.code,
+        logDetail: mapped.logDetail,
+      });
       sendMerchantFacingReply(reply, mapped);
       return;
     }
