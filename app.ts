@@ -1575,7 +1575,7 @@ export async function buildApp() {
           customer: z.object({
             name: z.string(),
             email: z.string().email(),
-            phone: z.string(),
+            phone: z.string().min(1, "customer.phone is required"),
             deviceId: z.string(),
           }),
           goodsInfo: z.object({
@@ -1689,7 +1689,7 @@ export async function buildApp() {
           customer: z.object({
             name: z.string(),
             email: z.string().email(),
-            phone: z.string(),
+            phone: z.string().min(1, "customer.phone is required"),
             deviceId: z.string(),
           }),
           goodsInfo: z.object({

@@ -16,6 +16,7 @@ import { addAmount, committedAmountMatchingProviderEcho } from "../../../src/lib
 import type { PayokEnvironment } from "./provider/config.js";
 import { assertPayinAllowed } from "../../../src/lib/fraud-policy.js";
 import { assertBangladeshPaymentsEnabled } from "../../../src/lib/bangladesh-rail-pause.js";
+import { UpstreamProviderClientError } from "../../../src/lib/merchant-facing-errors.js";
 
 export async function createPayinOrder(params: {
   merchantId: string;
@@ -75,13 +76,22 @@ export async function createPayinOrder(params: {
 
   const res = body as {
     code?: string;
+    message?: string;
     amount?: unknown;
     paymentInfo?: { content?: string; type?: string };
     platformOrderId?: string;
   };
   if (status !== 200 || res.code === "FAIL") {
     await db.update(transactions).set({ status: "failed" }).where(eq(transactions.id, tx.id));
-    throw new Error(`Payok create order failed: ${JSON.stringify(res)}`);
+    throw new UpstreamProviderClientError(
+      `Payok create order failed: ${JSON.stringify(res)}`,
+      res.message
+        ? `Payment provider rejected the request: ${res.message}`
+        : "Payment provider rejected the request. Check the customer and payment details you sent and try again.",
+      400,
+      tx.id,
+      null
+    );
   }
 
   const committedAmount = String(tx.amount);

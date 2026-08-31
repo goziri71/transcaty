@@ -98,7 +98,15 @@ export async function createPayinOrder(params: {
         null
       );
     }
-    throw new Error(`Payok create order failed: ${detail}`);
+    throw new UpstreamProviderClientError(
+      `Payok create order failed: ${detail}`,
+      res.message
+        ? `Payment provider rejected the request: ${res.message}`
+        : "Payment provider rejected the request. Check the customer and payment details you sent and try again.",
+      400,
+      tx.id,
+      null
+    );
   }
 
   const committedAmount = String(tx.amount);
