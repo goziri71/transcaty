@@ -76,7 +76,10 @@ describe("merchantPaymentFlowErrorResponse", () => {
     const mapped = merchantPaymentFlowErrorResponse(err);
     assert.equal(mapped.status, 503);
     assert.equal(mapped.body.code, "payment_unavailable");
-    assert.equal(mapped.logDetail, "TekkoStaticProxyNotConfiguredError");
+    assert.equal(
+      mapped.logDetail,
+      "TekkoStaticProxyNotConfiguredError: Tekko static egress proxy is not configured"
+    );
   });
 
   it("maps Bangladesh rail pause to payment_unavailable", () => {
