@@ -213,12 +213,21 @@ describe("outboundFetch", () => {
     assert.equal(calls.length, 0, "fetch is never called when circuit is open");
   });
 
-  test("passes dispatcher through to fetch init", async () => {
-    const dispatcher = { kind: "proxy-agent-stub" };
-    mockFetch(() => new Response("ok", { status: 200 }));
-    await outboundFetch("https://example.test/x", { method: "GET" }, {
-      dispatcher: dispatcher as never,
-    });
-    assert.equal((calls[0]?.init as { dispatcher?: unknown }).dispatcher, dispatcher);
+  test("uses undici fetch when dispatcher is set (skips global fetch)", async () => {
+    mockFetch(() => new Response("from-global", { status: 200 }));
+    await assert.rejects(
+      () =>
+        outboundFetch(
+          "https://example.test/x",
+          { method: "GET" },
+          {
+            retries: 0,
+            // Not a real ProxyAgent — undici will reject it. Point is global fetch is unused.
+            dispatcher: { dispatch() { throw new Error("stub-dispatcher"); } } as never,
+          }
+        ),
+      /stub-dispatcher|invalid|dispatcher|UND_ERR|fetch failed/i
+    );
+    assert.equal(calls.length, 0, "global fetch must not be used when dispatcher is set");
   });
 });

@@ -19,7 +19,7 @@
  * across an outboundFetch. Always commit the local debit first, call this
  * helper, then post the success/refund in a second transaction.
  */
-import type { Dispatcher } from "undici";
+import { fetch as undiciFetch, type Dispatcher } from "undici";
 
 const DEFAULT_TIMEOUT_MS = parseEnvInt("OUTBOUND_HTTP_TIMEOUT_MS", 25_000, 1_000);
 const DEFAULT_RETRIES = parseEnvInt("OUTBOUND_HTTP_RETRIES", 2, 0);
@@ -70,6 +70,11 @@ export interface OutboundFetchOptions {
   /**
    * Optional undici dispatcher (e.g. ProxyAgent). Applied only to this call —
    * never set as a process-wide proxy. PayOK/Tylt/webhooks omit this.
+   *
+   * When set, the request uses `undici.fetch` (same package as ProxyAgent).
+   * Passing a npm-undici ProxyAgent into Node's global `fetch` breaks on
+   * Node versions whose bundled undici disagrees on dispatcher hooks
+   * ("invalid onError method").
    */
   dispatcher?: Dispatcher;
 }
@@ -218,7 +223,9 @@ export async function outboundFetch(
     const signal = AbortSignal.timeout(timeoutMs);
     let res: Response;
     try {
-      const fetchInit: RequestInit = {
+      // Same undici major as ProxyAgent when proxying; global fetch otherwise.
+      const runFetch = options.dispatcher ? undiciFetch : fetch;
+      const fetchInit: RequestInit & { dispatcher?: Dispatcher } = {
         ...init,
         headers: baseHeaders,
         signal,
@@ -226,7 +233,7 @@ export async function outboundFetch(
       if (options.dispatcher) {
         fetchInit.dispatcher = options.dispatcher;
       }
-      res = await fetch(url, fetchInit);
+      res = await runFetch(url, fetchInit);
     } catch (err) {
       lastError = err;
       if (options.circuit) {
