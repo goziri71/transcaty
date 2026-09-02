@@ -32,7 +32,7 @@ import { getDefaultPayokEnvironment, type PayokEnvironment } from "../../service
 import { pickPrimaryMerchantWallet, primaryMerchantBalanceByMerchantId } from "../../src/lib/provider-merchant-balance.js";
 import { reconcilePayokPayinByTransactionId } from "../../services/domestic/payok/reconcile-payin.js";
 import { reconcileCrossRampPayinByTransactionId } from "../../services/integrations/tylt/index.js";
-import { reconcileTekkoPyusdPayinByTransactionId, reconcileTekkoNgnByTransactionId } from "../../services/integrations/tekko/index.js";
+import { reconcileTekkoPyusdPayinByTransactionId, reconcileTekkoNgnByTransactionId, settleTekkoNgnVaCredit, findMerchantIdByTekkoCustomerId, findMerchantIdByTekkoNgnVaAccountNumber } from "../../services/integrations/tekko/index.js";
 import { ProviderCircuitOpenError } from "../../src/lib/provider-circuit-breaker.js";
 import { queueMerchantWebhook } from "../../src/lib/merchant-webhook.js";
 import { registerProviderMerchantRiskRoutes } from "./merchant-risk.js";
@@ -3674,6 +3674,109 @@ export async function registerProviderRoutes(app: FastifyInstance) {
         }
         request.log.error(err);
         return reply.status(500).send({ error: "Internal Server Error" });
+      }
+    }
+  );
+
+  /** Ops recovery: credit merchant NGN when Tekko VA deposit landed but webhook settle missed. */
+  app.post(
+    "/provider/tekko/ngn/va-credit",
+    {
+      schema: {
+        body: z.object({
+          merchantId: z.string().uuid().optional(),
+          endUserId: z.string().min(1).optional(),
+          accountNumber: z.string().min(10).max(10).optional(),
+          amount: z.string().min(1),
+          externalReference: z.string().min(1).max(255),
+        }),
+        response: {
+          200: z.object({
+            outcome: z.enum(["finalized", "already_settled"]),
+            transactionId: z.string().nullable(),
+            merchantId: z.string(),
+            merchantWebhookQueued: z.boolean().optional(),
+          }),
+          400: errorResponse,
+          401: errorResponse,
+          404: errorResponse,
+          500: errorResponse,
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!ensureProviderPermission(request, reply, "tx.reconcile")) return;
+      const body = request.body as {
+        merchantId?: string;
+        endUserId?: string;
+        accountNumber?: string;
+        amount: string;
+        externalReference: string;
+      };
+
+      try {
+        let merchantId = body.merchantId ?? null;
+        if (!merchantId && body.endUserId) {
+          merchantId = await findMerchantIdByTekkoCustomerId(body.endUserId);
+        }
+        if (!merchantId && body.accountNumber) {
+          merchantId = await findMerchantIdByTekkoNgnVaAccountNumber(body.accountNumber);
+        }
+        if (!merchantId) {
+          return reply.status(404).send({
+            error: "Not found",
+            message: "Merchant not found for given merchantId / endUserId / accountNumber",
+          });
+        }
+
+        const settled = await settleTekkoNgnVaCredit({
+          merchantId,
+          environment: "live",
+          amount: body.amount,
+          externalReference: body.externalReference,
+          endUserId: body.endUserId ?? null,
+          source: "reconcile",
+          eventId: null,
+        });
+
+        if (!settled) {
+          audit({
+            action: "provider.tekko.ngn.va_credit",
+            actor: request.provider?.providerUserId ?? "provider:api_key",
+            resource: body.externalReference,
+            meta: { outcome: "already_settled", merchantId },
+          });
+          return reply.status(200).send({
+            outcome: "already_settled",
+            transactionId: null,
+            merchantId,
+          });
+        }
+
+        queueMerchantWebhook(settled.merchantId, settled.event).catch((e) =>
+          request.log.warn(e, "merchant webhook queue failed after Tekko NGN VA credit")
+        );
+        audit({
+          action: "provider.tekko.ngn.va_credit",
+          actor: request.provider?.providerUserId ?? "provider:api_key",
+          resource: settled.transactionId,
+          meta: {
+            outcome: "finalized",
+            merchantId,
+            amount: body.amount,
+            externalReference: body.externalReference,
+          },
+        });
+        return reply.status(200).send({
+          outcome: "finalized",
+          transactionId: settled.transactionId,
+          merchantId,
+          merchantWebhookQueued: true,
+        });
+      } catch (err) {
+        request.log.error(err);
+        const msg = err instanceof Error ? err.message : String(err);
+        return reply.status(400).send({ error: "Bad Request", message: msg.slice(0, 300) });
       }
     }
   );

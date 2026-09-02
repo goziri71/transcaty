@@ -49,6 +49,7 @@ Approving provisions the merchant **NGN** settlement wallet (live only). Merchan
 | Method | Path | Body |
 |--------|------|------|
 | `POST` | `/provider/tekko/ngn/reconcile` | `{ "transactionId": "<uuid>" }` |
+| `POST` | `/provider/tekko/ngn/va-credit` | Manual VA settle when webhook missed (see below) |
 
 Permission: `tx.reconcile`.
 
@@ -59,6 +60,22 @@ Routes by provider:
 - Permanent VA credits are primarily webhook-driven (`customer.wallet.credited`); reconcile still accepts Tekko NGN tx ids and returns `finalized` | `not_terminal` | `skipped`
 
 Response `outcome`: `finalized` | `not_terminal` | `skipped` (`already_terminal` | `wrong_rail`). May include `collectionStatus` or `withdrawalStatus` and `merchantWebhookQueued`.
+
+### Manual VA credit (missed webhook)
+
+Use when a payer deposited to the merchant VA and Tekko shows the credit, but Transacty has no `tekko-ngn-va` pay-in / NGN balance change.
+
+```json
+{
+  "merchantId": "<uuid>",
+  "amount": "5000.00",
+  "externalReference": "<tekko-reference-or-unique-id>",
+  "endUserId": "<optional tekko customer id>",
+  "accountNumber": "<optional 10-digit VA>"
+}
+```
+
+Resolve merchant via `merchantId`, else `endUserId` → `tekko_customer_id`, else `accountNumber` → stored VA. Idempotent on `externalReference`.
 
 ## UI checklist
 

@@ -31,6 +31,7 @@ export type AuditAction =
   | "provider.payok.payin.reconcile"
   | "provider.tekko.pyusd.reconcile"
   | "provider.tekko.ngn.reconcile"
+  | "provider.tekko.ngn.va_credit"
   | "provider.merchant.rates_changed"
   | "provider.merchant.fee_schedule_changed"
   | "provider.merchant.ip_whitelist_changed"

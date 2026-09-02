@@ -700,3 +700,17 @@ export async function findMerchantIdByTekkoCustomerId(
     .limit(1);
   return row?.id ?? null;
 }
+
+/** Fallback when webhook omits endUserId but includes the permanent VA NUBAN. */
+export async function findMerchantIdByTekkoNgnVaAccountNumber(
+  accountNumber: string
+): Promise<string | null> {
+  const acct = accountNumber.replace(/\s/g, "").trim();
+  if (!acct) return null;
+  const [row] = await db
+    .select({ id: merchants.id })
+    .from(merchants)
+    .where(eq(merchants.tekkoNgnVaAccountNumber, acct))
+    .limit(1);
+  return row?.id ?? null;
+}

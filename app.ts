@@ -176,6 +176,9 @@ export async function buildApp() {
   const allowDebugBody = debugBodyEnvSet && !isProduction;
   const debugTyltWebhookBodyEnvSet = process.env.TYLT_WEBHOOK_DEBUG_BODY === "1";
   const allowTyltWebhookDebugBody = debugTyltWebhookBodyEnvSet && !isProduction;
+  const debugTekkoWebhookBodyEnvSet = process.env.TEKKO_WEBHOOK_DEBUG_BODY === "1";
+  /** Full Tekko JSON body in logs. Allowed in production when explicitly set (ops NGN/PYUSD debug). */
+  const allowTekkoWebhookDebugBody = debugTekkoWebhookBodyEnvSet;
   // Trust exactly the reverse-proxy hop count in front of this service (Render's
   // edge by default) so `request.ip` resolves to the real client IP instead of an
   // attacker-supplied X-Forwarded-For entry. Override via TRUST_PROXY_HOPS if a
@@ -232,6 +235,11 @@ export async function buildApp() {
     );
   } else if (debugTyltWebhookBodyEnvSet) {
     app.log.warn("TYLT_WEBHOOK_DEBUG_BODY=1: full TL Pay webhook payloads will be logged.");
+  }
+  if (debugTekkoWebhookBodyEnvSet) {
+    app.log.warn(
+      "TEKKO_WEBHOOK_DEBUG_BODY=1: full Tekko webhook JSON bodies will be logged (remove after debugging)."
+    );
   }
 
   app.setValidatorCompiler(validatorCompiler);
@@ -1434,7 +1442,13 @@ export async function buildApp() {
       })
     ) {
       app.log.warn(
-        { path: TEKKO_WEBHOOK_PATH, hasSig: !!hdrs.signature, rawBodyLen: rawBody.length },
+        {
+          path: TEKKO_WEBHOOK_PATH,
+          hasSig: !!hdrs.signature,
+          rawBodyLen: rawBody.length,
+          eventHeader: hdrs.event,
+          rawBodyPreview: allowTekkoWebhookDebugBody ? rawBody.slice(0, 4000) : undefined,
+        },
         "tekko webhook rejected: invalid or missing signature"
       );
       logSecurityEvent("webhook.signature_rejected", {
@@ -1448,9 +1462,77 @@ export async function buildApp() {
     const body = typeof request.body === "object" && request.body !== null ? request.body : {};
     const root = body as Record<string, unknown>;
     const data =
-      root.data && typeof root.data === "object"
+      root.data && typeof root.data === "object" && !Array.isArray(root.data)
         ? (root.data as Record<string, unknown>)
         : root;
+    const eventType =
+      (typeof hdrs.event === "string" && hdrs.event) ||
+      (typeof root.type === "string" && root.type) ||
+      (typeof root.event === "string" && root.event) ||
+      "";
+    const currencyRaw = data.currency ?? data.asset ?? data.token;
+    const currency =
+      typeof currencyRaw === "string"
+        ? currencyRaw
+        : currencyRaw && typeof currencyRaw === "object" && !Array.isArray(currencyRaw)
+          ? typeof (currencyRaw as { code?: unknown }).code === "string"
+            ? (currencyRaw as { code: string }).code
+            : undefined
+          : undefined;
+    const amountRaw = data.amount ?? data.value ?? data.creditAmount;
+    const amount =
+      typeof amountRaw === "number" || typeof amountRaw === "string" ? amountRaw : undefined;
+    const endUserId =
+      typeof data.endUserId === "string"
+        ? data.endUserId
+        : typeof data.customerId === "string"
+          ? data.customerId
+          : undefined;
+    const reference =
+      typeof data.reference === "string"
+        ? data.reference
+        : typeof data.externalReference === "string"
+          ? data.externalReference
+          : undefined;
+    const accountNumber =
+      typeof data.accountNumber === "string"
+        ? data.accountNumber
+        : data.virtualAccount &&
+            typeof data.virtualAccount === "object" &&
+            !Array.isArray(data.virtualAccount) &&
+            typeof (data.virtualAccount as { accountNumber?: unknown }).accountNumber === "string"
+          ? (data.virtualAccount as { accountNumber: string }).accountNumber
+          : undefined;
+    const paymentIntentId =
+      typeof data.paymentIntentId === "string" ? data.paymentIntentId : undefined;
+    const settlementStatus =
+      typeof data.settlementStatus === "string" ? data.settlementStatus : undefined;
+
+    // Always print match fields so ops can confirm Tekko callbacks in the terminal/logs.
+    app.log.info(
+      {
+        path: TEKKO_WEBHOOK_PATH,
+        environment,
+        eventType,
+        currency,
+        amount,
+        endUserId,
+        reference,
+        accountNumber,
+        paymentIntentId,
+        settlementStatus,
+        watchFor:
+          "NGN VA credit: type=customer.wallet.credited + currency=NGN + endUserId|accountNumber; PYUSD: same type + PYUSD + paymentIntentId + settlementStatus=settled; payout: withdrawal.*",
+      },
+      "Tekko webhook received (verified)"
+    );
+    if (allowTekkoWebhookDebugBody) {
+      app.log.info(
+        { path: TEKKO_WEBHOOK_PATH, environment, tekkoWebhookPayload: body },
+        "Tekko webhook full body"
+      );
+    }
+
     const externalIdGuess =
       (typeof data.paymentIntentId === "string" && data.paymentIntentId) ||
       (typeof data.reference === "string" && data.reference) ||
@@ -1465,24 +1547,64 @@ export async function buildApp() {
       signatureValid: true,
       externalId: externalIdGuess,
     });
-    if (claim.kind === "duplicate") {
+    // Only short-circuit successful duplicates. Failed claims must re-apply so
+    // Tekko retries (and ops fixes) can settle NGN VA credits.
+    if (claim.kind === "duplicate" && claim.previousStatus === "processed") {
+      app.log.info(
+        { path: TEKKO_WEBHOOK_PATH, environment, eventType, externalId: externalIdGuess, duplicate: true },
+        "Tekko webhook duplicate (already processed)"
+      );
       return reply.type("text/plain").send("ok");
     }
+    const claimEventId = claim.eventId;
 
     try {
       const webhook = await applyTekkoWebhookPayload(body, hdrs.event);
-      await markWebhookProcessed(claim.eventId, {
+      await markWebhookProcessed(claimEventId, {
         transactionId: webhook?.event?.transactionId ?? null,
       });
       if (webhook) {
+        app.log.info(
+          {
+            path: TEKKO_WEBHOOK_PATH,
+            environment,
+            eventType,
+            merchantId: webhook.merchantId,
+            transactionId: webhook.event?.transactionId ?? null,
+          },
+          "Tekko webhook processed OK"
+        );
         queueMerchantWebhook(webhook.merchantId, webhook.event).catch((e) =>
           app.log.warn(e, "Merchant webhook queue failed")
         );
+      } else {
+        app.log.info(
+          {
+            path: TEKKO_WEBHOOK_PATH,
+            environment,
+            event: hdrs.event,
+            eventType,
+            currency,
+            amount,
+            endUserId,
+            accountNumber,
+            externalId: externalIdGuess,
+          },
+          "tekko webhook applied with no merchant state change"
+        );
       }
     } catch (err) {
-      await markWebhookFailed(claim.eventId, err).catch(() => {});
+      await markWebhookFailed(claimEventId, err).catch(() => {});
       app.log.error(
-        { err: err instanceof Error ? err.message : String(err), path: TEKKO_WEBHOOK_PATH },
+        {
+          err: err instanceof Error ? err.message : String(err),
+          path: TEKKO_WEBHOOK_PATH,
+          environment,
+          eventType,
+          currency,
+          endUserId,
+          accountNumber,
+        },
         "tekko webhook apply failed"
       );
       return reply.status(500).type("text/plain").send("INTERNAL");

@@ -25,6 +25,7 @@ import {
 } from "./ngn-collect.js";
 import {
   findMerchantIdByTekkoCustomerId,
+  findMerchantIdByTekkoNgnVaAccountNumber,
   settleTekkoNgnVaCredit,
 } from "./ngn-va.js";
 import {
@@ -104,6 +105,73 @@ function strField(obj: Record<string, unknown> | null, ...keys: string[]): strin
     if (typeof v === "number" && Number.isFinite(v)) return String(v);
   }
   return null;
+}
+
+function resolveWebhookEventType(
+  root: Record<string, unknown>,
+  eventTypeHint?: string | null
+): string | null {
+  return (
+    strField(root, "type", "event", "eventType", "event_type", "name") ??
+    (eventTypeHint?.trim() || null)
+  );
+}
+
+/** Nested-safe currency for Tekko wallet / VA payloads. */
+function resolveWebhookCurrency(data: Record<string, unknown>): string {
+  const direct = strField(data, "currency", "asset", "assetCode", "asset_code");
+  if (direct) return direct.toUpperCase();
+  const wallet = asRecord(data.wallet);
+  const fromWallet = strField(wallet, "currency", "asset", "assetCode");
+  if (fromWallet) return fromWallet.toUpperCase();
+  const va = asRecord(wallet?.virtualAccount) ?? asRecord(data.virtualAccount);
+  const fromVa = strField(va, "currency");
+  return (fromVa ?? "").toUpperCase();
+}
+
+function resolveWebhookAmount(data: Record<string, unknown>): string | null {
+  return strField(
+    data,
+    "netAmount",
+    "netCollectedAmount",
+    "net_collected_amount",
+    "creditedAmount",
+    "creditAmount",
+    "amount",
+    "value",
+    "ledgerAmount"
+  );
+}
+
+function resolveVaAccountNumber(data: Record<string, unknown>): string | null {
+  const direct = strField(
+    data,
+    "accountNumber",
+    "account_number",
+    "virtualAccountNumber",
+    "virtual_account_number",
+    "destinationAccountNumber",
+    "destination_account_number"
+  );
+  if (direct) return direct;
+  const wallet = asRecord(data.wallet);
+  const va =
+    asRecord(wallet?.virtualAccount) ??
+    asRecord(data.virtualAccount) ??
+    asRecord(data.virtual_account);
+  return strField(va, "accountNumber", "account_number");
+}
+
+function isNgnVaCreditEvent(eventType: string | null): boolean {
+  if (!eventType) return false;
+  const t = eventType.trim().toLowerCase();
+  return (
+    t === "customer.wallet.credited" ||
+    t === "master_wallet.credited" ||
+    t === "customer.deposit.credited" ||
+    t.endsWith("wallet.credited") ||
+    t.includes("wallet.credited")
+  );
 }
 
 async function findNgnPayoutTx(params: {
@@ -270,17 +338,16 @@ export async function applyTekkoWebhookPayload(
   const root = asRecord(parsed);
   if (!root) return null;
 
-  const eventType =
-    (typeof root.type === "string" ? root.type : null) ??
-    (eventTypeHint?.trim() || null);
+  const eventType = resolveWebhookEventType(root, eventTypeHint);
   const data = asRecord(root.data) ?? root;
   const eventId = strField(root, "id", "eventId", "event_id");
 
-  const currency = (strField(data, "currency") ?? "").toUpperCase();
+  const currency = resolveWebhookCurrency(data);
   const reference = strField(data, "reference", "collectionReference", "collection_reference");
   const endUserId =
     strField(data, "endUserId", "end_user_id", "customerId", "customer_id") ??
     (typeof data.endUserId === "number" ? String(data.endUserId) : null);
+  const vaAccountNumber = resolveVaAccountNumber(data);
   const paymentIntentId = strField(
     data,
     "paymentIntentId",
@@ -295,13 +362,7 @@ export async function applyTekkoWebhookPayload(
   );
   const paymentStatus = strField(data, "paymentStatus", "status", "payment_status");
   const settlementStatus = strField(data, "settlementStatus", "settlement_status");
-  const netAmount = strField(
-    data,
-    "netAmount",
-    "netCollectedAmount",
-    "net_collected_amount",
-    "amount"
-  );
+  const netAmount = resolveWebhookAmount(data);
   const withdrawalStatus = strField(data, "status", "withdrawalStatus", "withdrawal_status");
 
   // NGN bank payout webhooks (Tekko master-wallet/ng/withdraw).
@@ -346,16 +407,29 @@ export async function applyTekkoWebhookPayload(
     }
   }
 
-  // Permanent VA credit: customer.wallet.credited + NGN + endUserId → merchant.
-  if (
-    eventType === "customer.wallet.credited" &&
-    currency === "NGN" &&
-    endUserId &&
-    !paymentIntentId
-  ) {
-    const merchantId = await findMerchantIdByTekkoCustomerId(endUserId);
-    if (merchantId && netAmount) {
-      const externalReference = reference || eventId || `ngn-va-${endUserId}-${netAmount}`;
+  // Permanent VA credit: NGN wallet credit with customer / VA identity (not a PYUSD intent).
+  if (isNgnVaCreditEvent(eventType) && currency === "NGN" && !paymentIntentId) {
+    let merchantId = endUserId ? await findMerchantIdByTekkoCustomerId(endUserId) : null;
+    if (!merchantId && vaAccountNumber) {
+      merchantId = await findMerchantIdByTekkoNgnVaAccountNumber(vaAccountNumber);
+    }
+
+    const hasVaIdentity = Boolean(endUserId || vaAccountNumber);
+    if (hasVaIdentity) {
+      if (!merchantId) {
+        // Fail closed so Tekko retries and ops can fix tekko_customer_id / VA mapping.
+        throw new Error(
+          `Tekko NGN VA credit: no merchant for endUserId=${endUserId ?? "null"} account=${vaAccountNumber ?? "null"}`
+        );
+      }
+      if (!netAmount) {
+        throw new Error(
+          `Tekko NGN VA credit: missing amount for merchant=${merchantId} endUserId=${endUserId ?? "null"}`
+        );
+      }
+
+      const externalReference =
+        reference || eventId || `ngn-va-${endUserId ?? vaAccountNumber}-${netAmount}`;
       const settled = await settleTekkoNgnVaCredit({
         merchantId,
         environment: "live",
@@ -366,8 +440,10 @@ export async function applyTekkoWebhookPayload(
         eventId,
       });
       if (settled) return { merchantId: settled.merchantId, event: settled.event };
+      // Already settled (idempotent) — ok.
       return null;
     }
+    // master_wallet.credited with no customer/VA identity — try legacy collect below.
   }
 
   // Legacy temp collection match when currency/reference indicates collections rail.

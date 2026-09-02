@@ -51,6 +51,7 @@ export {
   getMerchantNgnVa,
   settleTekkoNgnVaCredit,
   findMerchantIdByTekkoCustomerId,
+  findMerchantIdByTekkoNgnVaAccountNumber,
   extractNgnVaDetails,
 } from "./ngn-va.js";
 export type { TekkoNgnVaDetails, TekkoNgnBvnInput } from "./ngn-va.js";
