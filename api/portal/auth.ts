@@ -172,17 +172,18 @@ export async function registerPortalAuthRoutes(app: FastifyInstance) {
         resource: merchant.id,
       });
 
+      const merchantSlug = merchant.slug ?? slug;
       return reply.status(201).send({
         token,
         merchantId: merchant.id,
-        merchantSlug: merchant.slug,
+        merchantSlug,
         email: user.email,
         role: "admin",
         needsActivation: true,
         mfaSetupRequired: isPortalMfaRequired(),
         merchant: {
           id: merchant.id,
-          slug: merchant.slug ?? slug,
+          slug: merchantSlug,
           businessName: body.businessName.trim(),
           name: body.businessName.trim(),
           status: "pending",

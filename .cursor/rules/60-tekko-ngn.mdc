@@ -40,3 +40,7 @@ Transacty offers **NGN** to merchants; Tekko is the rail. Merchants use Transact
 ## Ops
 
 Confirm `ngn_collections` + `ngn_payouts` with Tekko. Checklist: `docs/TEKKO_NGN_OPS_ENTITLEMENT.md`. Probe: `npm run tekko:ngn-entitlement-check`.
+
+## Docs for SPA / merchant API
+
+`docs/FRONTEND_NGN_PORTAL.md`, `docs/FRONTEND_NGN_PROVIDER.md`, `docs/MERCHANT_NGN_INTEGRATION.md`.
