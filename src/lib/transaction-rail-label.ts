@@ -9,6 +9,7 @@ export type MerchantTransactionRail =
   | "india"
   | "europe"
   | "pyusd"
+  | "nigeria"
   | "internal"
   | "unknown";
 
@@ -56,6 +57,12 @@ function labelFromProvider(provider: string): Pick<MerchantTransactionRailPresen
       return { rail: "europe", railLabel: "Europe payout" };
     case "tekko-pyusd-payin":
       return { rail: "pyusd", railLabel: "PYUSD pay-in" };
+    case "tekko-ngn-collect":
+      return { rail: "nigeria", railLabel: "Nigeria NGN collect (legacy)" };
+    case "tekko-ngn-va":
+      return { rail: "nigeria", railLabel: "Nigeria NGN virtual account" };
+    case "tekko-ngn-payout":
+      return { rail: "nigeria", railLabel: "Nigeria NGN payout" };
     case "internal-transfer":
       return { rail: "internal", railLabel: "Customer transfer" };
     case "internal-refund":
@@ -108,6 +115,16 @@ function inferTekkoPyusdFromMetadata(metadata: string | null): boolean {
   }
 }
 
+function inferTekkoNgnFromMetadata(metadata: string | null): boolean {
+  if (!metadata?.trim()) return false;
+  try {
+    const meta = JSON.parse(metadata) as { rail?: unknown; tekkoProduct?: unknown };
+    return meta.rail === "tekko" && (meta.tekkoProduct === "ngn_collect" || meta.tekkoProduct === "ngn_payout");
+  } catch {
+    return false;
+  }
+}
+
 export function presentTransactionRail(params: {
   provider: string | null;
   currency: string;
@@ -135,6 +152,10 @@ export function presentTransactionRail(params: {
     return { currency, rail: "pyusd", railLabel: "PYUSD pay-in" };
   }
 
+  if (inferTekkoNgnFromMetadata(params.metadata ?? null)) {
+    return { currency, rail: "nigeria", railLabel: "Nigeria NGN collect" };
+  }
+
   if (currency === "BDT") {
     return { currency, rail: "bangladesh", railLabel: "Bangladesh" };
   }
@@ -145,6 +166,10 @@ export function presentTransactionRail(params: {
 
   if (currency === "PYUSD" || currency === "PYUSD-USDC") {
     return { currency, rail: "pyusd", railLabel: "PYUSD pay-in" };
+  }
+
+  if (currency === "NGN") {
+    return { currency, rail: "nigeria", railLabel: "Nigeria NGN collect" };
   }
 
   if (currency === "EUR") {

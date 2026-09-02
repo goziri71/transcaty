@@ -22,6 +22,33 @@ describe("provider-ops-queues", () => {
     assert.equal(r.reconcileAction?.path, "/provider/tekko/pyusd/reconcile");
   });
 
+  it("maps Tekko NGN legacy collect to settle POST", () => {
+    const r = reconcileActionForProvider({
+      provider: "tekko-ngn-collect",
+      type: "payin",
+      transactionId: "11111111-1111-1111-1111-111111111111",
+    });
+    assert.equal(r.reconcileAction?.path, "/provider/tekko/ngn/reconcile");
+  });
+
+  it("maps Tekko NGN VA to settle POST", () => {
+    const r = reconcileActionForProvider({
+      provider: "tekko-ngn-va",
+      type: "payin",
+      transactionId: "11111111-1111-1111-1111-111111111111",
+    });
+    assert.equal(r.reconcileAction?.path, "/provider/tekko/ngn/reconcile");
+  });
+
+  it("maps Tekko NGN payout to settle POST", () => {
+    const r = reconcileActionForProvider({
+      provider: "tekko-ngn-payout",
+      type: "payout",
+      transactionId: "11111111-1111-1111-1111-111111111111",
+    });
+    assert.equal(r.reconcileAction?.path, "/provider/tekko/ngn/reconcile");
+  });
+
   it("leaves unknown rails without auto-settle", () => {
     const r = reconcileActionForProvider({
       provider: "tylt-eur-payout",

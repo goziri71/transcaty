@@ -43,13 +43,15 @@ function payoutCreationErrorResponse(err: Error & {
   };
 
   const code = err.merchantCode;
-  if (code === "insufficient_balance" || err.message === "Insufficient USDC balance") {
+  if (code === "insufficient_balance" || err.message === "Insufficient USDC balance" || err.message === "Insufficient balance") {
     return {
       status: 400,
       body: {
         error: "Bad Request",
         message:
-          "Insufficient USDC balance. Complete a successful EU pay-in to fund your USDC wallet, then retry the payout.",
+          err.message === "Insufficient USDC balance"
+            ? "Insufficient USDC balance. Complete a successful EU pay-in to fund your USDC wallet, then retry the payout."
+            : "Insufficient balance",
         code: "insufficient_balance",
         ...base,
       },
@@ -57,13 +59,19 @@ function payoutCreationErrorResponse(err: Error & {
     };
   }
 
-  if (code === "wallet_not_found" || err.message === "Merchant USDC wallet not found") {
+  if (
+    code === "wallet_not_found" ||
+    err.message === "Merchant USDC wallet not found" ||
+    err.message === "Merchant NGN wallet not found"
+  ) {
     return {
       status: 400,
       body: {
         error: "Bad Request",
         message:
-          "No USDC wallet found for this merchant. Fund USDC with a successful EU pay-in before creating a payout.",
+          err.message === "Merchant USDC wallet not found"
+            ? "No USDC wallet found for this merchant. Fund USDC with a successful EU pay-in before creating a payout."
+            : "Wallet not available",
         code: "wallet_not_found",
         ...base,
       },

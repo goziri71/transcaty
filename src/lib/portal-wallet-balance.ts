@@ -10,7 +10,14 @@ export const portalWalletLimitsSchema = z.object({
   payout: z.object({ min: z.number(), max: z.number() }),
 });
 
-export const portalWalletMarketSchema = z.enum(["bangladesh", "india", "europe", "brazil", "pyusd"]);
+export const portalWalletMarketSchema = z.enum([
+  "bangladesh",
+  "india",
+  "europe",
+  "brazil",
+  "pyusd",
+  "nigeria",
+]);
 export const portalWalletActivationStatusSchema = z.enum([
   "active",
   "not_enabled",
@@ -32,7 +39,7 @@ export const portalWalletBalanceItemSchema = z.object({
   status: z.string(),
   label: z.string().nullable(),
   displayLabel: z.string(),
-  region: z.enum(["bangladesh", "india", "europe", "brazil", "pyusd", "other"]),
+  region: z.enum(["bangladesh", "india", "europe", "brazil", "pyusd", "nigeria", "other"]),
   regionLabel: z.string(),
   lastUpdated: z.string().nullable(),
   updatedAt: z.string().nullable(),
@@ -62,6 +69,7 @@ export function merchantWalletRegionForCurrency(currency: string): PortalWalletR
   if (c === "USDC" || c === "EUR" || c === "GBP") return "europe";
   if (c === "PYUSD-USDC") return "pyusd";
   if (c === "BRL") return "brazil";
+  if (c === "NGN") return "nigeria";
   return "other";
 }
 
@@ -81,6 +89,8 @@ export function merchantWalletRegionLabel(region: PortalWalletRegion, currency: 
       return `Europe (${c})`;
     case "pyusd":
       return "PYUSD USDC";
+    case "nigeria":
+      return "Nigeria (NGN)";
     default:
       return c || "Other";
   }
@@ -110,6 +120,10 @@ export function limitsForMerchantWalletCurrency(currency: string): PayinPayoutLi
   if (c === "PYUSD-USDC") {
     const l = LIMITS.tekkoPyusd.payin;
     return { payin: { ...l }, payout: { min: l.min, max: l.max } };
+  }
+  if (c === "NGN") {
+    const l = LIMITS.tekkoNgn;
+    return { payin: { ...l.payin }, payout: { ...l.payout } };
   }
   if (c === "BRL") {
     return { payin: { ...LIMITS.payokBr.payin }, payout: { ...LIMITS.payokBr.payout } };

@@ -88,7 +88,7 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
           environment: z.enum(["test", "live"]).default("test"),
           type: z.enum(["payin", "payout", "transfer", "refund"]).optional(),
           status: z.enum(["pending", "success", "failed"]).optional(),
-          rail: z.enum(["bangladesh", "brazil", "india", "europe", "pyusd", "internal"]).optional(),
+          rail: z.enum(["bangladesh", "brazil", "india", "europe", "pyusd", "nigeria", "internal"]).optional(),
           customerId: z.string().uuid().optional(),
           limit: z.coerce.number().min(1).max(100).default(20),
           offset: z.coerce.number().min(0).default(0),
@@ -128,7 +128,7 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
         environment: "test" | "live";
         type?: "payin" | "payout" | "transfer" | "refund";
         status?: "pending" | "success" | "failed";
-        rail?: "bangladesh" | "brazil" | "india" | "europe" | "pyusd" | "internal";
+        rail?: "bangladesh" | "brazil" | "india" | "europe" | "pyusd" | "nigeria" | "internal";
         customerId?: string;
         limit: number;
         offset: number;
@@ -146,7 +146,15 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
         );
       } else if (rail === "europe") conditions.push(like(transactions.provider, "tylt-eur%"));
       else if (rail === "pyusd") conditions.push(eq(transactions.provider, "tekko-pyusd-payin"));
-      else if (rail === "internal") {
+      else if (rail === "nigeria") {
+        conditions.push(
+          or(
+            eq(transactions.provider, "tekko-ngn-collect"),
+            eq(transactions.provider, "tekko-ngn-va"),
+            eq(transactions.provider, "tekko-ngn-payout")
+          )!
+        );
+      } else if (rail === "internal") {
         conditions.push(
           or(
             eq(transactions.provider, "internal-transfer"),

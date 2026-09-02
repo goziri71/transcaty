@@ -21,8 +21,9 @@ import {
   PYUSD_SETTLEMENT_CURRENCY,
   PYUSD_SETTLEMENT_DISPLAY_NAME,
 } from "./pyusd-settlement.js";
+import { NGN_SETTLEMENT_CURRENCY } from "./ngn-settlement.js";
 
-export const MERCHANT_MARKETS = ["bangladesh", "india", "europe", "brazil", "pyusd"] as const;
+export const MERCHANT_MARKETS = ["bangladesh", "india", "europe", "brazil", "pyusd", "nigeria"] as const;
 export type MerchantMarket = (typeof MERCHANT_MARKETS)[number];
 
 export const MARKET_ENTITLEMENT_STATUSES = [
@@ -53,6 +54,8 @@ export const MARKET_SETTLEMENT_CURRENCIES: Record<MerchantMarket, readonly strin
   brazil: ["BRL"],
   /** Tekko PYUSD proceeds — not the Europe Tylt USDC pocket. */
   pyusd: [PYUSD_SETTLEMENT_CURRENCY],
+  /** Tekko NGN temporary bank collect — native Naira pocket. */
+  nigeria: [NGN_SETTLEMENT_CURRENCY],
 };
 
 export function marketForCurrency(currency: string): MerchantMarket | null {
@@ -62,6 +65,7 @@ export function marketForCurrency(currency: string): MerchantMarket | null {
   if (region === "europe") return "europe";
   if (region === "brazil") return "brazil";
   if (region === "pyusd") return "pyusd";
+  if (region === "nigeria") return "nigeria";
   return null;
 }
 
@@ -184,6 +188,7 @@ export const MARKET_DISPLAY_NAMES: Record<MerchantMarket, string> = {
   europe: "Europe",
   brazil: "Brazil",
   pyusd: "PYUSD",
+  nigeria: "Nigeria (NGN)",
 };
 
 export const MARKET_BLOCKER_CODES = [
@@ -243,6 +248,8 @@ export function deriveMarketBoardFields(params: {
   const blockers: MarketBlocker[] = [];
   const globalKycOk = globalKycStatus === "verified";
   const pyusdTestView = market.market === "pyusd" && environment === "test";
+  const nigeriaTestView = market.market === "nigeria" && environment === "test";
+  const tekkoLiveOnlyTestView = pyusdTestView || nigeriaTestView;
 
   if (market.entitlementStatus === "suspended") {
     pushBlocker(blockers, "suspended", `${displayName} is suspended. Contact support.`);
@@ -301,15 +308,17 @@ export function deriveMarketBoardFields(params: {
     }
   }
 
-  if (pyusdTestView && market.entitlementStatus === "approved") {
+  if (tekkoLiveOnlyTestView && market.entitlementStatus === "approved") {
     pushBlocker(
       blockers,
       "live_only",
-      "PYUSD checkout is only available in the live environment. Switch to live to use this wallet."
+      market.market === "nigeria"
+        ? "NGN collection is only available in the live environment. Switch to live to use this wallet."
+        : "PYUSD checkout is only available in the live environment. Switch to live to use this wallet."
     );
   }
 
-  if (activationStatus === "active" && !walletsProvisioned && !pyusdTestView) {
+  if (activationStatus === "active" && !walletsProvisioned && !tekkoLiveOnlyTestView) {
     pushBlocker(
       blockers,
       "wallet_not_provisioned",
@@ -377,8 +386,9 @@ async function settlementWalletsExist(params: {
 }): Promise<boolean> {
   const currencies = MARKET_SETTLEMENT_CURRENCIES[params.market].map((c) => c.trim().toUpperCase());
   if (currencies.length === 0) return false;
-  // PYUSD has no test pocket (Tekko is live-only). Provision status is always the live wallet.
-  const environment = params.market === "pyusd" ? "live" : params.environment;
+  // PYUSD / NGN Tekko rails have no test pocket (live-only). Provision status is always the live wallet.
+  const environment =
+    params.market === "pyusd" || params.market === "nigeria" ? "live" : params.environment;
   const rows = await db
     .select({ id: wallets.id, currency: wallets.currency })
     .from(wallets)
@@ -432,8 +442,9 @@ export async function provisionSettlementWalletsForMarket(
   market: MerchantMarket
 ): Promise<void> {
   const currencies = MARKET_SETTLEMENT_CURRENCIES[market];
-  // Tekko PYUSD is live-only; do not create a test PYUSD-USDC pocket that can never be credited.
-  const environments: Array<"test" | "live"> = market === "pyusd" ? ["live"] : ["test", "live"];
+  // Tekko PYUSD / NGN are live-only; do not create test pockets that can never be credited.
+  const environments: Array<"test" | "live"> =
+    market === "pyusd" || market === "nigeria" ? ["live"] : ["test", "live"];
   for (const environment of environments) {
     for (const currency of currencies) {
       const wallet = await getOrCreateMerchantWallet({ merchantId, environment, currency });
@@ -457,6 +468,17 @@ export async function provisionSettlementWalletsForMarket(
       });
     } catch {
       // Merchant pocket still works; fee apply skips if the platform row is missing.
+    }
+  }
+  if (market === "nigeria") {
+    try {
+      await getOrCreateMerchantWallet({
+        merchantId: PLATFORM_MERCHANT_ID,
+        environment: "live",
+        currency: NGN_SETTLEMENT_CURRENCY,
+      });
+    } catch {
+      // Fee apply skips if the platform NGN pocket is missing.
     }
   }
 }
@@ -646,7 +668,9 @@ function presentSlot(params: {
   const region =
     market.market === "pyusd"
       ? ("pyusd" as PortalWalletRegion)
-      : (merchantWalletRegionForCurrency(currency) as PortalWalletRegion);
+      : market.market === "nigeria"
+        ? ("nigeria" as PortalWalletRegion)
+        : (merchantWalletRegionForCurrency(currency) as PortalWalletRegion);
   const activationStatus = walletActivationForMarket(market);
   const walletActivated = wallet != null && activationStatus === "active";
   const derived = deriveMarketBoardFields({
@@ -701,6 +725,10 @@ export async function buildPortalWalletCatalog(params: {
   const pyusdMarket = markets.find((m) => m.market === "pyusd");
   if (pyusdMarket?.entitlementStatus === "approved") {
     await provisionSettlementWalletsForMarket(params.merchantId, "pyusd");
+  }
+  const nigeriaMarket = markets.find((m) => m.market === "nigeria");
+  if (nigeriaMarket?.entitlementStatus === "approved") {
+    await provisionSettlementWalletsForMarket(params.merchantId, "nigeria");
   }
   const globalKycStatus =
     params.globalKycStatus ?? (await getMerchantGlobalKycStatus(params.merchantId));
@@ -761,10 +789,11 @@ export async function buildPortalWalletCatalog(params: {
       europe: 2,
       brazil: 3,
       pyusd: 4,
-      other: 5,
+      nigeria: 5,
+      other: 6,
     };
-    const am = order[a.market] ?? 5;
-    const bm = order[b.market] ?? 5;
+    const am = order[a.market] ?? 6;
+    const bm = order[b.market] ?? 6;
     if (am !== bm) return am - bm;
     return a.currency.localeCompare(b.currency);
   });

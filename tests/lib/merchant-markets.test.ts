@@ -29,6 +29,7 @@ describe("merchant-markets", () => {
     assert.equal(marketForCurrency("USDT"), "india");
     assert.equal(marketForCurrency("USDC"), "europe");
     assert.equal(marketForCurrency("PYUSD-USDC"), "pyusd");
+    assert.equal(marketForCurrency("NGN"), "nigeria");
   });
 
   it("defines settlement currencies per market", () => {
@@ -36,11 +37,13 @@ describe("merchant-markets", () => {
     assert.deepEqual(MARKET_SETTLEMENT_CURRENCIES.india, ["USDT"]);
     assert.deepEqual(MARKET_SETTLEMENT_CURRENCIES.europe, ["USDC"]);
     assert.deepEqual(MARKET_SETTLEMENT_CURRENCIES.pyusd, ["PYUSD-USDC"]);
+    assert.deepEqual(MARKET_SETTLEMENT_CURRENCIES.nigeria, ["NGN"]);
   });
 
   it("validates market ids", () => {
     assert.equal(isMerchantMarket("europe"), true);
     assert.equal(isMerchantMarket("pyusd"), true);
+    assert.equal(isMerchantMarket("nigeria"), true);
     assert.equal(isMerchantMarket("invalid"), false);
   });
 

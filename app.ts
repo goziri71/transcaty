@@ -105,14 +105,21 @@ import {
 } from "./services/integrations/tylt/index.js";
   import {
   applyTekkoWebhookPayload,
+  createTekkoNgnPayout,
   createTekkoPyusdPaymentIntent,
+  getMerchantNgnVa,
+  getOrProvisionMerchantNgnVa,
   getTekkoLiveConfig,
+  getTekkoNgnPayoutStatus,
   getTekkoPyusdPaymentIntentStatus,
+  listTekkoNgnBanks,
   logTekkoPyusdFailure,
   readTekkoWebhookHeaders,
-  TEKKO_PYUSD_PROVIDER,
+  TEKKO_NGN_SETTLEMENT_CURRENCY,
+  TEKKO_NGN_SETTLEMENT_DISPLAY_NAME,
   TEKKO_SETTLEMENT_CURRENCY,
   TEKKO_SETTLEMENT_DISPLAY_NAME,
+  verifyTekkoNgnBankAccount,
   verifyTekkoWebhookSignature,
 } from "./services/integrations/tekko/index.js";
 import { LIMITS } from "./src/lib/limits.js";
@@ -1411,7 +1418,7 @@ export async function buildApp() {
       app.log.warn({ path: TEKKO_WEBHOOK_PATH }, "tekko webhook rejected: TEKKO_WEBHOOK_SECRET not configured");
       logSecurityEvent("webhook.signature_rejected", {
         path: TEKKO_WEBHOOK_PATH,
-        rail: TEKKO_PYUSD_PROVIDER,
+        rail: "tekko",
         environment,
       });
       return reply.status(401).type("text/plain").send("Invalid signature");
@@ -1432,7 +1439,7 @@ export async function buildApp() {
       );
       logSecurityEvent("webhook.signature_rejected", {
         path: TEKKO_WEBHOOK_PATH,
-        rail: TEKKO_PYUSD_PROVIDER,
+        rail: "tekko",
         environment,
       });
       return reply.status(401).type("text/plain").send("Invalid signature");
@@ -1446,11 +1453,12 @@ export async function buildApp() {
         : root;
     const externalIdGuess =
       (typeof data.paymentIntentId === "string" && data.paymentIntentId) ||
+      (typeof data.reference === "string" && data.reference) ||
       (typeof root.id === "string" && root.id) ||
       null;
 
     const claim = await tryClaimWebhookEvent({
-      rail: TEKKO_PYUSD_PROVIDER,
+      rail: "tekko",
       environment,
       rawBody,
       signature: hdrs.signature,
@@ -2996,6 +3004,306 @@ export async function buildApp() {
     }
   });
 
+  // --- Tekko NGN permanent per-merchant VA → native NGN settlement ---
+  const ngnVaResponseSchema = z.object({
+    status: z.string(),
+    bvnStatus: z.string(),
+    accountNumber: z.string().nullable(),
+    bankName: z.string().nullable(),
+    accountName: z.string().nullable(),
+    currency: z.literal("NGN"),
+    ready: z.boolean(),
+    environment: z.enum(["test", "live"]),
+  });
+
+  app.get("/v1/ngn/virtual-account", {
+    schema: {
+      response: {
+        200: ngnVaResponseSchema,
+        401: errorResponse,
+        403: errorResponse,
+        503: merchantFacingError,
+      },
+    },
+  },
+  async (request, reply) => {
+    const m = request.merchant;
+    if (!m) return reply.status(401).send({ error: "Unauthorized" });
+    if (!m.scopes.includes("payin:create") && !m.scopes.includes("*")) {
+      return reply.status(403).send({ error: "Forbidden", message: "Missing scope: payin:create" });
+    }
+    if (!(await requireKycAndMarket(m.merchantId, "nigeria", reply))) return;
+    try {
+      return await getMerchantNgnVa({
+        merchantId: m.merchantId,
+        environment: m.environment,
+      });
+    } catch (err) {
+      sendMerchantFacingReply(reply, merchantPaymentFlowErrorResponse(err));
+      return;
+    }
+  });
+
+  app.post("/v1/ngn/virtual-account", {
+    schema: {
+      body: z.object({
+        bvn: z.string().min(11).max(11),
+        firstName: z.string().min(1).max(100),
+        lastName: z.string().min(1).max(100),
+        phoneNumber: z.string().min(8).max(20).optional(),
+        dateOfBirth: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        customerEmail: z.string().email().max(255).optional(),
+      }),
+      response: {
+        200: ngnVaResponseSchema,
+        400: merchantFacingError,
+        401: errorResponse,
+        403: errorResponse,
+        503: merchantFacingError,
+        500: merchantFacingError,
+      },
+    },
+  },
+  async (request, reply) => {
+    const m = request.merchant;
+    if (!m) return reply.status(401).send({ error: "Unauthorized" });
+    if (!m.scopes.includes("payin:create") && !m.scopes.includes("*")) {
+      return reply.status(403).send({ error: "Forbidden", message: "Missing scope: payin:create" });
+    }
+    if (!(await requireKycAndMarket(m.merchantId, "nigeria", reply))) return;
+    const body = request.body as {
+      bvn: string;
+      firstName: string;
+      lastName: string;
+      phoneNumber?: string;
+      dateOfBirth?: string;
+      customerEmail?: string;
+    };
+    try {
+      const response = await withIdempotency(
+        { request, reply, merchantId: m.merchantId, body, required: true },
+        async () =>
+          getOrProvisionMerchantNgnVa({
+            merchantId: m.merchantId,
+            environment: m.environment,
+            provision: true,
+            bvn: {
+              bvn: body.bvn,
+              firstName: body.firstName,
+              lastName: body.lastName,
+              phoneNumber: body.phoneNumber,
+              dateOfBirth: body.dateOfBirth,
+              customerEmail: body.customerEmail,
+            },
+          })
+      );
+      if (response === undefined) return;
+      return response;
+    } catch (err) {
+      sendMerchantFacingReply(reply, merchantPaymentFlowErrorResponse(err));
+      return;
+    }
+  });
+
+  const ngnBeneficiarySchema = z.object({
+    accountNumber: z.string().min(10).max(10),
+    bankCode: z.string().min(2).max(10),
+    accountName: z.string().min(1).max(200),
+    bankName: z.string().max(120).optional(),
+  });
+
+  app.get("/v1/ngn/banks", {
+    schema: {
+      querystring: z.object({ search: z.string().optional() }),
+      response: {
+        200: z.object({
+          items: z.array(z.object({ bankCode: z.string(), bankName: z.string() })),
+        }),
+        401: errorResponse,
+        403: errorResponse,
+        503: merchantFacingError,
+      },
+    },
+  },
+  async (request, reply) => {
+    const m = request.merchant;
+    if (!m) return reply.status(401).send({ error: "Unauthorized" });
+    if (
+      !m.scopes.includes("payout:create") &&
+      !m.scopes.includes("payin:create") &&
+      !m.scopes.includes("*")
+    ) {
+      return reply.status(403).send({ error: "Forbidden", message: "Missing scope" });
+    }
+    if (!(await requireKycAndMarket(m.merchantId, "nigeria", reply))) return;
+    const q = request.query as { search?: string };
+    try {
+      const items = await listTekkoNgnBanks({ search: q.search });
+      return { items };
+    } catch (err) {
+      sendMerchantFacingReply(reply, merchantPaymentFlowErrorResponse(err));
+      return;
+    }
+  });
+
+  app.post("/v1/ngn/verify-account", {
+    schema: {
+      body: z.object({
+        accountNumber: z.string().min(10).max(10),
+        bankCode: z.string().min(2).max(10),
+      }),
+      response: {
+        200: z.object({
+          accountNumber: z.string(),
+          bankCode: z.string(),
+          accountName: z.string(),
+        }),
+        400: merchantFacingError,
+        401: errorResponse,
+        403: errorResponse,
+        503: merchantFacingError,
+      },
+    },
+  },
+  async (request, reply) => {
+    const m = request.merchant;
+    if (!m) return reply.status(401).send({ error: "Unauthorized" });
+    if (!m.scopes.includes("payout:create") && !m.scopes.includes("*")) {
+      return reply.status(403).send({ error: "Forbidden", message: "Missing scope: payout:create" });
+    }
+    if (!(await requireKycAndMarket(m.merchantId, "nigeria", reply))) return;
+    const body = request.body as { accountNumber: string; bankCode: string };
+    try {
+      return await verifyTekkoNgnBankAccount(body);
+    } catch (err) {
+      sendMerchantFacingReply(reply, merchantPaymentFlowErrorResponse(err));
+      return;
+    }
+  });
+
+  app.post("/v1/ngn/payouts", {
+    schema: {
+      body: z.object({
+        amount: z.string(),
+        beneficiary: ngnBeneficiarySchema,
+        description: z.string().max(255).optional(),
+        merchantReference: z.string().min(1).max(128).optional(),
+      }),
+      response: {
+        200: z.object({
+          transactionId: z.string(),
+          reference: z.string(),
+          status: z.string(),
+          amount: z.string(),
+          currency: z.literal("NGN"),
+          environment: z.enum(["test", "live"]),
+        }),
+        400: merchantFacingError,
+        401: errorResponse,
+        403: errorResponse,
+        503: merchantFacingError,
+        500: merchantFacingError,
+      },
+    },
+  },
+  async (request, reply) => {
+    const m = request.merchant;
+    if (!m) return reply.status(401).send({ error: "Unauthorized" });
+    if (!m.scopes.includes("payout:create") && !m.scopes.includes("*")) {
+      return reply.status(403).send({ error: "Forbidden", message: "Missing scope: payout:create" });
+    }
+    if (!(await requireKycAndMarket(m.merchantId, "nigeria", reply))) return;
+    const body = request.body as {
+      amount: string;
+      beneficiary: z.infer<typeof ngnBeneficiarySchema>;
+      description?: string;
+      merchantReference?: string;
+    };
+    const bounds = LIMITS.tekkoNgn.payout;
+    const amt = parseFloat(body.amount);
+    if (!Number.isFinite(amt) || amt < bounds.min || amt > bounds.max) {
+      return reply.status(400).send({
+        error: "Bad Request",
+        message: `Amount must be between ${bounds.min} and ${bounds.max} NGN`,
+      });
+    }
+    try {
+      const response = await withIdempotency(
+        { request, reply, merchantId: m.merchantId, body, required: true },
+        async () => {
+          const result = await createTekkoNgnPayout({
+            merchantId: m.merchantId,
+            environment: m.environment,
+            amount: body.amount,
+            beneficiary: body.beneficiary,
+            description: body.description,
+            merchantReference: body.merchantReference,
+          });
+          return {
+            transactionId: result.transactionId,
+            reference: result.reference,
+            status: result.status,
+            amount: result.amount,
+            currency: "NGN" as const,
+            environment: m.environment,
+          };
+        }
+      );
+      if (response === undefined) return;
+      return response;
+    } catch (err) {
+      sendMerchantFacingReply(reply, merchantPaymentFlowErrorResponse(err));
+      return;
+    }
+  });
+
+  app.get("/v1/ngn/payouts/:transactionId", {
+    schema: {
+      params: z.object({ transactionId: z.string().uuid() }),
+      response: {
+        200: z.object({
+          transactionId: z.string(),
+          reference: z.string().nullable(),
+          status: z.string(),
+          withdrawalStatus: z.string().nullable(),
+          amount: z.string(),
+          currency: z.string(),
+          settlementCurrency: z.literal(TEKKO_NGN_SETTLEMENT_CURRENCY),
+          settlementCurrencyLabel: z.literal(TEKKO_NGN_SETTLEMENT_DISPLAY_NAME),
+          beneficiary: ngnBeneficiarySchema.nullable(),
+          environment: z.string(),
+          settled: z.boolean(),
+        }),
+        401: errorResponse,
+        403: errorResponse,
+        404: errorResponse,
+        503: merchantFacingError,
+      },
+    },
+  },
+  async (request, reply) => {
+    const m = request.merchant;
+    if (!m) return reply.status(401).send({ error: "Unauthorized" });
+    if (!m.scopes.includes("payout:create") && !m.scopes.includes("*")) {
+      return reply.status(403).send({ error: "Forbidden", message: "Missing scope: payout:create" });
+    }
+    if (!(await requireKycAndMarket(m.merchantId, "nigeria", reply))) return;
+    const { transactionId } = request.params as { transactionId: string };
+    try {
+      const view = await getTekkoNgnPayoutStatus({
+        merchantId: m.merchantId,
+        transactionId,
+      });
+      if (!view) {
+        return reply.status(404).send({ error: "Not found", message: "NGN payout not found" });
+      }
+      return view;
+    } catch (err) {
+      sendMerchantFacingReply(reply, merchantPaymentFlowErrorResponse(err));
+      return;
+    }
+  });
+
   merchantV1PostPair("/v1/eur/payout-instances", "/v1/tylt/eur/payout-instances", (path) =>
     app.post(path, {
       schema: {
@@ -3964,7 +4272,7 @@ export async function buildApp() {
       amount: z.string(),
       paidAmount: z.string().nullable(),
       currency: z.string(),
-      rail: z.enum(["bangladesh", "brazil", "india", "europe", "pyusd", "internal", "unknown"]),
+      rail: z.enum(["bangladesh", "brazil", "india", "europe", "pyusd", "nigeria", "internal", "unknown"]),
       railLabel: z.string(),
       platformOrderId: z.string().nullable(),
       instanceId: z.string().nullable(),

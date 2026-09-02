@@ -32,7 +32,7 @@ import { getDefaultPayokEnvironment, type PayokEnvironment } from "../../service
 import { pickPrimaryMerchantWallet, primaryMerchantBalanceByMerchantId } from "../../src/lib/provider-merchant-balance.js";
 import { reconcilePayokPayinByTransactionId } from "../../services/domestic/payok/reconcile-payin.js";
 import { reconcileCrossRampPayinByTransactionId } from "../../services/integrations/tylt/index.js";
-import { reconcileTekkoPyusdPayinByTransactionId } from "../../services/integrations/tekko/index.js";
+import { reconcileTekkoPyusdPayinByTransactionId, reconcileTekkoNgnByTransactionId } from "../../services/integrations/tekko/index.js";
 import { ProviderCircuitOpenError } from "../../src/lib/provider-circuit-breaker.js";
 import { queueMerchantWebhook } from "../../src/lib/merchant-webhook.js";
 import { registerProviderMerchantRiskRoutes } from "./merchant-risk.js";
@@ -483,7 +483,7 @@ export async function registerProviderRoutes(app: FastifyInstance) {
       schema: {
         querystring: z.object({
           reason: z.enum(["global", "market", "all"]).default("all"),
-          market: z.enum(["bangladesh", "india", "europe", "brazil", "pyusd"]).optional(),
+          market: z.enum(["bangladesh", "india", "europe", "brazil", "pyusd", "nigeria"]).optional(),
           limit: z.coerce.number().min(1).max(100).default(20),
           offset: z.coerce.number().min(0).default(0),
         }),
@@ -523,7 +523,7 @@ export async function registerProviderRoutes(app: FastifyInstance) {
       if (!ensureProviderPermission(request, reply, "merchant.read")) return;
       const q = request.query as {
         reason: "global" | "market" | "all";
-        market?: "bangladesh" | "india" | "europe" | "brazil" | "pyusd";
+        market?: "bangladesh" | "india" | "europe" | "brazil" | "pyusd" | "nigeria";
         limit: number;
         offset: number;
       };
@@ -539,7 +539,7 @@ export async function registerProviderRoutes(app: FastifyInstance) {
       schema: {
         querystring: z.object({
           environment: z.enum(["test", "live"]).optional(),
-          rail: z.enum(["bangladesh", "brazil", "india", "europe", "pyusd", "internal", "unknown"]).optional(),
+          rail: z.enum(["bangladesh", "brazil", "india", "europe", "pyusd", "nigeria", "internal", "unknown"]).optional(),
           limit: z.coerce.number().min(1).max(100).default(20),
           offset: z.coerce.number().min(0).default(0),
         }),
@@ -581,7 +581,7 @@ export async function registerProviderRoutes(app: FastifyInstance) {
       if (!ensureProviderPermission(request, reply, "tx.read")) return;
       const q = request.query as {
         environment?: "test" | "live";
-        rail?: "bangladesh" | "brazil" | "india" | "europe" | "pyusd" | "internal" | "unknown";
+        rail?: "bangladesh" | "brazil" | "india" | "europe" | "pyusd" | "nigeria" | "internal" | "unknown";
         limit: number;
         offset: number;
       };
@@ -1405,7 +1405,7 @@ export async function registerProviderRoutes(app: FastifyInstance) {
     }
   );
 
-  const MARKET_IDS = ["bangladesh", "india", "europe", "brazil", "pyusd"] as const;
+  const MARKET_IDS = ["bangladesh", "india", "europe", "brazil", "pyusd", "nigeria"] as const;
   const MARKET_ENTITLEMENT = [
     "disabled",
     "requested",
@@ -2302,7 +2302,7 @@ export async function registerProviderRoutes(app: FastifyInstance) {
 
   const transactionRailFieldsSchema = z.object({
     currency: z.string(),
-    rail: z.enum(["bangladesh", "brazil", "india", "europe", "pyusd", "internal", "unknown"]),
+    rail: z.enum(["bangladesh", "brazil", "india", "europe", "pyusd", "nigeria", "internal", "unknown"]),
     railLabel: z.string(),
   });
 
@@ -3546,6 +3546,123 @@ export async function registerProviderRoutes(app: FastifyInstance) {
           transactionId: result.transactionId,
           paymentStatus: result.paymentStatus,
           settlementStatus: result.settlementStatus,
+          detail: result.detail,
+        });
+      } catch (err) {
+        if (err instanceof ProviderCircuitOpenError) {
+          return reply.status(503).send({
+            error: "Service Unavailable",
+            message: "Tekko provider circuit is open; try again shortly",
+          });
+        }
+        request.log.error(err);
+        return reply.status(500).send({ error: "Internal Server Error" });
+      }
+    }
+  );
+
+  app.post(
+    "/provider/tekko/ngn/reconcile",
+    {
+      schema: {
+        body: z.object({ transactionId: z.string().uuid() }),
+        response: {
+          200: z.object({
+            outcome: z.enum(["finalized", "not_terminal", "skipped"]),
+            transactionId: z.string(),
+            detail: z.string().optional(),
+            reason: z.enum(["already_terminal", "wrong_rail"]).optional(),
+            collectionStatus: z.string().nullable().optional(),
+            withdrawalStatus: z.string().nullable().optional(),
+            merchantWebhookQueued: z.boolean().optional(),
+          }),
+          400: errorResponse,
+          401: errorResponse,
+          404: errorResponse,
+          503: errorResponse,
+          500: errorResponse,
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!ensureProviderPermission(request, reply, "tx.reconcile")) return;
+      const body = request.body as { transactionId: string };
+      try {
+        const routed = await reconcileTekkoNgnByTransactionId(body.transactionId);
+        if (routed.kind === "error") {
+          if (routed.detail === "transaction_not_found") {
+            return reply.status(404).send({ error: "Not found", message: "Transaction not found" });
+          }
+          return reply.status(400).send({
+            error: "Bad Request",
+            message: "Not a Tekko NGN transaction",
+          });
+        }
+        const result = routed.result;
+        if (result.outcome === "error") {
+          if (result.detail === "transaction_not_found") {
+            return reply.status(404).send({ error: "Not found", message: "Transaction not found" });
+          }
+          const badType =
+            result.detail === "not_payin" || result.detail === "not_payout";
+          if (badType) {
+            return reply.status(400).send({ error: "Bad Request", message: "Invalid transaction type for Tekko NGN reconcile" });
+          }
+          return reply.status(500).send({
+            error: "Internal Server Error",
+            message: `Tekko NGN reconcile failed: ${result.detail}`,
+          });
+        }
+        if (result.outcome === "skipped") {
+          if (result.reason === "wrong_rail") {
+            return reply.status(400).send({
+              error: "Bad Request",
+              message: "Not a Tekko NGN transaction",
+            });
+          }
+          return reply.status(200).send({
+            outcome: "skipped",
+            transactionId: result.transactionId,
+            reason: result.reason,
+          });
+        }
+        const statusField =
+          "collectionStatus" in result
+            ? { collectionStatus: result.collectionStatus }
+            : { withdrawalStatus: result.withdrawalStatus };
+        if (result.outcome === "finalized") {
+          if (result.merchantWebhook) {
+            queueMerchantWebhook(result.merchantWebhook.merchantId, result.merchantWebhook.event).catch((e) =>
+              request.log.warn(e, "merchant webhook queue failed after Tekko NGN reconcile")
+            );
+          }
+          audit({
+            action: "provider.tekko.ngn.reconcile",
+            actor: request.provider?.providerUserId ?? "provider:api_key",
+            resource: body.transactionId,
+            meta: { outcome: "finalized", ...statusField },
+          });
+          return reply.status(200).send({
+            outcome: "finalized",
+            transactionId: result.transactionId,
+            ...statusField,
+            merchantWebhookQueued: Boolean(result.merchantWebhook),
+          });
+        }
+        audit({
+          action: "provider.tekko.ngn.reconcile",
+          actor: request.provider?.providerUserId ?? "provider:api_key",
+          resource: body.transactionId,
+          meta: {
+            outcome: "not_terminal",
+            ...statusField,
+            detail: result.detail,
+          },
+        });
+        return reply.status(200).send({
+          outcome: "not_terminal",
+          transactionId: result.transactionId,
+          ...statusField,
           detail: result.detail,
         });
       } catch (err) {

@@ -85,4 +85,22 @@ describe("presentTransactionRail", () => {
     assert.equal(p.rail, "pyusd");
     assert.equal(p.railLabel, "PYUSD pay-in");
   });
+
+  it("labels Tekko NGN collect (legacy)", () => {
+    const p = presentTransactionRail({ provider: "tekko-ngn-collect", currency: "NGN" });
+    assert.equal(p.rail, "nigeria");
+    assert.equal(p.railLabel, "Nigeria NGN collect (legacy)");
+  });
+
+  it("labels Tekko NGN virtual account", () => {
+    const p = presentTransactionRail({ provider: "tekko-ngn-va", currency: "NGN" });
+    assert.equal(p.rail, "nigeria");
+    assert.equal(p.railLabel, "Nigeria NGN virtual account");
+  });
+
+  it("labels Tekko NGN payout", () => {
+    const p = presentTransactionRail({ provider: "tekko-ngn-payout", currency: "NGN" });
+    assert.equal(p.rail, "nigeria");
+    assert.equal(p.railLabel, "Nigeria NGN payout");
+  });
 });

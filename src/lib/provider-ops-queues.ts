@@ -205,6 +205,26 @@ export function reconcileActionForProvider(params: {
       inspectAction,
     };
   }
+  if (provider === "tekko-ngn-collect" || provider === "tekko-ngn-va") {
+    return {
+      reconcileAction: {
+        method: "POST",
+        path: "/provider/tekko/ngn/reconcile",
+        body: { transactionId: id },
+      },
+      inspectAction,
+    };
+  }
+  if (provider === "tekko-ngn-payout") {
+    return {
+      reconcileAction: {
+        method: "POST",
+        path: "/provider/tekko/ngn/reconcile",
+        body: { transactionId: id },
+      },
+      inspectAction,
+    };
+  }
   return { reconcileAction: null, inspectAction };
 }
 

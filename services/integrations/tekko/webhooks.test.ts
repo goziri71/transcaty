@@ -83,3 +83,12 @@ describe("Tekko PYUSD settlement gating", () => {
     assert.equal(masterSettled, true);
   });
 });
+
+describe("Tekko NGN settle gate (documented)", () => {
+  it("credits NGN on credited only — not awaiting_payment", async () => {
+    const { isNgnCollectionCredited, isNgnCollectionTerminalFailure } = await import("./ngn-collect.js");
+    assert.equal(isNgnCollectionCredited("awaiting_payment"), false);
+    assert.equal(isNgnCollectionCredited("credited"), true);
+    assert.equal(isNgnCollectionTerminalFailure("expired"), true);
+  });
+});

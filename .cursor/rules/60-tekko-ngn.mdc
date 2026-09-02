@@ -1,0 +1,42 @@
+---
+description: Tekko NGN permanent VA + payout locks (isolated from PYUSD / Waverlite / PayOK / Tylt)
+globs: services/integrations/tekko/**/*,api/portal/*ngn*,docs/*NGN*,docs/*TEKKO_NGN*,docs/MERCHANT_NGN*
+alwaysApply: false
+---
+
+# Tekko NGN (permanent VA collect + bank payout)
+
+Transacty offers **NGN** to merchants; Tekko is the rail. Merchants use Transacty APIs/wallets — not Tekko directly.
+
+## Product locks (docs scan 2026-09-02)
+
+- **Collect model:** one **permanent customer NGN VA per Transacty merchant** (`POST/GET …/customers/:id/ng/virtual-account*`). Reusable bank details; any inbound amount. **Not** exact-amount temporary collections for the merchant product.
+- **BVN:** Platform **BVN Basic** only (`POST …/bvn/verify`) — **never** send `faceImage`. Poll `GET …/bvn/status` if `pending`. Do **not** store raw BVN at rest.
+- **Tekko credit target:** customer NGN sub-ledger → map `endUserId` via `merchants.tekko_customer_id` → credit Transacty **NGN** pocket on `customer.wallet.credited`.
+- **Transacty settlement:** native **NGN** merchant pocket. No auto-swap to USDT/USDC. Do **not** credit Europe `USDC` or `PYUSD-USDC`.
+- **Payout:** `POST /master-wallet/ng/withdraw` (master ledger). Customer VA deposits and master withdraw are different Tekko ledgers — fail closed on insufficient master balance; confirm Tekko liquidity/sweep with ops before go-live.
+- **Out of scope:** MoMo KE/UG, swaps, Waverlite, face capture, shared master VA as merchant product.
+- **Live-only:** same Tekko Platform credential model as PYUSD (no sandbox). `test` fails closed.
+- **Entitlement:** Tekko partner must have `ngn_collections` (VA) and `ngn_payouts` (withdraw) or calls return `403 SERVICE_NOT_ENTITLED`.
+
+## Isolation
+
+- Adapter: `services/integrations/tekko/ngn-va.ts` (+ legacy `ngn-collect.ts` drain only). Do **not** fold into `pyusd-payin.ts`.
+- Do **not** edit `services/integrations/tylt/**`, `services/domestic/**` PayOK, or implement Waverlite for this work.
+- Leave [`.cursor/rules/50-waverlite-ngn.mdc`](50-waverlite-ngn.mdc) as historical study notes only; NGN product path is **Tekko**.
+- Webhook entry shares `POST /webhooks/tekko/:environment`. Reuse Tekko client, Ed25519 sign, static proxy, webhook HMAC secret — same env as PYUSD.
+
+## Surfaces
+
+| Area | Path |
+|------|------|
+| Market | `nigeria` settles `["NGN"]` |
+| Provider id | `tekko-ngn-va` (pay-in), `tekko-ngn-payout` (pay-out); legacy `tekko-ngn-collect` read-only drain |
+| Merchant HMAC | `GET/POST /v1/ngn/virtual-account`, `POST/GET /v1/ngn/payouts`, `GET /v1/ngn/banks`, `POST /v1/ngn/verify-account` |
+| Portal JWT | `/portal/me/ngn/virtual-account`, payouts, banks + verify |
+| Webhooks | VA credit on `customer.wallet.credited` (NGN + endUserId); payout on `withdrawal.*` |
+| Tekko APIs | BVN Basic + customer VA onboard/GET; master `ng/withdraw` |
+
+## Ops
+
+Confirm `ngn_collections` + `ngn_payouts` with Tekko. Checklist: `docs/TEKKO_NGN_OPS_ENTITLEMENT.md`. Probe: `npm run tekko:ngn-entitlement-check`.

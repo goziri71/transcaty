@@ -33,6 +33,7 @@
     "test:tylt": "node --import tsx --test services/integrations/tylt/*.test.ts",
     "test:tekko": "node --import tsx --test services/integrations/tekko/*.test.ts",
     "tekko:proxy-check": "tsx scripts/tekko-proxy-check.ts",
+    "tekko:ngn-entitlement-check": "tsx scripts/tekko-ngn-entitlement-check.ts",
     "zepto:test": "tsx scripts/zepto-test.ts"
   },
   "keywords": [

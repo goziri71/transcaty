@@ -28,6 +28,47 @@ export {
 } from "./pyusd-payin.js";
 export type { TekkoPyusdReconcileResult } from "./pyusd-payin.js";
 export {
+  TEKKO_NGN_PROVIDER,
+  TEKKO_NGN_SETTLEMENT_CURRENCY,
+  TEKKO_NGN_SETTLEMENT_DISPLAY_NAME,
+  TEKKO_NGN_COLLECT_CURRENCY,
+  assertTekkoNgnLiveEnvironment,
+  createTekkoNgnCollection,
+  getTekkoNgnCollectionStatus,
+  settleTekkoNgnCollection,
+  reconcileTekkoNgnCollectByTransactionId,
+  isNgnCollectionCredited,
+  isNgnCollectionTerminalFailure,
+  extractNgnPaymentInstructions,
+} from "./ngn-collect.js";
+export type { TekkoNgnReconcileResult, TekkoNgnPaymentInstructions } from "./ngn-collect.js";
+export {
+  TEKKO_NGN_VA_PROVIDER,
+  TEKKO_NGN_VA_SETTLEMENT_CURRENCY,
+  TEKKO_NGN_VA_SETTLEMENT_DISPLAY_NAME,
+  submitMerchantNgnBvn,
+  getOrProvisionMerchantNgnVa,
+  getMerchantNgnVa,
+  settleTekkoNgnVaCredit,
+  findMerchantIdByTekkoCustomerId,
+  extractNgnVaDetails,
+} from "./ngn-va.js";
+export type { TekkoNgnVaDetails, TekkoNgnBvnInput } from "./ngn-va.js";
+export {
+  TEKKO_NGN_PAYOUT_PROVIDER,
+  createTekkoNgnPayout,
+  getTekkoNgnPayoutStatus,
+  listTekkoNgnBanks,
+  verifyTekkoNgnBankAccount,
+  finalizeTekkoNgnPayoutSuccess,
+  finalizeTekkoNgnPayoutFailure,
+  reconcileTekkoNgnPayoutByTransactionId,
+  reconcileTekkoNgnByTransactionId,
+  isNgnWithdrawalSuccess,
+  isNgnWithdrawalFailure,
+} from "./ngn-payout.js";
+export type { TekkoNgnPayoutReconcileResult, NgnPayoutBeneficiary } from "./ngn-payout.js";
+export {
   verifyTekkoWebhookSignature,
   readTekkoWebhookHeaders,
   applyTekkoWebhookPayload,

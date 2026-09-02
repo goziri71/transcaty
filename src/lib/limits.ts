@@ -36,4 +36,9 @@ export const LIMITS = {
   tekkoPyusd: {
     payin: { min: 1, max: 500_000 },
   },
+  /** Tekko NGN temporary bank collect + bank payout (exact amount, major units). */
+  tekkoNgn: {
+    payin: { min: 100, max: 5_000_000 },
+    payout: { min: 100, max: 5_000_000 },
+  },
 } as const;

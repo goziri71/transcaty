@@ -121,8 +121,15 @@ export const merchants = pgTable(
     kycStatus: text("kyc_status").default("pending"),
     webhookUrl: text("webhook_url"),
     webhookSecretEnc: text("webhook_secret_enc"),
-    /** Tekko Platform end-customer id for PYUSD checkout (one per merchant, phase 1). */
+    /** Tekko Platform end-customer id for PYUSD checkout / NGN customer VA (one per merchant). */
     tekkoCustomerId: text("tekko_customer_id"),
+    /** Tekko BVN Basic status: not_submitted | pending | verified | failed. Never store raw BVN. */
+    tekkoBvnStatus: text("tekko_bvn_status"),
+    /** Permanent NGN VA status e.g. active | pending | none. */
+    tekkoNgnVaStatus: text("tekko_ngn_va_status"),
+    tekkoNgnVaAccountNumber: text("tekko_ngn_va_account_number"),
+    tekkoNgnVaBankName: text("tekko_ngn_va_bank_name"),
+    tekkoNgnVaAccountName: text("tekko_ngn_va_account_name"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

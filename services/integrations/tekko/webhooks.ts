@@ -1,6 +1,9 @@
 /**
  * Tekko inbound webhooks: HMAC-SHA256(timestamp + "." + rawBody, whsec).
+ * Routes NGN permanent VA credits / legacy collections vs PYUSD payment intents.
  * PYUSD: credit PYUSD-USDC only when settlement is complete.
+ * NGN VA: credit NGN on customer.wallet.credited with endUserId → merchant mapping.
+ * Legacy temp collect: still settle matching tekko-ngn-collect rows until drained.
  */
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { and, eq } from "drizzle-orm";
@@ -14,6 +17,24 @@ import {
   isTerminalFailure,
   settleTekkoPyusdTransaction,
 } from "./pyusd-payin.js";
+import {
+  TEKKO_NGN_PROVIDER,
+  isNgnCollectionCredited,
+  isNgnCollectionTerminalFailure,
+  settleTekkoNgnCollection,
+} from "./ngn-collect.js";
+import {
+  findMerchantIdByTekkoCustomerId,
+  settleTekkoNgnVaCredit,
+} from "./ngn-va.js";
+import {
+  TEKKO_NGN_PAYOUT_PROVIDER,
+  findTekkoNgnPayoutByReference,
+  finalizeTekkoNgnPayoutSuccess,
+  finalizeTekkoNgnPayoutFailure,
+  isNgnWithdrawalSuccess,
+  isNgnWithdrawalFailure,
+} from "./ngn-payout.js";
 
 const MAX_SKEW_MS = 5 * 60 * 1000;
 
@@ -85,6 +106,56 @@ function strField(obj: Record<string, unknown> | null, ...keys: string[]): strin
   return null;
 }
 
+async function findNgnPayoutTx(params: {
+  transactyTransactionId?: string | null;
+}): Promise<(typeof transactions.$inferSelect) | null> {
+  if (!params.transactyTransactionId) return null;
+  const [tx] = await db
+    .select()
+    .from(transactions)
+    .where(
+      and(
+        eq(transactions.id, params.transactyTransactionId),
+        eq(transactions.provider, TEKKO_NGN_PAYOUT_PROVIDER)
+      )
+    )
+    .limit(1);
+  return tx ?? null;
+}
+
+async function findNgnTx(params: {
+  reference?: string | null;
+  transactyTransactionId?: string | null;
+}): Promise<(typeof transactions.$inferSelect) | null> {
+  if (params.transactyTransactionId) {
+    const [tx] = await db
+      .select()
+      .from(transactions)
+      .where(
+        and(
+          eq(transactions.id, params.transactyTransactionId),
+          eq(transactions.provider, TEKKO_NGN_PROVIDER)
+        )
+      )
+      .limit(1);
+    if (tx) return tx;
+  }
+  if (params.reference) {
+    const [tx] = await db
+      .select()
+      .from(transactions)
+      .where(
+        and(
+          eq(transactions.externalId, params.reference),
+          eq(transactions.provider, TEKKO_NGN_PROVIDER)
+        )
+      )
+      .limit(1);
+    if (tx) return tx;
+  }
+  return null;
+}
+
 async function findPyusdTx(params: {
   paymentIntentId?: string | null;
   merchantReference?: string | null;
@@ -119,6 +190,76 @@ async function findPyusdTx(params: {
   return null;
 }
 
+async function applyNgnWebhook(params: {
+  tx: typeof transactions.$inferSelect;
+  eventType: string | null;
+  collectionStatus: string | null;
+  amount: string | null;
+  reference: string | null;
+}): Promise<{ merchantId: string; event: WebhookEvent } | null> {
+  const { tx, eventType, reference } = params;
+  let collectionStatus = params.collectionStatus;
+  if (
+    !collectionStatus &&
+    (eventType === "master_wallet.credited" || eventType === "customer.wallet.credited")
+  ) {
+    collectionStatus = "credited";
+  }
+
+  await db
+    .update(transactions)
+    .set({
+      metadata: mergeMeta(tx.metadata, {
+        ...(collectionStatus != null ? { collectionStatus } : {}),
+        lastWebhookEvent: eventType,
+        lastWebhookAt: new Date().toISOString(),
+        ...(params.amount != null ? { webhookAmount: params.amount } : {}),
+        ...(reference ? { collectionReference: reference } : {}),
+      }),
+      updatedAt: new Date(),
+    })
+    .where(eq(transactions.id, tx.id));
+
+  if (isNgnCollectionCredited(collectionStatus)) {
+    const amount = params.amount ?? String(tx.amount);
+    return settleTekkoNgnCollection({
+      transactionId: tx.id,
+      creditedAmount: amount,
+      collectionStatus: "credited",
+      source: "webhook",
+    });
+  }
+
+  if (collectionStatus && isNgnCollectionTerminalFailure(collectionStatus) && tx.status === "pending") {
+    const [failed] = await db
+      .update(transactions)
+      .set({
+        status: "failed",
+        metadata: mergeMeta(tx.metadata, {
+          collectionStatus,
+          failedAt: new Date().toISOString(),
+          lastWebhookEvent: eventType,
+        }),
+        updatedAt: new Date(),
+      })
+      .where(and(eq(transactions.id, tx.id), eq(transactions.status, "pending")))
+      .returning();
+    if (!failed) return null;
+    return {
+      merchantId: tx.merchantId,
+      event: {
+        type: "payin.failed",
+        transactionId: tx.id,
+        status: "failed",
+        amount: String(tx.amount),
+        platformOrderId: tx.externalId ?? null,
+      },
+    };
+  }
+
+  return null;
+}
+
 /**
  * Apply a verified Tekko webhook body. Returns merchant outbound event when state changes.
  */
@@ -133,7 +274,13 @@ export async function applyTekkoWebhookPayload(
     (typeof root.type === "string" ? root.type : null) ??
     (eventTypeHint?.trim() || null);
   const data = asRecord(root.data) ?? root;
+  const eventId = strField(root, "id", "eventId", "event_id");
 
+  const currency = (strField(data, "currency") ?? "").toUpperCase();
+  const reference = strField(data, "reference", "collectionReference", "collection_reference");
+  const endUserId =
+    strField(data, "endUserId", "end_user_id", "customerId", "customer_id") ??
+    (typeof data.endUserId === "number" ? String(data.endUserId) : null);
   const paymentIntentId = strField(
     data,
     "paymentIntentId",
@@ -155,6 +302,96 @@ export async function applyTekkoWebhookPayload(
     "net_collected_amount",
     "amount"
   );
+  const withdrawalStatus = strField(data, "status", "withdrawalStatus", "withdrawal_status");
+
+  // NGN bank payout webhooks (Tekko master-wallet/ng/withdraw).
+  if (eventType === "withdrawal.completed" || eventType === "withdrawal.failed") {
+    const withdrawRef = strField(data, "reference", "withdrawalReference", "withdrawal_reference");
+    let payoutTx = transactyTransactionId
+      ? await findNgnPayoutTx({ transactyTransactionId })
+      : null;
+    if (!payoutTx && withdrawRef) {
+      payoutTx = await findTekkoNgnPayoutByReference(withdrawRef);
+    }
+    if (payoutTx) {
+      await db
+        .update(transactions)
+        .set({
+          metadata: mergeMeta(payoutTx.metadata, {
+            withdrawalStatus: withdrawalStatus ?? (eventType === "withdrawal.completed" ? "completed" : "failed"),
+            lastWebhookEvent: eventType,
+            lastWebhookAt: new Date().toISOString(),
+          }),
+          updatedAt: new Date(),
+        })
+        .where(eq(transactions.id, payoutTx.id));
+
+      if (eventType === "withdrawal.completed" || isNgnWithdrawalSuccess(withdrawalStatus)) {
+        return finalizeTekkoNgnPayoutSuccess({
+          transactionId: payoutTx.id,
+          withdrawalStatus: withdrawalStatus ?? "completed",
+          source: "webhook",
+        });
+      }
+      if (eventType === "withdrawal.failed" || isNgnWithdrawalFailure(withdrawalStatus)) {
+        return finalizeTekkoNgnPayoutFailure({
+          transactionId: payoutTx.id,
+          withdrawalStatus: withdrawalStatus ?? "failed",
+          source: "webhook",
+        });
+      }
+    }
+    if (currency === "NGN" || withdrawRef) {
+      return null;
+    }
+  }
+
+  // Permanent VA credit: customer.wallet.credited + NGN + endUserId → merchant.
+  if (
+    eventType === "customer.wallet.credited" &&
+    currency === "NGN" &&
+    endUserId &&
+    !paymentIntentId
+  ) {
+    const merchantId = await findMerchantIdByTekkoCustomerId(endUserId);
+    if (merchantId && netAmount) {
+      const externalReference = reference || eventId || `ngn-va-${endUserId}-${netAmount}`;
+      const settled = await settleTekkoNgnVaCredit({
+        merchantId,
+        environment: "live",
+        amount: netAmount,
+        externalReference,
+        endUserId,
+        source: "webhook",
+        eventId,
+      });
+      if (settled) return { merchantId: settled.merchantId, event: settled.event };
+      return null;
+    }
+  }
+
+  // Legacy temp collection match when currency/reference indicates collections rail.
+  const ngnHint =
+    currency === "NGN" ||
+    eventType === "master_wallet.credited" ||
+    (reference != null && !paymentIntentId);
+
+  if (ngnHint) {
+    const ngnTx = await findNgnTx({ reference, transactyTransactionId });
+    if (ngnTx) {
+      return applyNgnWebhook({
+        tx: ngnTx,
+        eventType,
+        collectionStatus: paymentStatus,
+        amount: netAmount,
+        reference,
+      });
+    }
+    // NGN credit with no matching legacy collect and no VA mapping — do not mis-route to PYUSD.
+    if (!paymentIntentId && currency === "NGN") {
+      return null;
+    }
+  }
 
   const tx = await findPyusdTx({
     paymentIntentId,
@@ -162,8 +399,6 @@ export async function applyTekkoWebhookPayload(
     transactyTransactionId,
   });
 
-  // master_wallet.credited without a linked intent — ignore for phase 1 ledger
-  // (we settle from customer.wallet.credited when settlementStatus=settled, or poll).
   if (!tx) {
     return null;
   }
@@ -181,9 +416,7 @@ export async function applyTekkoWebhookPayload(
           lastWebhookEvent: eventType,
           lastWebhookAt: new Date().toISOString(),
           ...(netAmount != null ? { webhookNetAmount: netAmount } : {}),
-          ...(paymentIntentId
-            ? { paymentIntentId: paymentIntentId }
-            : {}),
+          ...(paymentIntentId ? { paymentIntentId } : {}),
         }),
         updatedAt: new Date(),
       })

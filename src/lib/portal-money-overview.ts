@@ -62,6 +62,14 @@ const RAIL_CAPABILITIES: Record<MerchantMarket, MoneyRailCapabilities> = {
     statusPath: "/portal/me/pyusd/payment-intents/:transactionId",
     integrationHint: null,
   },
+  nigeria: {
+    canCreatePayin: true,
+    canCreatePayout: true,
+    payinPath: "/portal/me/ngn/virtual-account",
+    payoutPath: "/portal/me/ngn/payouts",
+    statusPath: "/portal/me/ngn/virtual-account",
+    integrationHint: null,
+  },
 };
 
 function providerSqlForMarket(market: MerchantMarket) {
@@ -76,6 +84,8 @@ function providerSqlForMarket(market: MerchantMarket) {
       return sql`${transactions.provider} like 'tylt-eur%'`;
     case "pyusd":
       return sql`${transactions.provider} = 'tekko-pyusd-payin'`;
+    case "nigeria":
+      return sql`${transactions.provider} in ('tekko-ngn-collect', 'tekko-ngn-va', 'tekko-ngn-payout')`;
   }
 }
 
@@ -141,6 +151,12 @@ export async function buildPortalMoneyOverview(params: {
     else if (provider.startsWith("payok-br")) market = "brazil";
     else if (provider.startsWith("tylt-eur")) market = "europe";
     else if (provider === "tekko-pyusd-payin") market = "pyusd";
+    else if (
+      provider === "tekko-ngn-collect" ||
+      provider === "tekko-ngn-va" ||
+      provider === "tekko-ngn-payout"
+    )
+      market = "nigeria";
     else if (provider.startsWith("tylt")) market = "india";
     if (!market) continue;
     if (row.type !== "payin" && row.type !== "payout") continue;
