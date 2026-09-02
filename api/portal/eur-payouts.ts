@@ -3,9 +3,9 @@
  */
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
-import { eq, and, gt } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { db } from "../../src/db/index.js";
-import { merchants, idempotencyKeys, transactions } from "../../src/db/schema/index.js";
+import { merchants, transactions } from "../../src/db/schema/index.js";
 import { LIMITS } from "../../src/lib/limits.js";
 import { validateMerchantReturnUrl } from "../../src/lib/merchant-return-url.js";
 import { audit } from "../../src/lib/audit.js";
@@ -27,6 +27,7 @@ import {
 import { pickTyltJsonPrimaryMessage } from "../../services/integrations/tylt/h2h-upi.js";
 import { requirePortalMoneyGuards, requirePortalMoneyRole } from "../../src/lib/portal-roles.js";
 import { requirePortalStepUp } from "../../src/lib/portal-auth.js";
+import { withIdempotency } from "../../src/lib/idempotency.js";
 
 const errorResponse = z.object({
   error: z.string(),
@@ -153,22 +154,6 @@ export async function registerPortalEurPayoutRoutes(app: FastifyInstance) {
       if (!user) return reply.status(401).send({ error: "Unauthorized" });
       if (!(await requirePortalMoneyGuards(request, reply))) return;
 
-      const idemKey = request.headers["idempotency-key"] as string | undefined;
-      if (idemKey?.trim()) {
-        const [cached] = await db
-          .select({ responseSnapshot: idempotencyKeys.responseSnapshot })
-          .from(idempotencyKeys)
-          .where(
-            and(
-              eq(idempotencyKeys.key, idemKey.trim()),
-              eq(idempotencyKeys.merchantId, user.merchantId),
-              gt(idempotencyKeys.expiresAt, new Date())
-            )
-          )
-          .limit(1);
-        if (cached) return reply.status(201).send(JSON.parse(cached.responseSnapshot));
-      }
-
       const body = request.body as {
         environment: "test" | "live";
         amount: string;
@@ -201,86 +186,80 @@ export async function registerPortalEurPayoutRoutes(app: FastifyInstance) {
       const baseUrl = process.env.APP_BASE_URL ?? `http://localhost:${process.env.PORT ?? 3000}`;
 
       try {
-        const result = await createTyltEurPayoutInstance({
-          merchantId: user.merchantId,
-          environment: body.environment,
-          baseUrl,
-          amount: body.amount,
-          currencySymbol: "EUR",
-          returnUrl: returnCheck.normalized!,
-          userDetails: body.userDetails ?? {},
-          payeeDetails: body.payeeDetails,
-          autoMerchantApproval: body.autoMerchantApproval,
-          merchantUrl: body.merchantUrl,
-          merchantDetails: body.merchantDetails,
-          cryptoUi: body.cryptoUi,
-        });
-
-        const [txRow] = await db
-          .select({
-            amount: transactions.amount,
-            currency: transactions.currency,
-            metadata: transactions.metadata,
-          })
-          .from(transactions)
-          .where(eq(transactions.id, result.transactionId))
-          .limit(1);
-
-        const breakdown = await buildTransactionFeeBreakdown({
-          merchantId: user.merchantId,
-          environment: body.environment,
-          transactionId: result.transactionId,
-          type: "payout",
-          status: "pending",
-          amount: String(txRow?.amount ?? body.amount),
-          currency: txRow?.currency ?? "USDC",
-          provider: "tylt-eur-payout",
-          metadata: txRow?.metadata ?? null,
-        });
-
-        const response = attachFeeBreakdown(
-          {
-            transactionId: result.transactionId,
-            status: "pending" as const,
-            amount: result.amount,
-            fiatCurrency: result.fiatCurrency,
-            settlementCurrency: "USDC" as const,
-            instanceId: result.instanceId,
-            checkoutUrl: result.checkoutUrl,
-            cryptoAmount: result.cryptoAmount,
-            rate: result.rate,
-            environment: body.environment,
-          },
-          breakdown
-        );
-
-        audit({
-          action: "portal.eur_payout.created",
-          merchantId: user.merchantId,
-          merchantUserId: user.merchantUserId,
-          actorEmail: user.email,
-          resource: result.transactionId,
-          meta: {
-            environment: body.environment,
-            amount: body.amount,
-            fiatCurrency: "EUR",
-            autoMerchantApproval: body.autoMerchantApproval ?? 1,
-          },
-        });
-
-        if (idemKey?.trim()) {
-          try {
-            await db.insert(idempotencyKeys).values({
-              key: idemKey.trim(),
+        const response = await withIdempotency(
+          { request, reply, merchantId: user.merchantId, body, required: true },
+          async () => {
+            const result = await createTyltEurPayoutInstance({
               merchantId: user.merchantId,
-              responseSnapshot: JSON.stringify(response),
-              expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+              environment: body.environment,
+              baseUrl,
+              amount: body.amount,
+              currencySymbol: "EUR",
+              returnUrl: returnCheck.normalized!,
+              userDetails: body.userDetails ?? {},
+              payeeDetails: body.payeeDetails,
+              autoMerchantApproval: body.autoMerchantApproval,
+              merchantUrl: body.merchantUrl,
+              merchantDetails: body.merchantDetails,
+              cryptoUi: body.cryptoUi,
             });
-          } catch {
-            /* duplicate key — ignore */
-          }
-        }
 
+            const [txRow] = await db
+              .select({
+                amount: transactions.amount,
+                currency: transactions.currency,
+                metadata: transactions.metadata,
+              })
+              .from(transactions)
+              .where(eq(transactions.id, result.transactionId))
+              .limit(1);
+
+            const breakdown = await buildTransactionFeeBreakdown({
+              merchantId: user.merchantId,
+              environment: body.environment,
+              transactionId: result.transactionId,
+              type: "payout",
+              status: "pending",
+              amount: String(txRow?.amount ?? body.amount),
+              currency: txRow?.currency ?? "USDC",
+              provider: "tylt-eur-payout",
+              metadata: txRow?.metadata ?? null,
+            });
+
+            const built = attachFeeBreakdown(
+              {
+                transactionId: result.transactionId,
+                status: "pending" as const,
+                amount: result.amount,
+                fiatCurrency: result.fiatCurrency,
+                settlementCurrency: "USDC" as const,
+                instanceId: result.instanceId,
+                checkoutUrl: result.checkoutUrl,
+                cryptoAmount: result.cryptoAmount,
+                rate: result.rate,
+                environment: body.environment,
+              },
+              breakdown
+            );
+
+            audit({
+              action: "portal.eur_payout.created",
+              merchantId: user.merchantId,
+              merchantUserId: user.merchantUserId,
+              actorEmail: user.email,
+              resource: result.transactionId,
+              meta: {
+                environment: body.environment,
+                amount: body.amount,
+                fiatCurrency: "EUR",
+                autoMerchantApproval: body.autoMerchantApproval ?? 1,
+              },
+            });
+
+            return built;
+          }
+        );
+        if (response === undefined) return;
         return reply.status(201).send(response);
       } catch (err) {
         const rawMsg = err instanceof Error ? err.message : String(err);

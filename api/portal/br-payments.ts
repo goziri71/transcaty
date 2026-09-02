@@ -4,9 +4,9 @@
  */
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
-import { eq, and, gt } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { db } from "../../src/db/index.js";
-import { merchants, idempotencyKeys } from "../../src/db/schema/index.js";
+import { merchants } from "../../src/db/schema/index.js";
 import {
   createPayinOrder as createBrazilPayinOrder,
   createPayoutOrder as createBrazilPayoutOrder,
@@ -132,22 +132,6 @@ export async function registerPortalBrazilRoutes(app: FastifyInstance) {
       if (!user) return reply.status(401).send({ error: "Unauthorized" });
       if (!(await requirePortalMoneyGuards(request, reply))) return;
 
-      const idemKey = request.headers["idempotency-key"] as string | undefined;
-      if (idemKey?.trim()) {
-        const [cached] = await db
-          .select({ responseSnapshot: idempotencyKeys.responseSnapshot })
-          .from(idempotencyKeys)
-          .where(
-            and(
-              eq(idempotencyKeys.key, idemKey.trim()),
-              eq(idempotencyKeys.merchantId, user.merchantId),
-              gt(idempotencyKeys.expiresAt, new Date())
-            )
-          )
-          .limit(1);
-        if (cached) return reply.status(201).send(JSON.parse(cached.responseSnapshot));
-      }
-
       const body = request.body as {
         environment: "test" | "live";
         amount: string;
@@ -174,50 +158,44 @@ export async function registerPortalBrazilRoutes(app: FastifyInstance) {
       const baseUrl = process.env.APP_BASE_URL ?? `http://localhost:${process.env.PORT ?? 3000}`;
 
       try {
-        const result = await createBrazilPayinOrder({
-          merchantId: user.merchantId,
-          environment: body.environment,
-          amount: body.amount,
-          paymentMethodCode: body.paymentMethodCode,
-          baseUrl,
-          merchantReturnUrl: returnCheck.normalized,
-          customer: body.customer,
-          goodsInfo: body.goodsInfo,
-          portalActor: { merchantUserId: user.merchantUserId, email: user.email },
-        });
-        const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
-        const breakdown = await buildTransactionFeeBreakdown({
-          merchantId: user.merchantId,
-          environment: body.environment,
-          transactionId: result.transactionId,
-          type: "payin",
-          status: "pending",
-          amount: result.amount,
-          currency: "BRL",
-          provider: "payok-br-payin",
-        });
-        const response = attachFeeBreakdown(
-          {
-            ...result,
-            status: "pending",
-            amount: result.amount,
-            expiresAt,
-            environment: body.environment,
-          },
-          breakdown
-        );
-        if (idemKey?.trim()) {
-          try {
-            await db.insert(idempotencyKeys).values({
-              key: idemKey.trim(),
+        const response = await withIdempotency(
+          { request, reply, merchantId: user.merchantId, body, required: true },
+          async () => {
+            const result = await createBrazilPayinOrder({
               merchantId: user.merchantId,
-              responseSnapshot: JSON.stringify(response),
-              expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+              environment: body.environment,
+              amount: body.amount,
+              paymentMethodCode: body.paymentMethodCode,
+              baseUrl,
+              merchantReturnUrl: returnCheck.normalized,
+              customer: body.customer,
+              goodsInfo: body.goodsInfo,
+              portalActor: { merchantUserId: user.merchantUserId, email: user.email },
             });
-          } catch {
-            /* duplicate key — ignore */
+            const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+            const breakdown = await buildTransactionFeeBreakdown({
+              merchantId: user.merchantId,
+              environment: body.environment,
+              transactionId: result.transactionId,
+              type: "payin",
+              status: "pending",
+              amount: result.amount,
+              currency: "BRL",
+              provider: "payok-br-payin",
+            });
+            return attachFeeBreakdown(
+              {
+                ...result,
+                status: "pending",
+                amount: result.amount,
+                expiresAt,
+                environment: body.environment,
+              },
+              breakdown
+            );
           }
-        }
+        );
+        if (response === undefined) return;
         return reply.status(201).send(response);
       } catch (err) {
         const rawMsg = err instanceof Error ? err.message : String(err);

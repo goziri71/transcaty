@@ -15,6 +15,20 @@ export const PROVIDER_STEP_UP_AUDIENCE = "transacty.provider.step_up";
 const PROVIDER_CLOCK_TOLERANCE_SEC = 30;
 const SESSION_VERSION_CACHE_TTL_MS = 5_000;
 
+/** Optional gate forcing MFA enrollment for every provider (admin/finance/
+ * ops) user, mirroring PORTAL_MFA_REQUIRED. Off by default so it can be
+ * enabled once enrollment is rolled out without an abrupt lockout. */
+export function isProviderMfaRequired(): boolean {
+  const v = process.env.PROVIDER_MFA_REQUIRED?.trim().toLowerCase();
+  return v === "true" || v === "1";
+}
+
+function isProviderMfaEnrollmentPath(path: string, method: string): boolean {
+  if (path.startsWith("/provider/me/mfa/")) return true;
+  if (method === "GET" && (path === "/provider/me" || path === "/provider/me/")) return true;
+  return false;
+}
+
 /** Constant-time string compare for secret material. Returns false on
  * length mismatch instead of throwing. */
 function timingSafeStringEqual(a: string, b: string): boolean {
@@ -547,6 +561,7 @@ export async function providerAuth(request: FastifyRequest, reply: FastifyReply)
       email: providerUsers.email,
       role: providerUsers.role,
       status: providerUsers.status,
+      mfaEnabled: providerUsers.mfaEnabled,
     })
     .from(providerUsers)
     .where(and(eq(providerUsers.id, session.providerUserId), eq(providerUsers.email, session.email)))
@@ -566,6 +581,19 @@ export async function providerAuth(request: FastifyRequest, reply: FastifyReply)
     authType: "jwt",
   };
   request.providerSession = session;
+
+  if (!isProviderMfaRequired()) return;
+
+  const path = request.url.split("?")[0] ?? "";
+  if (isProviderMfaEnrollmentPath(path, request.method)) return;
+
+  if (!user.mfaEnabled) {
+    return reply.status(403).send({
+      error: "Forbidden",
+      message: "MFA enrollment required",
+      mfaSetupRequired: true,
+    });
+  }
 }
 
 /**

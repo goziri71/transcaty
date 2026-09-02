@@ -1,6 +1,10 @@
 import type { FastifyRequest } from "fastify";
-import { CLOUDFLARE_IPV4_CIDRS } from "./cloudflare-ips.js";
-import { isIpv4Allowed } from "./ip-cidr.js";
+import { CLOUDFLARE_IPV4_CIDRS, CLOUDFLARE_IPV6_CIDRS } from "./cloudflare-ips.js";
+import { isIpv4Allowed, isIpv6Allowed } from "./ip-cidr.js";
+
+function isCloudflareEdgeIp(ip: string): boolean {
+  return isIpv4Allowed(ip, CLOUDFLARE_IPV4_CIDRS) || isIpv6Allowed(ip, CLOUDFLARE_IPV6_CIDRS);
+}
 
 /**
  * Client IP as resolved by Fastify's `trustProxy` config (see app.ts), which
@@ -24,7 +28,7 @@ export function getTrustedClientIp(request: FastifyRequest): string {
 
   if (
     socketAddr &&
-    isIpv4Allowed(socketAddr, CLOUDFLARE_IPV4_CIDRS) &&
+    isCloudflareEdgeIp(socketAddr) &&
     typeof cfConnectingIp === "string" &&
     cfConnectingIp.trim().length > 0
   ) {

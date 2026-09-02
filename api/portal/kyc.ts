@@ -11,7 +11,7 @@ import {
   merchantPersons,
   merchantKycDocuments,
 } from "../../src/db/schema/index.js";
-import { createKycUploadUrl } from "../../src/lib/kyc-storage.js";
+import { createKycUploadUrl, ALLOWED_KYC_CONTENT_TYPES } from "../../src/lib/kyc-storage.js";
 
 const errorResponse = z.object({
   error: z.string(),
@@ -202,7 +202,7 @@ export async function registerPortalKycRoutes(app: FastifyInstance) {
         body: z.object({
           documentType: z.string().min(1),
           filename: z.string().min(1),
-          contentType: z.string().optional(),
+          contentType: z.enum(ALLOWED_KYC_CONTENT_TYPES),
           merchantPersonId: z.string().uuid().optional(),
         }),
         response: {
@@ -227,7 +227,7 @@ export async function registerPortalKycRoutes(app: FastifyInstance) {
       const body = request.body as {
         documentType: string;
         filename: string;
-        contentType?: string;
+        contentType: (typeof ALLOWED_KYC_CONTENT_TYPES)[number];
         merchantPersonId?: string;
       };
 
@@ -258,6 +258,9 @@ export async function registerPortalKycRoutes(app: FastifyInstance) {
         return result;
       } catch (err) {
         const msg = err instanceof Error ? err.message : "Failed to create upload URL";
+        if (msg.startsWith("Invalid contentType") || msg.startsWith("File extension")) {
+          return reply.status(400).send({ error: msg });
+        }
         return reply.status(500).send({ error: msg });
       }
     }

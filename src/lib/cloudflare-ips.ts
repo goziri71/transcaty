@@ -20,3 +20,18 @@ export const CLOUDFLARE_IPV4_CIDRS: string[] = [
   "172.64.0.0/13",
   "131.0.72.0/22",
 ];
+
+/**
+ * Cloudflare's published edge IPv6 ranges (https://www.cloudflare.com/ips-v6).
+ * Without these, a peer that reaches the origin over IPv6 always fails the
+ * IPv4-only check and falls through to the spoofable trustProxy fallback.
+ */
+export const CLOUDFLARE_IPV6_CIDRS: string[] = [
+  "2400:cb00::/32",
+  "2606:4700::/32",
+  "2803:f800::/32",
+  "2405:b500::/32",
+  "2405:8100::/32",
+  "2a06:98c0::/29",
+  "2c0f:f248::/32",
+];

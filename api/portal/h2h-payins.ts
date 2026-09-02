@@ -3,9 +3,9 @@
  */
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
-import { eq, and, gt } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 import { db } from "../../src/db/index.js";
-import { merchants, idempotencyKeys, transactions } from "../../src/db/schema/index.js";
+import { merchants, transactions } from "../../src/db/schema/index.js";
 import { LIMITS } from "../../src/lib/limits.js";
 import { audit } from "../../src/lib/audit.js";
 import { assertMerchantMarketApiAccess } from "../../src/lib/merchant-markets.js";
@@ -20,6 +20,7 @@ import {
   attachFeeBreakdown,
 } from "../../src/lib/billing/transaction-fee-breakdown.js";
 import { requirePortalMoneyGuards } from "../../src/lib/portal-roles.js";
+import { withIdempotency } from "../../src/lib/idempotency.js";
 import {
   createTyltH2hPayinInstance,
   getMerchantH2hPayinStatus,
@@ -147,22 +148,6 @@ export async function registerPortalH2hPayinRoutes(app: FastifyInstance) {
 
       if (!(await requirePortalIndiaAccess(user.merchantId, body.environment, reply))) return;
 
-      const idemKey = request.headers["idempotency-key"] as string | undefined;
-      if (idemKey?.trim()) {
-        const [cached] = await db
-          .select({ responseSnapshot: idempotencyKeys.responseSnapshot })
-          .from(idempotencyKeys)
-          .where(
-            and(
-              eq(idempotencyKeys.key, idemKey.trim()),
-              eq(idempotencyKeys.merchantId, user.merchantId),
-              gt(idempotencyKeys.expiresAt, new Date())
-            )
-          )
-          .limit(1);
-        if (cached) return reply.status(201).send(JSON.parse(cached.responseSnapshot));
-      }
-
       let normalizedReturn: string | undefined;
       if (body.returnUrl?.trim()) {
         const returnCheck = validateMerchantReturnUrl(body.returnUrl);
@@ -183,69 +168,63 @@ export async function registerPortalH2hPayinRoutes(app: FastifyInstance) {
 
       const baseUrl = process.env.APP_BASE_URL ?? `http://localhost:${process.env.PORT ?? 3000}`;
       try {
-        const userDetails =
-          body.userDetails ?? (body.userEmail != null ? { email: body.userEmail } : { email: "" });
-        const result = await createTyltH2hPayinInstance({
-          merchantId: user.merchantId,
-          environment: body.environment,
-          baseUrl,
-          amount: body.amount,
-          currencySymbol: body.currencySymbol,
-          userDetails,
-          returnUrl: normalizedReturn,
-        });
-        const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
-        const breakdown = await buildTransactionFeeBreakdown({
-          merchantId: user.merchantId,
-          environment: body.environment,
-          transactionId: result.transactionId,
-          type: "payin",
-          status: "pending",
-          amount: result.amount,
-          paidAmount: null,
-          currency: result.currency,
-          provider: "tylt-h2h-upi",
-          metadata: null,
-        });
-        const payload = attachFeeBreakdown(
-          {
-            transactionId: result.transactionId,
-            status: "pending" as const,
-            amount: result.amount,
-            currency: result.currency as "USDT" | "INR",
-            instanceId: result.instanceId,
-            tradeEventId: result.tradeEventId ?? null,
-            paymentDetails: result.paymentDetails,
-            paymentInstructions: result.paymentInstructions ?? null,
-            detailsSource: "create" as const,
-            expiresAt,
-            environment: body.environment,
-          },
-          breakdown
-        );
-
-        if (idemKey?.trim()) {
-          try {
-            await db.insert(idempotencyKeys).values({
-              key: idemKey.trim(),
+        const payload = await withIdempotency(
+          { request, reply, merchantId: user.merchantId, body, required: true },
+          async () => {
+            const userDetails =
+              body.userDetails ?? (body.userEmail != null ? { email: body.userEmail } : { email: "" });
+            const result = await createTyltH2hPayinInstance({
               merchantId: user.merchantId,
-              responseSnapshot: JSON.stringify(payload),
-              expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+              environment: body.environment,
+              baseUrl,
+              amount: body.amount,
+              currencySymbol: body.currencySymbol,
+              userDetails,
+              returnUrl: normalizedReturn,
             });
-          } catch {
-            /* duplicate key — ignore */
+            const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+            const breakdown = await buildTransactionFeeBreakdown({
+              merchantId: user.merchantId,
+              environment: body.environment,
+              transactionId: result.transactionId,
+              type: "payin",
+              status: "pending",
+              amount: result.amount,
+              paidAmount: null,
+              currency: result.currency,
+              provider: "tylt-h2h-upi",
+              metadata: null,
+            });
+            const built = attachFeeBreakdown(
+              {
+                transactionId: result.transactionId,
+                status: "pending" as const,
+                amount: result.amount,
+                currency: result.currency as "USDT" | "INR",
+                instanceId: result.instanceId,
+                tradeEventId: result.tradeEventId ?? null,
+                paymentDetails: result.paymentDetails,
+                paymentInstructions: result.paymentInstructions ?? null,
+                detailsSource: "create" as const,
+                expiresAt,
+                environment: body.environment,
+              },
+              breakdown
+            );
+
+            audit({
+              action: "portal.h2h_payin.created",
+              merchantId: user.merchantId,
+              merchantUserId: user.merchantUserId,
+              actorEmail: user.email,
+              resource: result.transactionId,
+              meta: { rail: "india", product: "h2h_upi", environment: body.environment },
+            });
+
+            return built;
           }
-        }
-
-        audit({
-          action: "portal.h2h_payin.created",
-          merchantId: user.merchantId,
-          merchantUserId: user.merchantUserId,
-          actorEmail: user.email,
-          resource: result.transactionId,
-          meta: { rail: "india", product: "h2h_upi", environment: body.environment },
-        });
-
+        );
+        if (payload === undefined) return;
         return reply.status(201).send(payload);
       } catch (err) {
         const mapped = merchantPaymentFlowErrorResponse(err);

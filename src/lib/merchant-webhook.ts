@@ -8,6 +8,8 @@ import { and, count, desc, eq } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { merchants, merchantWebhookDeliveries } from "../db/schema/index.js";
 import { decrypt } from "./encryption.js";
+import { outboundFetch } from "./outbound-http.js";
+import { createSsrfSafeDispatcher } from "./ssrf-guard.js";
 import type { transactionFeesSchema } from "./billing/transaction-fee-breakdown.js";
 import type { z } from "zod";
 
@@ -127,17 +129,29 @@ async function postSignedWebhook(params: {
   eventType: string;
 }): Promise<{ ok: boolean; httpStatus: number; responseBody: string }> {
   const signature = signPayload(params.payload, params.secret);
-  const res = await fetch(params.url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Transacty-Webhook-Signature": signature,
-      "X-Transacty-Event": params.eventType,
+  const target = new URL(params.url);
+  // Re-validated on every delivery (not just when the merchant saves the
+  // URL) so a domain that resolved safely once can't be re-pointed at
+  // internal infrastructure later and still receive our signed payloads.
+  const dispatcher = await createSsrfSafeDispatcher(target.hostname);
+  const result = await outboundFetch(
+    target,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Transacty-Webhook-Signature": signature,
+        "X-Transacty-Event": params.eventType,
+      },
+      body: params.payload,
     },
-    body: params.payload,
-  });
-  const responseBody = (await res.text()).slice(0, RESPONSE_BODY_MAX);
-  return { ok: res.ok, httpStatus: res.status, responseBody };
+    { dispatcher, retries: 0, label: "merchant-webhook" }
+  );
+  return {
+    ok: result.status >= 200 && result.status < 300,
+    httpStatus: result.status,
+    responseBody: result.text.slice(0, RESPONSE_BODY_MAX),
+  };
 }
 
 export async function sendMerchantWebhook(merchantId: string, event: WebhookEvent): Promise<void> {

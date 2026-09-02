@@ -3,9 +3,9 @@
  */
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
-import { eq, and, gt } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { db } from "../../src/db/index.js";
-import { merchants, idempotencyKeys, transactions } from "../../src/db/schema/index.js";
+import { merchants, transactions } from "../../src/db/schema/index.js";
 import { LIMITS } from "../../src/lib/limits.js";
 import { audit } from "../../src/lib/audit.js";
 import { assertMerchantMarketApiAccess } from "../../src/lib/merchant-markets.js";
@@ -23,6 +23,7 @@ import {
   getMerchantCpgPayoutStatus,
 } from "../../services/integrations/tylt/cpg-payout.js";
 import { requirePortalMoneyGuards } from "../../src/lib/portal-roles.js";
+import { withIdempotency } from "../../src/lib/idempotency.js";
 
 const errorResponse = z.object({
   error: z.string(),
@@ -132,22 +133,6 @@ export async function registerPortalCpgPayoutRoutes(app: FastifyInstance) {
       if (!user) return reply.status(401).send({ error: "Unauthorized" });
       if (!(await requirePortalMoneyGuards(request, reply))) return;
 
-      const idemKey = request.headers["idempotency-key"] as string | undefined;
-      if (idemKey?.trim()) {
-        const [cached] = await db
-          .select({ responseSnapshot: idempotencyKeys.responseSnapshot })
-          .from(idempotencyKeys)
-          .where(
-            and(
-              eq(idempotencyKeys.key, idemKey.trim()),
-              eq(idempotencyKeys.merchantId, user.merchantId),
-              gt(idempotencyKeys.expiresAt, new Date())
-            )
-          )
-          .limit(1);
-        if (cached) return reply.status(201).send(JSON.parse(cached.responseSnapshot));
-      }
-
       const body = request.body as {
         environment: "test" | "live";
         amount: string;
@@ -194,79 +179,73 @@ export async function registerPortalCpgPayoutRoutes(app: FastifyInstance) {
       const baseUrl = process.env.APP_BASE_URL ?? `http://localhost:${process.env.PORT ?? 3000}`;
 
       try {
-        const result = await createTyltCpgPayoutRequest({
-          merchantId: user.merchantId,
-          environment: body.environment,
-          baseUrl,
-          amount: body.amount,
-          settledCurrency,
-          networkSymbol: body.networkSymbol,
-          address: body.address.trim(),
-          beneficiaryDetails: body.beneficiaryDetails,
-        });
-
-        const [txRow] = await db
-          .select({
-            amount: transactions.amount,
-            currency: transactions.currency,
-            metadata: transactions.metadata,
-          })
-          .from(transactions)
-          .where(eq(transactions.id, result.transactionId))
-          .limit(1);
-
-        const breakdown = await buildTransactionFeeBreakdown({
-          merchantId: user.merchantId,
-          environment: body.environment,
-          transactionId: result.transactionId,
-          type: "payout",
-          status: "pending",
-          amount: String(txRow?.amount ?? body.amount),
-          currency: txRow?.currency ?? settledCurrency,
-          provider: "tylt-cpg-payout",
-          metadata: txRow?.metadata ?? null,
-        });
-
-        const response = attachFeeBreakdown(
-          {
-            transactionId: result.transactionId,
-            status: "pending" as const,
-            amount: body.amount,
-            settlementCurrency: settledCurrency,
-            platformOrderId: result.platformOrderId,
-            networkSymbol: body.networkSymbol,
-            environment: body.environment,
-          },
-          breakdown
-        );
-
-        audit({
-          action: "portal.cpg_payout.created",
-          merchantId: user.merchantId,
-          merchantUserId: user.merchantUserId,
-          actorEmail: user.email,
-          resource: result.transactionId,
-          meta: {
-            environment: body.environment,
-            amount: body.amount,
-            settledCurrency,
-            networkSymbol: body.networkSymbol,
-          },
-        });
-
-        if (idemKey?.trim()) {
-          try {
-            await db.insert(idempotencyKeys).values({
-              key: idemKey.trim(),
+        const response = await withIdempotency(
+          { request, reply, merchantId: user.merchantId, body, required: true },
+          async () => {
+            const result = await createTyltCpgPayoutRequest({
               merchantId: user.merchantId,
-              responseSnapshot: JSON.stringify(response),
-              expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+              environment: body.environment,
+              baseUrl,
+              amount: body.amount,
+              settledCurrency,
+              networkSymbol: body.networkSymbol,
+              address: body.address.trim(),
+              beneficiaryDetails: body.beneficiaryDetails,
             });
-          } catch {
-            /* duplicate key — ignore */
-          }
-        }
 
+            const [txRow] = await db
+              .select({
+                amount: transactions.amount,
+                currency: transactions.currency,
+                metadata: transactions.metadata,
+              })
+              .from(transactions)
+              .where(eq(transactions.id, result.transactionId))
+              .limit(1);
+
+            const breakdown = await buildTransactionFeeBreakdown({
+              merchantId: user.merchantId,
+              environment: body.environment,
+              transactionId: result.transactionId,
+              type: "payout",
+              status: "pending",
+              amount: String(txRow?.amount ?? body.amount),
+              currency: txRow?.currency ?? settledCurrency,
+              provider: "tylt-cpg-payout",
+              metadata: txRow?.metadata ?? null,
+            });
+
+            const built = attachFeeBreakdown(
+              {
+                transactionId: result.transactionId,
+                status: "pending" as const,
+                amount: body.amount,
+                settlementCurrency: settledCurrency,
+                platformOrderId: result.platformOrderId,
+                networkSymbol: body.networkSymbol,
+                environment: body.environment,
+              },
+              breakdown
+            );
+
+            audit({
+              action: "portal.cpg_payout.created",
+              merchantId: user.merchantId,
+              merchantUserId: user.merchantUserId,
+              actorEmail: user.email,
+              resource: result.transactionId,
+              meta: {
+                environment: body.environment,
+                amount: body.amount,
+                settledCurrency,
+                networkSymbol: body.networkSymbol,
+              },
+            });
+
+            return built;
+          }
+        );
+        if (response === undefined) return;
         return reply.status(201).send(response);
       } catch (err) {
         const rawMsg = err instanceof Error ? err.message : String(err);
