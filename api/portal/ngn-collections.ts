@@ -30,7 +30,7 @@ import {
   buildTransactionFeeBreakdown,
   attachFeeBreakdown,
 } from "../../src/lib/billing/transaction-fee-breakdown.js";
-import { requirePortalMoneyGuards } from "../../src/lib/portal-roles.js";
+import { requirePortalMoneyGuards, requirePortalMoneyRole } from "../../src/lib/portal-roles.js";
 import { withIdempotency } from "../../src/lib/idempotency.js";
 
 const errorResponse = z.object({
@@ -136,7 +136,7 @@ export async function registerPortalNgnRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const user = request.portalUser;
       if (!user) return reply.status(401).send({ error: "Unauthorized" });
-      if (!(await requirePortalMoneyGuards(request, reply))) return;
+      if (!(await requirePortalMoneyRole(request, reply))) return;
 
       const q = request.query as { environment?: "test" | "live" };
       const environment = q.environment ?? "live";
@@ -259,7 +259,7 @@ export async function registerPortalNgnRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const user = request.portalUser;
       if (!user) return reply.status(401).send({ error: "Unauthorized" });
-      if (!(await requirePortalMoneyGuards(request, reply))) return;
+      if (!(await requirePortalMoneyRole(request, reply))) return;
       const q = request.query as { environment?: "test" | "live"; search?: string };
       const environment = q.environment ?? "live";
       if (!(await requirePortalNgnAccess(user.merchantId, environment, reply))) return;
@@ -298,7 +298,8 @@ export async function registerPortalNgnRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const user = request.portalUser;
       if (!user) return reply.status(401).send({ error: "Unauthorized" });
-      if (!(await requirePortalMoneyGuards(request, reply))) return;
+      // Name enquiry only — no ledger debit; money role without Idempotency-Key.
+      if (!(await requirePortalMoneyRole(request, reply))) return;
       const body = request.body as {
         environment: "test" | "live";
         accountNumber: string;
@@ -458,7 +459,7 @@ export async function registerPortalNgnRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const user = request.portalUser;
       if (!user) return reply.status(401).send({ error: "Unauthorized" });
-      if (!(await requirePortalMoneyGuards(request, reply))) return;
+      if (!(await requirePortalMoneyRole(request, reply))) return;
 
       const q = request.query as { environment?: "test" | "live" };
       const environment = q.environment ?? "live";

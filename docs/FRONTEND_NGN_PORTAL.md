@@ -23,8 +23,8 @@ There is **no** amount / expiry / one-time collection create. Merchants provisio
 
 | Method | Path | Notes |
 |--------|------|-------|
-| `GET` | `/portal/me/ngn/virtual-account` | Current status + details (or `bvn_required`) |
-| `POST` | `/portal/me/ngn/virtual-account` | Submit **BVN Basic** + provision VA; money role + MFA step-up; send `Idempotency-Key` |
+| `GET` | `/portal/me/ngn/virtual-account` | Current status + details (or `bvn_required`). Money role only — **no** `Idempotency-Key` |
+| `POST` | `/portal/me/ngn/virtual-account` | Submit **BVN Basic** + provision VA; money role + MFA step-up; **`Idempotency-Key` required** |
 
 Query/body: `environment` defaults to `live`. `environment: "test"` → `503` `payment_unavailable`.
 
