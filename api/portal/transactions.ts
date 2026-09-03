@@ -36,7 +36,7 @@ import { requirePortalMoneyGuards } from "../../src/lib/portal-roles.js";
 
 const transactionRailFieldsSchema = z.object({
   currency: z.string(),
-  rail: z.enum(["bangladesh", "brazil", "india", "europe", "pyusd", "internal", "unknown"]),
+  rail: z.enum(["bangladesh", "brazil", "india", "europe", "pyusd", "nigeria", "internal", "unknown"]),
   railLabel: z.string(),
 });
 
