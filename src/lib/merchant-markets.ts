@@ -16,6 +16,7 @@ import {
 import { normalizeMoneyAmountToTwoDecimals } from "./money.js";
 import { getOrCreateMerchantWallet } from "../../services/integrations/tylt/crossramp-payin.js";
 import { isBangladeshPaymentsPaused } from "./bangladesh-rail-pause.js";
+import { isPayokCredentialsConfigured } from "./payok-rail-status.js";
 import { PLATFORM_MERCHANT_ID } from "./billing/platform-wallet.js";
 import {
   PYUSD_SETTLEMENT_CURRENCY,
@@ -331,6 +332,17 @@ export function deriveMarketBoardFields(params: {
       blockers,
       "provider_unavailable",
       "Bangladesh pay-in and payout are temporarily unavailable. Existing balances and transfers still work."
+    );
+  }
+
+  if (
+    market.market === "brazil" &&
+    !isPayokCredentialsConfigured(environment === "test" ? "test" : "live", "BR")
+  ) {
+    pushBlocker(
+      blockers,
+      "provider_unavailable",
+      "Brazil PIX is unavailable until PayOK credentials are configured on the API service."
     );
   }
 

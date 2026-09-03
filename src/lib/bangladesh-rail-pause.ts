@@ -3,7 +3,8 @@
  * provider is down. Does not affect Brazil PayOK, Tylt, Tekko, wallets,
  * internal BDT transfers, or inbound PayOK webhooks.
  *
- * Default: paused. Set BANGLADESH_PAYMENTS_DISABLED=false to restore.
+ * Default: paused. Set BANGLADESH_PAYMENTS_DISABLED=false to restore Bangladesh only.
+ * Does not affect Brazil PayOK (PIX) — keep PAYOK_* credentials set for Brazil.
  */
 export class BangladeshRailPausedError extends Error {
   constructor() {

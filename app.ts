@@ -28,6 +28,7 @@ import {
   tryClaimWebhookEvent,
 } from "./src/lib/webhook-events.js";
 import { withIdempotency } from "./src/lib/idempotency.js";
+import { getPayokRailStartupSummary } from "./src/lib/payok-rail-status.js";
 import {
   merchantPayoutRecipientSchema,
   parsePayoutRecipientFromMetadata,
@@ -240,6 +241,29 @@ export async function buildApp() {
     app.log.warn(
       "TEKKO_WEBHOOK_DEBUG_BODY=1: full Tekko webhook JSON bodies will be logged (remove after debugging)."
     );
+  }
+
+  {
+    const payokRails = getPayokRailStartupSummary();
+    app.log.info(
+      {
+        payokDefaultEnv: payokRails.defaultEnvironment,
+        bangladeshCollectPayout: payokRails.bangladeshCollectPayout,
+        brazilCollectPayout: payokRails.brazilCollectPayout,
+        payokWebhooks: payokRails.payokWebhooks,
+      },
+      "PayOK rails: Bangladesh pause is independent of Brazil PIX; keep PAYOK_* credentials set for Brazil"
+    );
+    if (payokRails.brazilCollectPayout === "credentials_missing") {
+      app.log.warn(
+        "PayOK Brazil PIX unavailable: restore PAYOK_TEST_* / PAYOK_LIVE_* credentials (Bangladesh pause does not require removing them)"
+      );
+    }
+    if (payokRails.payokWebhooks === "credentials_missing") {
+      app.log.warn(
+        "PayOK webhooks unavailable: set PAYOK_*_PLATFORM_PUB_KEY (or legacy PAYOK_PLATFORM_PUB_KEY) for callback verification"
+      );
+    }
   }
 
   app.setValidatorCompiler(validatorCompiler);
