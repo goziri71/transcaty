@@ -16,6 +16,10 @@ import {
 } from "../../src/lib/merchant-api-scopes.js";
 import { requirePortalAdminRole } from "../../src/lib/portal-roles.js";
 import { requirePortalStepUp } from "../../src/lib/portal-auth.js";
+import {
+  maskMerchantApiKey,
+  merchantApiKeyHint,
+} from "../../src/lib/merchant-api-key-display.js";
 
 const errorResponse = z.object({
   error: z.string(),
@@ -32,10 +36,6 @@ function generateSecret(): string {
 
 function hashKey(key: string): string {
   return createHash("sha256").update(key, "utf8").digest("hex");
-}
-
-function maskKey(keyId: string): string {
-  return "••••••••" + keyId.slice(-8);
 }
 
 export async function registerPortalApiKeysRoutes(app: FastifyInstance) {
@@ -81,7 +81,7 @@ export async function registerPortalApiKeysRoutes(app: FastifyInstance) {
       const rows = await db
         .select({
           id: merchantApiKeys.id,
-          keyHash: merchantApiKeys.keyHash,
+          keyHint: merchantApiKeys.keyHint,
           environment: merchantApiKeys.environment,
           scopes: merchantApiKeys.scopes,
           status: merchantApiKeys.status,
@@ -92,7 +92,7 @@ export async function registerPortalApiKeysRoutes(app: FastifyInstance) {
 
       const items = rows.map((r) => ({
         id: r.id,
-        keyMasked: maskKey(r.id),
+        keyMasked: maskMerchantApiKey(r.keyHint),
         environment: r.environment,
         scopes: r.scopes,
         status: r.status,
@@ -212,6 +212,7 @@ export async function registerPortalApiKeysRoutes(app: FastifyInstance) {
         .values({
           merchantId: user.merchantId,
           keyHash,
+          keyHint: merchantApiKeyHint(apiKey),
           secretEnc,
           environment,
           scopes: scopesValue,

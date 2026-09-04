@@ -173,6 +173,17 @@ async function refundPendingNgnPayout(params: {
       })
       .where(eq(wallets.id, wallet.id));
   });
+
+  audit({
+    action: "payout.failed",
+    resource: params.txId,
+    merchantId: params.merchantId,
+    meta: {
+      provider: TEKKO_NGN_PAYOUT_PROVIDER,
+      failedStage: params.failedStage,
+      failureReason: params.failureReason,
+    },
+  });
 }
 
 export async function listTekkoNgnBanks(params?: { search?: string }): Promise<
@@ -421,13 +432,16 @@ export async function createTekkoNgnPayout(params: {
         "NGN payout could not be started. Check beneficiary details and balance.",
         tx.id,
         reference,
-        undefined
+        undefined,
+        detail
       );
     }
     throw new PayoutCreationError(
       "NGN payout could not be started. Try again later or contact support.",
       tx.id,
-      reference
+      reference,
+      undefined,
+      detail
     );
   }
 

@@ -30,7 +30,9 @@ import {
   buildTransactionFeeBreakdown,
   attachFeeBreakdown,
 } from "../../src/lib/billing/transaction-fee-breakdown.js";
-import { requirePortalMoneyGuards, requirePortalMoneyRole } from "../../src/lib/portal-roles.js";
+import { requirePortalMoneyGuards, requirePortalPayoutGuards, requirePortalMoneyRole } from "../../src/lib/portal-roles.js";
+import { portalPayoutPinSchema } from "../../src/lib/merchant-payout-pin.js";
+import { PayoutCreationError } from "../../services/domestic/bangladesh/payout.js";
 import { withIdempotency } from "../../src/lib/idempotency.js";
 
 const errorResponse = z.object({
@@ -328,6 +330,7 @@ export async function registerPortalNgnRoutes(app: FastifyInstance) {
           beneficiary: ngnBeneficiarySchema,
           description: z.string().max(255).optional(),
           merchantReference: z.string().min(1).max(128).optional(),
+          pin: portalPayoutPinSchema,
         }),
         response: {
           201: z
@@ -352,7 +355,7 @@ export async function registerPortalNgnRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const user = request.portalUser;
       if (!user) return reply.status(401).send({ error: "Unauthorized" });
-      if (!(await requirePortalMoneyGuards(request, reply))) return;
+      if (!(await requirePortalPayoutGuards(request, reply, (request.body as { pin?: string }).pin))) return;
 
       const body = request.body as {
         environment: "test" | "live";
@@ -360,6 +363,7 @@ export async function registerPortalNgnRoutes(app: FastifyInstance) {
         beneficiary: z.infer<typeof ngnBeneficiarySchema>;
         description?: string;
         merchantReference?: string;
+        pin: string;
       };
 
       if (!(await requirePortalNgnAccess(user.merchantId, body.environment, reply))) return;
@@ -414,12 +418,17 @@ export async function registerPortalNgnRoutes(app: FastifyInstance) {
         return reply.status(201).send(response);
       } catch (err) {
         const rawMsg = err instanceof Error ? err.message : String(err);
+        const meta: Record<string, unknown> = { message: rawMsg, market: "nigeria" };
+        if (err instanceof PayoutCreationError) {
+          if (err.transactionId) meta.transactionId = err.transactionId;
+          if (err.upstreamDetail) meta.upstreamDetail = err.upstreamDetail;
+        }
         audit({
           action: "portal.payout.failed",
           merchantId: user.merchantId,
           merchantUserId: user.merchantUserId,
           actorEmail: user.email,
-          meta: { message: rawMsg, market: "nigeria" },
+          meta,
         });
         sendMerchantFacingReply(reply, merchantPaymentFlowErrorResponse(err));
         return;

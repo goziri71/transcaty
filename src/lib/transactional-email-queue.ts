@@ -29,6 +29,11 @@ function formatLoginTimestamp(iso: string): string {
 
 export type TransactionalEmailPayload =
   | {
+      kind: "portal_payout_pin_reset";
+      to: string;
+      resetUrl: string;
+    }
+  | {
       kind: "portal_password_reset";
       to: string;
       resetUrl: string;
@@ -207,6 +212,29 @@ export async function deliverTransactionalEmail(payload: TransactionalEmailPaylo
       `.trim(),
     });
     if (!ok) throw new Error("merchant_payment_event email delivery failed");
+    return;
+  }
+
+  if (payload.kind === "portal_payout_pin_reset") {
+    const ok = await sendTransactionalEmail({
+      to: payload.to,
+      subject: `Reset your ${appName} merchant payout PIN`,
+      text: [
+        `We received a request to reset your ${appName} merchant payout PIN.`,
+        "",
+        `Sign in to the merchant dashboard, complete MFA verification, then open this link:`,
+        payload.resetUrl,
+        "",
+        `The link expires soon. If you did not request this, ignore this email and contact support.`,
+      ].join("\n"),
+      html: `
+        <p>We received a request to reset your <strong>${appName}</strong> merchant payout PIN.</p>
+        <p>Sign in, verify with your authenticator app, then complete the reset:</p>
+        <p><a href="${payload.resetUrl}">Reset payout PIN</a></p>
+        <p>If you did not request this, ignore this email.</p>
+      `.trim(),
+    });
+    if (!ok) throw new Error("portal_payout_pin_reset email delivery failed");
     return;
   }
 

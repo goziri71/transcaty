@@ -25,7 +25,11 @@ import {
   getMerchantEurPayoutStatus,
 } from "../../services/integrations/tylt/eur-payout.js";
 import { pickTyltJsonPrimaryMessage } from "../../services/integrations/tylt/h2h-upi.js";
-import { requirePortalMoneyGuards, requirePortalMoneyRole } from "../../src/lib/portal-roles.js";
+import { requirePortalPayoutGuards, requirePortalMoneyRole } from "../../src/lib/portal-roles.js";
+import {
+  portalPayoutPinSchema,
+  requireMerchantPayoutPin,
+} from "../../src/lib/merchant-payout-pin.js";
 import { requirePortalStepUp } from "../../src/lib/portal-auth.js";
 import { withIdempotency } from "../../src/lib/idempotency.js";
 
@@ -138,6 +142,7 @@ export async function registerPortalEurPayoutRoutes(app: FastifyInstance) {
           payeeDetails: z.record(z.string(), z.unknown()),
           autoMerchantApproval: z.union([z.literal(0), z.literal(1)]).optional(),
           cryptoUi: z.union([z.literal(0), z.literal(1)]).optional(),
+          pin: portalPayoutPinSchema,
         }),
         response: {
           201: eurPayoutCreateResponseSchema,
@@ -152,7 +157,7 @@ export async function registerPortalEurPayoutRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const user = request.portalUser;
       if (!user) return reply.status(401).send({ error: "Unauthorized" });
-      if (!(await requirePortalMoneyGuards(request, reply))) return;
+      if (!(await requirePortalPayoutGuards(request, reply, (request.body as { pin?: string }).pin))) return;
 
       const body = request.body as {
         environment: "test" | "live";
@@ -165,6 +170,7 @@ export async function registerPortalEurPayoutRoutes(app: FastifyInstance) {
         payeeDetails: Record<string, unknown>;
         autoMerchantApproval?: 0 | 1;
         cryptoUi?: 0 | 1;
+        pin: string;
       };
 
       if (!(await requirePortalEuropeAccess(user.merchantId, body.environment, reply))) return;
@@ -287,6 +293,7 @@ export async function registerPortalEurPayoutRoutes(app: FastifyInstance) {
       schema: {
         params: z.object({ transactionId: z.string().uuid() }),
         querystring: z.object({ environment: z.enum(["test", "live"]).default("test") }),
+        body: z.object({ pin: portalPayoutPinSchema }),
         response: {
           200: z.object({
             transactionId: z.string(),
@@ -306,6 +313,7 @@ export async function registerPortalEurPayoutRoutes(app: FastifyInstance) {
       if (!user) return reply.status(401).send({ error: "Unauthorized" });
       if (!(await requirePortalMoneyRole(request, reply))) return;
       if (!(await requirePortalStepUp(request, reply, "money.write"))) return;
+      if (!(await requireMerchantPayoutPin(request, reply, (request.body as { pin?: string })?.pin))) return;
 
       const { transactionId } = request.params as { transactionId: string };
       const { environment } = request.query as { environment: "test" | "live" };

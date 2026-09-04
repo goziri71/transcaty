@@ -26,6 +26,11 @@ import {
   WALLET_ACTIVATION_STATUSES,
 } from "../../src/lib/merchant-markets.js";
 import {
+  isPortalMfaRequired,
+  isPortalPayoutPinRequired,
+} from "../../src/lib/portal-auth.js";
+import { getMerchantPayoutPinStatus } from "../../src/lib/merchant-payout-pin.js";
+import {
   portalWalletBalanceItemSchema,
   portalWalletLimitsSchema,
   pickPrimaryPortalWalletItem,
@@ -136,6 +141,9 @@ export async function registerPortalMeRoutes(app: FastifyInstance) {
             documentsCount: z.number(),
             mfaEnabled: z.boolean(),
             mfaPendingSetup: z.boolean(),
+            mfaSetupRequired: z.boolean(),
+            payoutPinConfigured: z.boolean(),
+            payoutPinSetupRequired: z.boolean(),
           }),
           401: errorResponse,
           404: errorResponse,
@@ -198,6 +206,8 @@ export async function registerPortalMeRoutes(app: FastifyInstance) {
       const kycStatus = merchant.kycStatus ?? "pending";
       const canCreateApiKeys = kycStatus === "verified";
       const needsActivation = !profile || profile.status === "draft";
+      const payoutPin = await getMerchantPayoutPinStatus(user.merchantId);
+      const mfaEnabled = mu?.mfaEnabled ?? false;
 
       return reply.send({
         merchantId: merchant.id,
@@ -220,8 +230,11 @@ export async function registerPortalMeRoutes(app: FastifyInstance) {
           : null,
         personsCount: Number(personsResult?.count ?? 0),
         documentsCount: Number(documentsResult?.count ?? 0),
-        mfaEnabled: mu?.mfaEnabled ?? false,
-        mfaPendingSetup: !!(mu?.mfaPending && !mu?.mfaEnabled),
+        mfaEnabled,
+        mfaPendingSetup: !!(mu?.mfaPending && !mfaEnabled),
+        mfaSetupRequired: isPortalMfaRequired() && !mfaEnabled,
+        payoutPinConfigured: payoutPin.configured,
+        payoutPinSetupRequired: isPortalPayoutPinRequired() && !payoutPin.configured,
       });
     }
   );

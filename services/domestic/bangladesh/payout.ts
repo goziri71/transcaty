@@ -30,18 +30,22 @@ export class PayoutCreationError extends Error {
   platformOrderId: string | null;
   /** Merchant API `code` when set (e.g. insufficient_balance for EU USDC). */
   merchantCode?: string;
+  /** Upstream provider detail for ops (not shown to merchants). */
+  upstreamDetail?: string;
 
   constructor(
     message: string,
     transactionId: string,
     platformOrderId?: string | null,
-    merchantCode?: string
+    merchantCode?: string,
+    upstreamDetail?: string
   ) {
     super(message);
     this.name = "PayoutCreationError";
     this.transactionId = transactionId;
     this.platformOrderId = platformOrderId ?? null;
     this.merchantCode = merchantCode;
+    this.upstreamDetail = upstreamDetail;
   }
 }
 

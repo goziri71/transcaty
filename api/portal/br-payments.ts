@@ -22,7 +22,8 @@ import {
   buildTransactionFeeBreakdown,
   attachFeeBreakdown,
 } from "../../src/lib/billing/transaction-fee-breakdown.js";
-import { requirePortalMoneyGuards } from "../../src/lib/portal-roles.js";
+import { requirePortalMoneyGuards, requirePortalPayoutGuards } from "../../src/lib/portal-roles.js";
+import { portalPayoutPinSchema } from "../../src/lib/merchant-payout-pin.js";
 import { withIdempotency } from "../../src/lib/idempotency.js";
 
 const errorResponse = z.object({
@@ -236,6 +237,7 @@ export async function registerPortalBrazilRoutes(app: FastifyInstance) {
             email: z.string().email(),
             phone: z.string(),
           }),
+          pin: portalPayoutPinSchema,
         }),
         response: {
           201: z
@@ -262,13 +264,14 @@ export async function registerPortalBrazilRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const user = request.portalUser;
       if (!user) return reply.status(401).send({ error: "Unauthorized" });
-      if (!(await requirePortalMoneyGuards(request, reply))) return;
+      if (!(await requirePortalPayoutGuards(request, reply, (request.body as { pin?: string }).pin))) return;
 
       const body = request.body as {
         environment: "test" | "live";
         amount: string;
         benificiaryAccountInfo: { number: string; orgId: string; orgCode: string; orgName: string; holderName: string };
         cardHolderInfo: { firstName: string; lastName: string; email: string; phone: string };
+        pin: string;
       };
 
       if (!(await requirePortalBrazilAccess(user.merchantId, body.environment, reply))) return;

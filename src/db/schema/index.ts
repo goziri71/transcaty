@@ -130,6 +130,11 @@ export const merchants = pgTable(
     tekkoNgnVaAccountNumber: text("tekko_ngn_va_account_number"),
     tekkoNgnVaBankName: text("tekko_ngn_va_bank_name"),
     tekkoNgnVaAccountName: text("tekko_ngn_va_account_name"),
+    /** bcrypt hash of merchant payout PIN (4–6 digits). Required before portal payout writes. */
+    payoutPinHash: text("payout_pin_hash"),
+    payoutPinSetAt: timestamp("payout_pin_set_at", { withTimezone: true }),
+    payoutPinFailedAttempts: integer("payout_pin_failed_attempts").notNull().default(0),
+    payoutPinLockedUntil: timestamp("payout_pin_locked_until", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -165,6 +170,8 @@ export const merchantApiKeys = pgTable(
       .notNull()
       .references(() => merchants.id, { onDelete: "cascade" }),
     keyHash: text("key_hash").notNull().unique(),
+    /** Last 8 chars of plaintext API key for list display (set once at creation). */
+    keyHint: text("key_hint"),
     secretEnc: text("secret_enc").notNull(),
     environment: text("environment").notNull(), // "live" | "test"
     scopes: text("scopes").notNull().default(""), // comma-separated: payin:create,payout:create,balance:read,internal_transfer:create (legacy tylt:internal_transfer)
@@ -690,6 +697,27 @@ export const passwordResetTokens = pgTable(
   (t) => [
     index("password_reset_tokens_user_realm_idx").on(t.realm, t.userId),
     index("password_reset_tokens_expires_at_idx").on(t.expiresAt),
+  ]
+);
+
+export const merchantPayoutPinResetTokens = pgTable(
+  "merchant_payout_pin_reset_tokens",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    merchantId: uuid("merchant_id")
+      .notNull()
+      .references(() => merchants.id, { onDelete: "cascade" }),
+    requestedByUserId: uuid("requested_by_user_id")
+      .notNull()
+      .references(() => merchantUsers.id, { onDelete: "cascade" }),
+    tokenHash: text("token_hash").notNull().unique(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    usedAt: timestamp("used_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("merchant_payout_pin_reset_tokens_merchant_idx").on(t.merchantId),
+    index("merchant_payout_pin_reset_tokens_expires_idx").on(t.expiresAt),
   ]
 );
 

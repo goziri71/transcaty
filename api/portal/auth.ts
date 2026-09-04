@@ -20,6 +20,7 @@ import {
   signPortalStepUpToken,
   bumpPortalSessionVersion,
   isPortalMfaRequired,
+  isPortalPayoutPinRequired,
   verifyPassword,
   type PortalStepUpAction,
 } from "../../src/lib/portal-auth.js";
@@ -35,6 +36,8 @@ import {
   createPortalPasswordResetToken,
   consumePortalResetToken,
 } from "../../src/lib/password-reset.js";
+import { createPortalPayoutPinResetToken } from "../../src/lib/payout-pin-reset.js";
+import { getMerchantPayoutPinStatus } from "../../src/lib/merchant-payout-pin.js";
 import { queueTransactionalEmail } from "../../src/lib/transactional-email-queue.js";
 import { getClientIp } from "../../src/lib/request-ip.js";
 import { strongPasswordSchema } from "../../src/lib/password-policy.js";
@@ -52,6 +55,15 @@ const portalMerchantSchema = z.object({
   status: z.string(),
   kycStatus: z.string(),
 });
+
+async function portalSecurityOnboardingFlags(merchantId: string, mfaEnabled: boolean) {
+  const pin = await getMerchantPayoutPinStatus(merchantId);
+  return {
+    mfaSetupRequired: isPortalMfaRequired() && !mfaEnabled,
+    payoutPinConfigured: pin.configured,
+    payoutPinSetupRequired: isPortalPayoutPinRequired() && !pin.configured,
+  };
+}
 
 export async function registerPortalAuthRoutes(app: FastifyInstance) {
   app.post(
@@ -72,6 +84,8 @@ export async function registerPortalAuthRoutes(app: FastifyInstance) {
             role: z.string(),
             needsActivation: z.boolean(),
             mfaSetupRequired: z.boolean().optional(),
+            payoutPinConfigured: z.boolean().optional(),
+            payoutPinSetupRequired: z.boolean().optional(),
             merchant: portalMerchantSchema,
           }),
           400: errorResponse,
@@ -173,6 +187,7 @@ export async function registerPortalAuthRoutes(app: FastifyInstance) {
       });
 
       const merchantSlug = merchant.slug ?? slug;
+      const security = await portalSecurityOnboardingFlags(merchant.id, false);
       return reply.status(201).send({
         token,
         merchantId: merchant.id,
@@ -180,7 +195,7 @@ export async function registerPortalAuthRoutes(app: FastifyInstance) {
         email: user.email,
         role: "admin",
         needsActivation: true,
-        mfaSetupRequired: isPortalMfaRequired(),
+        ...security,
         merchant: {
           id: merchant.id,
           slug: merchantSlug,
@@ -213,6 +228,8 @@ export async function registerPortalAuthRoutes(app: FastifyInstance) {
             merchantSlug: z.string().optional(),
             mfaSetupRequired: z.boolean().optional(),
             mfaEnabled: z.boolean().optional(),
+            payoutPinConfigured: z.boolean().optional(),
+            payoutPinSetupRequired: z.boolean().optional(),
             merchant: portalMerchantSchema.optional(),
           }),
           401: errorResponse,
@@ -362,7 +379,7 @@ export async function registerPortalAuthRoutes(app: FastifyInstance) {
         role: existing.role,
         needsActivation,
         mfaEnabled: false,
-        mfaSetupRequired: isPortalMfaRequired(),
+        ...(await portalSecurityOnboardingFlags(existing.merchantId, false)),
         merchant: merchantPayload,
       });
     }
@@ -384,6 +401,9 @@ export async function registerPortalAuthRoutes(app: FastifyInstance) {
             email: z.string(),
             role: z.string(),
             needsActivation: z.boolean(),
+            mfaSetupRequired: z.boolean().optional(),
+            payoutPinConfigured: z.boolean().optional(),
+            payoutPinSetupRequired: z.boolean().optional(),
             merchant: portalMerchantSchema,
           }),
           401: errorResponse,
@@ -502,6 +522,7 @@ export async function registerPortalAuthRoutes(app: FastifyInstance) {
         email: pending.email,
         role: pending.role,
         needsActivation,
+        ...(await portalSecurityOnboardingFlags(pending.merchantId, true)),
         merchant: {
           id: merchant.id,
           slug: merchantSlug,
@@ -676,10 +697,72 @@ export async function registerPortalAuthRoutes(app: FastifyInstance) {
     }
   );
 
+  app.post(
+    "/portal/auth/payout-pin/forgot",
+    {
+      schema: {
+        body: z.object({ email: z.string().email() }),
+        response: {
+          200: z.object({
+            ok: z.literal(true),
+            message: z.string(),
+          }),
+          429: errorResponse,
+        },
+      },
+    },
+    async (request, reply) => {
+      const ip = getClientIp(request);
+      const perHour = Number(process.env.PAYOUT_PIN_RESET_REQUESTS_PER_IP_PER_HOUR ?? 5);
+      const { allowed } = await checkRedisRateLimit(
+        `portal:payout-pin-forgot:${ip}`,
+        Number.isFinite(perHour) && perHour > 0 ? perHour : 5,
+        3600
+      );
+      if (!allowed) {
+        return reply.status(429).send({
+          error: "Too Many Requests",
+          message: "Try again later",
+        });
+      }
+
+      const body = request.body as { email: string };
+      const email = body.email.toLowerCase().trim();
+      const created = await createPortalPayoutPinResetToken(email);
+      const message =
+        "If an admin account with a configured payout PIN exists for this email, reset instructions will be sent shortly.";
+
+      if (created) {
+        const base = (
+          process.env.PORTAL_PUBLIC_URL ??
+          process.env.APP_BASE_URL ??
+          "http://localhost:3000"
+        ).replace(/\/$/, "");
+        const resetUrl = `${base}/reset-payout-pin?token=${encodeURIComponent(created.rawToken)}`;
+
+        await queueTransactionalEmail({
+          kind: "portal_payout_pin_reset",
+          to: email,
+          resetUrl,
+        });
+
+        audit({
+          action: "merchant.payout_pin.reset_requested",
+          merchantId: created.merchantId,
+          merchantUserId: created.userId,
+          actorEmail: email,
+        });
+      }
+
+      return reply.send({ ok: true, message });
+    }
+  );
+
   const STEP_UP_ACTIONS = [
     "api_keys.write",
     "webhook.write",
     "money.write",
+    "payout_pin.write",
     "audit.export",
   ] as const satisfies readonly PortalStepUpAction[];
 

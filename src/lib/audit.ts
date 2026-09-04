@@ -70,6 +70,11 @@ export type AuditAction =
   | "portal.eur_payout.failed"
   | "portal.cpg_payout.created"
   | "portal.cpg_payout.failed"
+  | "merchant.payout_pin.set"
+  | "merchant.payout_pin.changed"
+  | "merchant.payout_pin.reset"
+  | "merchant.payout_pin.reset_requested"
+  | "merchant.payout_pin.failed"
   | "portal.h2h_payin.created"
   | "portal.h2h_payin.confirmed";
 

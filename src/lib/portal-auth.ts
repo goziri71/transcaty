@@ -19,7 +19,7 @@ import bcrypt from "bcrypt";
 import { eq, sql } from "drizzle-orm";
 import { isJtiRevoked } from "./jwt-revocation.js";
 import { db } from "../db/index.js";
-import { merchantUsers } from "../db/schema/index.js";
+import { merchantUsers, merchants } from "../db/schema/index.js";
 
 const SALT_ROUNDS = 10;
 /** Default shortened from 7d — override with PORTAL_JWT_EXPIRES_IN (e.g. 12h, 8h). */
@@ -52,6 +52,7 @@ export type PortalStepUpAction =
   | "api_keys.write"
   | "webhook.write"
   | "money.write"
+  | "payout_pin.write"
   | "audit.export";
 
 declare module "fastify" {
@@ -74,7 +75,18 @@ function getPortalJwtExpiry(): jwt.SignOptions["expiresIn"] {
 
 export function isPortalMfaRequired(): boolean {
   const v = process.env.PORTAL_MFA_REQUIRED?.trim().toLowerCase();
-  return v === "true" || v === "1";
+  if (v === "false" || v === "0") return false;
+  if (v === "true" || v === "1") return true;
+  // Production merchant dashboard requires MFA unless explicitly disabled.
+  return process.env.NODE_ENV === "production";
+}
+
+/** Merchant payout PIN must be configured before full portal access (onboarding). */
+export function isPortalPayoutPinRequired(): boolean {
+  const v = process.env.PORTAL_PAYOUT_PIN_REQUIRED?.trim().toLowerCase();
+  if (v === "false" || v === "0") return false;
+  if (v === "true" || v === "1") return true;
+  return true;
 }
 
 export function hashPassword(password: string): Promise<string> {
@@ -364,6 +376,7 @@ export async function requirePortalStepUp(
 
 function isPortalMfaEnrollmentPath(path: string, method: string): boolean {
   if (path.startsWith("/portal/me/mfa/")) return true;
+  if (path.startsWith("/portal/me/payout-pin")) return true;
   if (method === "GET" && (path === "/portal/me" || path === "/portal/me/")) return true;
   return false;
 }
@@ -404,22 +417,42 @@ export async function portalAuth(
   };
   request.portalSession = session;
 
-  if (!isPortalMfaRequired()) return;
-
   const path = request.url.split("?")[0] ?? "";
   if (isPortalMfaEnrollmentPath(path, request.method)) return;
 
-  const [row] = await db
-    .select({ mfaEnabled: merchantUsers.mfaEnabled })
-    .from(merchantUsers)
-    .where(eq(merchantUsers.id, session.merchantUserId))
+  if (isPortalMfaRequired()) {
+    const [row] = await db
+      .select({ mfaEnabled: merchantUsers.mfaEnabled })
+      .from(merchantUsers)
+      .where(eq(merchantUsers.id, session.merchantUserId))
+      .limit(1);
+
+    if (!row?.mfaEnabled) {
+      return reply.status(403).send({
+        error: "Forbidden",
+        message: "MFA enrollment required",
+        mfaSetupRequired: true,
+      });
+    }
+  }
+
+  if (!isPortalPayoutPinRequired()) return;
+
+  const [merchantRow] = await db
+    .select({ payoutPinHash: merchants.payoutPinHash })
+    .from(merchants)
+    .where(eq(merchants.id, session.merchantId))
     .limit(1);
 
-  if (!row?.mfaEnabled) {
+  if (!merchantRow?.payoutPinHash) {
+    const adminRequired = session.role !== "admin";
     return reply.status(403).send({
       error: "Forbidden",
-      message: "MFA enrollment required",
-      mfaSetupRequired: true,
+      message: adminRequired
+        ? "An admin must set the merchant payout PIN before you can use the dashboard"
+        : "Set a payout PIN to finish onboarding",
+      payoutPinSetupRequired: true,
+      payoutPinAdminRequired: adminRequired,
     });
   }
 }

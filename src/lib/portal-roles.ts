@@ -5,6 +5,7 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
 import { requirePortalStepUp } from "./portal-auth.js";
 import { readIdempotencyKey } from "./idempotency.js";
+import { requireMerchantPayoutPin } from "./merchant-payout-pin.js";
 
 export function portalRoleCanMoveMoney(role: string): boolean {
   return role === "admin" || role === "finance";
@@ -67,5 +68,16 @@ export async function requirePortalMoneyGuards(
     });
     return false;
   }
+  return true;
+}
+
+/** Role + step-up + idempotency + payout PIN for portal payout mutations. */
+export async function requirePortalPayoutGuards(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  pin: string | undefined
+): Promise<boolean> {
+  if (!(await requirePortalMoneyGuards(request, reply))) return false;
+  if (!(await requireMerchantPayoutPin(request, reply, pin))) return false;
   return true;
 }

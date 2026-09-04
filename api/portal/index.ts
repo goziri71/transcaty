@@ -23,11 +23,13 @@ import { registerPortalNgnRoutes } from "./ngn-collections.js";
 import { registerPortalAuditLogRoutes } from "./audit-log.js";
 import { registerPortalSecurityRoutes } from "./security.js";
 import { registerPortalFeesRoutes } from "./fees.js";
+import { registerPortalPayoutPinRoutes } from "./payout-pin.js";
 
 export async function registerPortalRoutes(app: FastifyInstance) {
   await registerPortalAuthRoutes(app);
   await registerPortalMfaRoutes(app);
   await registerPortalMeRoutes(app);
+  await registerPortalPayoutPinRoutes(app);
   await registerPortalSecurityRoutes(app);
   await registerPortalFeesRoutes(app);
   await registerPortalKycRoutes(app);

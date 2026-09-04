@@ -19,6 +19,7 @@ import { invalidateMerchantApiKeyCache } from "../../src/lib/merchant-key-cache.
 import { providerMerchantAudit } from "../../src/lib/provider-audit.js";
 import { canProviderActionContext } from "../../src/lib/provider-auth.js";
 import { merchantRefParamSchema, resolveMerchantId } from "../../src/lib/merchant-ref.js";
+import { maskMerchantApiKey } from "../../src/lib/merchant-api-key-display.js";
 
 const errorResponse = z.object({
   error: z.string(),
@@ -56,10 +57,6 @@ async function merchantIdFromRef(merchantRef: string, reply: FastifyReply): Prom
     return null;
   }
   return merchantId;
-}
-
-function maskApiKeyId(id: string): string {
-  return "••••••••" + id.slice(-8);
 }
 
 export async function registerProviderMerchantOpsRoutes(app: FastifyInstance) {
@@ -593,6 +590,7 @@ export async function registerProviderMerchantOpsRoutes(app: FastifyInstance) {
       const rows = await db
         .select({
           id: merchantApiKeys.id,
+          keyHint: merchantApiKeys.keyHint,
           environment: merchantApiKeys.environment,
           scopes: merchantApiKeys.scopes,
           status: merchantApiKeys.status,
@@ -605,7 +603,7 @@ export async function registerProviderMerchantOpsRoutes(app: FastifyInstance) {
       return {
         items: rows.map((k) => ({
           id: k.id,
-          keyMasked: maskApiKeyId(k.id),
+          keyMasked: maskMerchantApiKey(k.keyHint),
           environment: k.environment,
           scopes: k.scopes,
           status: k.status,

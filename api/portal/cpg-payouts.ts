@@ -22,7 +22,8 @@ import {
   createTyltCpgPayoutRequest,
   getMerchantCpgPayoutStatus,
 } from "../../services/integrations/tylt/cpg-payout.js";
-import { requirePortalMoneyGuards } from "../../src/lib/portal-roles.js";
+import { requirePortalPayoutGuards } from "../../src/lib/portal-roles.js";
+import { portalPayoutPinSchema } from "../../src/lib/merchant-payout-pin.js";
 import { withIdempotency } from "../../src/lib/idempotency.js";
 
 const errorResponse = z.object({
@@ -117,6 +118,7 @@ export async function registerPortalCpgPayoutRoutes(app: FastifyInstance) {
           networkSymbol: z.string().min(1),
           address: z.string().min(1),
           beneficiaryDetails: z.record(z.string(), z.unknown()),
+          pin: portalPayoutPinSchema,
         }),
         response: {
           201: cpgPayoutCreateResponseSchema,
@@ -131,7 +133,7 @@ export async function registerPortalCpgPayoutRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const user = request.portalUser;
       if (!user) return reply.status(401).send({ error: "Unauthorized" });
-      if (!(await requirePortalMoneyGuards(request, reply))) return;
+      if (!(await requirePortalPayoutGuards(request, reply, (request.body as { pin?: string }).pin))) return;
 
       const body = request.body as {
         environment: "test" | "live";
@@ -140,6 +142,7 @@ export async function registerPortalCpgPayoutRoutes(app: FastifyInstance) {
         networkSymbol: string;
         address: string;
         beneficiaryDetails: Record<string, unknown>;
+        pin: string;
       };
 
       if (!(await requirePortalIndiaAccess(user.merchantId, body.environment, reply))) return;
