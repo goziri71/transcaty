@@ -46,6 +46,7 @@ const merchantFacingError = errorResponse.extend({
 const ngnVaResponseSchema = z.object({
   status: z.string(),
   bvnStatus: z.string(),
+  bvnRequiredForPayout: z.boolean(),
   accountNumber: z.string().nullable(),
   bankName: z.string().nullable(),
   accountName: z.string().nullable(),

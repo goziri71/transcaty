@@ -49,4 +49,11 @@ describe("Tekko NGN BVN payout gate", () => {
     );
     assert.equal(tekkoDetailIndicatesBvnRequired("Insufficient master wallet balance"), false);
   });
+
+  it("detects swaps wording without verification required phrase", () => {
+    assert.equal(
+      tekkoDetailIndicatesBvnRequired("Merchant BVN verification required before NGN swaps"),
+      true
+    );
+  });
 });

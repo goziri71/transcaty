@@ -55,6 +55,7 @@ export {
   extractNgnVaDetails,
   resolveMerchantTekkoBvnStatus,
   assertMerchantTekkoBvnVerifiedForPayout,
+  markMerchantTekkoBvnPayoutBlocked,
   tekkoDetailIndicatesBvnRequired,
   NGN_BVN_REQUIRED_PAYOUT_MESSAGE,
 } from "./ngn-va.js";

@@ -99,34 +99,56 @@ function normalizeBvnStatus(raw: string | null | undefined): BvnVerificationStat
 export const NGN_BVN_REQUIRED_PAYOUT_MESSAGE =
   "Complete BVN verification before NGN payouts. Submit your BVN under Nigeria virtual account settings.";
 
-/** Resolve local + remote BVN status for a merchant (no side effects except status refresh). */
+/** Pull Tekko BVN status and persist when it differs from local (collections vs payout gate). */
+async function syncMerchantTekkoBvnStatusFromRemote(
+  merchantId: string,
+  localStatus: BvnVerificationStatus
+): Promise<BvnVerificationStatus> {
+  const customerIdRaw = await getMerchantProviderExternalId(merchantId, TEKKO_PROVIDER);
+  if (!customerIdRaw) return localStatus;
+  const customerId = Number(customerIdRaw);
+  if (!Number.isFinite(customerId)) return localStatus;
+
+  try {
+    const st = await tekkoGet(`/customers/${customerId}/bvn/status`, {
+      label: "tekko ngn bvn status refresh",
+    });
+    const remote = extractBvnStatus(st.json);
+    if (remote === localStatus) return remote;
+    // Keep payout-blocked / failed until merchant POSTs BVN again — Tekko status may still read verified.
+    if (localStatus === "failed" && remote === "verified") {
+      return localStatus;
+    }
+    await updateNigeriaBvnVerificationStatus(merchantId, remote);
+    return remote;
+  } catch {
+    return localStatus;
+  }
+}
+
+/** Resolve local + remote BVN status for a merchant (refreshes from Tekko when linked). */
 export async function resolveMerchantTekkoBvnStatus(merchantId: string): Promise<string> {
   const compliance = await getNigeriaMarketCompliance(merchantId);
   if (!compliance) return "not_submitted";
 
-  let status = compliance.bvnVerificationStatus;
-  if (status === "verified") return status;
-
-  const customerIdRaw = await getMerchantProviderExternalId(merchantId, TEKKO_PROVIDER);
-  if (customerIdRaw) {
-    const customerId = Number(customerIdRaw);
-    if (Number.isFinite(customerId)) {
-      try {
-        const st = await tekkoGet(`/customers/${customerId}/bvn/status`, {
-          label: "tekko ngn bvn status refresh",
-        });
-        const remote = extractBvnStatus(st.json);
-        if (remote !== status) {
-          await updateNigeriaBvnVerificationStatus(merchantId, remote);
-          status = remote;
-        }
-      } catch {
-        // keep local status when refresh fails
-      }
-    }
-  }
-
+  const status = await syncMerchantTekkoBvnStatusFromRemote(
+    merchantId,
+    compliance.bvnVerificationStatus
+  );
   return normalizeBvnStatus(status);
+}
+
+/** Tekko rejected payout — surface BVN form again even when VA collect still works. */
+export async function markMerchantTekkoBvnPayoutBlocked(
+  merchantId: string,
+  reason: string
+): Promise<void> {
+  await updateNigeriaBvnVerificationStatus(merchantId, "failed");
+  audit({
+    action: "tekko.ngn.bvn.payout_blocked",
+    merchantId,
+    meta: { reason: reason.slice(0, 200) },
+  });
 }
 
 /** Fail before wallet debit when merchant BVN is not verified on Tekko. */
@@ -181,6 +203,7 @@ function vaViewFromCompliance(
 ): {
   status: string;
   bvnStatus: string;
+  bvnRequiredForPayout: boolean;
   accountNumber: string | null;
   bankName: string | null;
   accountName: string | null;
@@ -190,15 +213,17 @@ function vaViewFromCompliance(
   const bvnStatus = compliance.bvnVerificationStatus;
   const accountNumber = compliance.vaAccountNumber;
   const ready = Boolean(accountNumber) && (compliance.vaStatus ?? "").toLowerCase() !== "pending";
+  const bvnRequiredForPayout = bvnStatus !== "verified";
   return {
-    status: ready
-      ? compliance.vaStatus?.trim() || "active"
-      : accountNumber
-        ? "pending"
-        : bvnStatus === "verified"
-          ? "bvn_verified"
-          : "bvn_required",
+    status: bvnRequiredForPayout
+      ? "bvn_required"
+      : ready
+        ? compliance.vaStatus?.trim() || "active"
+        : accountNumber
+          ? "pending"
+          : "bvn_verified",
     bvnStatus,
+    bvnRequiredForPayout,
     accountNumber,
     bankName: compliance.vaBankName,
     accountName: compliance.vaAccountName,
@@ -402,6 +427,7 @@ export async function getOrProvisionMerchantNgnVa(params: {
 }): Promise<{
   status: string;
   bvnStatus: string;
+  bvnRequiredForPayout: boolean;
   accountNumber: string | null;
   bankName: string | null;
   accountName: string | null;
@@ -423,46 +449,31 @@ export async function getOrProvisionMerchantNgnVa(params: {
   const merchantName = await loadMerchantName(params.merchantId);
   if (!merchantName) throw new Error("Merchant not found");
 
-  // Fast path: already provisioned locally.
+  const shouldProvision = params.provision !== false;
+  let bvnStatus = compliance?.bvnVerificationStatus ?? "not_submitted";
+
+  if (!params.bvn) {
+    bvnStatus = await syncMerchantTekkoBvnStatusFromRemote(params.merchantId, bvnStatus);
+    compliance = await getNigeriaMarketCompliance(params.merchantId);
+  }
+
+  // Fast path: VA already provisioned — still return refreshed BVN gate for payout UI.
   if (compliance?.vaAccountNumber?.trim()) {
     return { ...vaViewFromCompliance(compliance), environment: params.environment };
   }
 
-  const bvnStatus = compliance?.bvnVerificationStatus ?? "not_submitted";
-  const shouldProvision = params.provision !== false;
-
   if (bvnStatus !== "verified" && !params.bvn) {
-    const customerIdRaw = await getMerchantProviderExternalId(params.merchantId, TEKKO_PROVIDER);
-    if (customerIdRaw) {
-      const customerId = Number(customerIdRaw);
-      if (Number.isFinite(customerId)) {
-        try {
-          const st = await tekkoGet(`/customers/${customerId}/bvn/status`, {
-            label: "tekko ngn bvn status refresh",
-          });
-          const remote = extractBvnStatus(st.json);
-          if (remote !== bvnStatus) {
-            await updateNigeriaBvnVerificationStatus(params.merchantId, remote);
-            compliance = await getNigeriaMarketCompliance(params.merchantId);
-          }
-        } catch {
-          // ignore refresh errors
-        }
-      }
-    }
-    const refreshed = compliance?.bvnVerificationStatus ?? "not_submitted";
-    if (refreshed !== "verified") {
-      return {
-        status: "bvn_required",
-        bvnStatus: refreshed,
-        accountNumber: null,
-        bankName: null,
-        accountName: null,
-        currency: "NGN",
-        ready: false,
-        environment: params.environment,
-      };
-    }
+    return {
+      status: "bvn_required",
+      bvnStatus,
+      bvnRequiredForPayout: true,
+      accountNumber: null,
+      bankName: null,
+      accountName: null,
+      currency: "NGN",
+      ready: false,
+      environment: params.environment,
+    };
   }
 
   if (!shouldProvision) {
@@ -470,6 +481,7 @@ export async function getOrProvisionMerchantNgnVa(params: {
       return {
         status: "bvn_required",
         bvnStatus: "not_submitted",
+        bvnRequiredForPayout: true,
         accountNumber: null,
         bankName: null,
         accountName: null,
@@ -525,6 +537,7 @@ export async function getMerchantNgnVa(params: {
 }): Promise<{
   status: string;
   bvnStatus: string;
+  bvnRequiredForPayout: boolean;
   accountNumber: string | null;
   bankName: string | null;
   accountName: string | null;

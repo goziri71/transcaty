@@ -28,6 +28,7 @@ import { tekkoGet, tekkoPost, tekkoPlatformRequest } from "./client.js";
 import { assertTekkoNgnLiveEnvironment, type TekkoMerchantEnvironment } from "./ngn-collect.js";
 import {
   assertMerchantTekkoBvnVerifiedForPayout,
+  markMerchantTekkoBvnPayoutBlocked,
   tekkoDetailIndicatesBvnRequired,
 } from "./ngn-va.js";
 
@@ -435,6 +436,9 @@ export async function createTekkoNgnPayout(params: {
     });
     if (withdrawRes.status >= 400 && withdrawRes.status < 500) {
       const bvnBlocked = tekkoDetailIndicatesBvnRequired(detail);
+      if (bvnBlocked) {
+        await markMerchantTekkoBvnPayoutBlocked(params.merchantId, detail);
+      }
       throw new PayoutCreationError(
         bvnBlocked
           ? "BVN verification required before NGN payouts"
