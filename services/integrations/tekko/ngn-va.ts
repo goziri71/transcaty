@@ -23,6 +23,7 @@ import { LIMITS } from "../../../src/lib/limits.js";
 import { getOrCreateMerchantWallet } from "../tylt/crossramp-payin.js";
 import { ensureTekkoCustomerForMerchant } from "./customers.js";
 import { assertTekkoNgnLiveEnvironment, type TekkoMerchantEnvironment } from "./ngn-collect.js";
+import { PayoutCreationError } from "../../domestic/bangladesh/payout.js";
 import { tekkoGet, tekkoPost } from "./client.js";
 
 export const TEKKO_NGN_VA_PROVIDER = "tekko-ngn-va";
@@ -81,6 +82,58 @@ function normalizeBvnStatus(raw: string | null | undefined): string {
   if (s === "verified" || s === "pending" || s === "failed" || s === "not_submitted") return s;
   if (!s) return "not_submitted";
   return s;
+}
+
+/** Merchant-visible copy when Tekko blocks NGN payout until BVN is verified. */
+export const NGN_BVN_REQUIRED_PAYOUT_MESSAGE =
+  "Complete BVN verification before NGN payouts. Submit your BVN under Nigeria virtual account settings.";
+
+/** Resolve local + remote Tekko BVN status for a merchant (no side effects except status refresh). */
+export async function resolveMerchantTekkoBvnStatus(merchantId: string): Promise<string> {
+  let row = await loadMerchantVaRow(merchantId);
+  if (!row) return "not_submitted";
+
+  let status = normalizeBvnStatus(row.tekkoBvnStatus);
+  if (status === "verified") return status;
+
+  const customerIdRaw = row.tekkoCustomerId?.trim();
+  if (customerIdRaw) {
+    const customerId = Number(customerIdRaw);
+    if (Number.isFinite(customerId)) {
+      try {
+        const st = await tekkoGet(`/customers/${customerId}/bvn/status`, {
+          label: "tekko ngn bvn status refresh",
+        });
+        const remote = extractBvnStatus(st.json);
+        if (remote !== status) {
+          await persistVaFields(merchantId, { tekkoBvnStatus: remote });
+          status = remote;
+        }
+      } catch {
+        // keep local status when refresh fails
+      }
+    }
+  }
+
+  return normalizeBvnStatus(status);
+}
+
+/** Fail before wallet debit when merchant BVN is not verified on Tekko. */
+export async function assertMerchantTekkoBvnVerifiedForPayout(merchantId: string): Promise<void> {
+  const status = await resolveMerchantTekkoBvnStatus(merchantId);
+  if (status !== "verified") {
+    throw new PayoutCreationError(
+      "BVN verification required before NGN payouts",
+      "",
+      null,
+      "ngn_bvn_required"
+    );
+  }
+}
+
+export function tekkoDetailIndicatesBvnRequired(detail: string): boolean {
+  const d = detail.toLowerCase();
+  return d.includes("bvn") && (d.includes("verification required") || d.includes("verify"));
 }
 
 export function extractNgnVaDetails(json: unknown): TekkoNgnVaDetails {

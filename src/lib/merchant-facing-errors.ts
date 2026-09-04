@@ -79,6 +79,20 @@ function payoutCreationErrorResponse(err: Error & {
     };
   }
 
+  if (code === "ngn_bvn_required") {
+    return {
+      status: 400,
+      body: {
+        error: "Bad Request",
+        message:
+          "Complete BVN verification before NGN payouts. Submit your BVN under Nigeria virtual account settings.",
+        code: "ngn_bvn_required",
+        ...(err.transactionId ? base : {}),
+      },
+      logDetail: err.message,
+    };
+  }
+
   return {
     status: 400,
     body: {

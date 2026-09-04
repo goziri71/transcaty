@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { extractNgnVaDetails } from "./ngn-va.js";
+import { extractNgnVaDetails, tekkoDetailIndicatesBvnRequired } from "./ngn-va.js";
 
 describe("Tekko NGN VA parse", () => {
   it("extracts VA fields from data envelope", () => {
@@ -36,5 +36,17 @@ describe("Tekko NGN VA parse", () => {
     assert.equal(details.accountNumber, "9876543210");
     assert.equal(details.bankName, "Access Bank");
     assert.equal(details.accountName, "Bola");
+  });
+});
+
+describe("Tekko NGN BVN payout gate", () => {
+  it("detects Tekko BVN-required withdraw copy", () => {
+    assert.equal(
+      tekkoDetailIndicatesBvnRequired(
+        "Merchant BVN verification required before NGN swaps. Complete KYB → BVN in the dashboard."
+      ),
+      true
+    );
+    assert.equal(tekkoDetailIndicatesBvnRequired("Insufficient master wallet balance"), false);
   });
 });

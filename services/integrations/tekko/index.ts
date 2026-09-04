@@ -53,6 +53,10 @@ export {
   findMerchantIdByTekkoCustomerId,
   findMerchantIdByTekkoNgnVaAccountNumber,
   extractNgnVaDetails,
+  resolveMerchantTekkoBvnStatus,
+  assertMerchantTekkoBvnVerifiedForPayout,
+  tekkoDetailIndicatesBvnRequired,
+  NGN_BVN_REQUIRED_PAYOUT_MESSAGE,
 } from "./ngn-va.js";
 export type { TekkoNgnVaDetails, TekkoNgnBvnInput } from "./ngn-va.js";
 export {

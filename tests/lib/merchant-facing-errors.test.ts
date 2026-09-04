@@ -32,6 +32,20 @@ describe("merchantPaymentFlowErrorResponse", () => {
     assert.equal(mapped.body.code, "wallet_not_found");
   });
 
+  it("maps NGN BVN gate PayoutCreationError to ngn_bvn_required", () => {
+    const err = new PayoutCreationError(
+      "BVN verification required before NGN payouts",
+      "",
+      null,
+      "ngn_bvn_required"
+    );
+    const mapped = merchantPaymentFlowErrorResponse(err);
+    assert.equal(mapped.status, 400);
+    assert.equal(mapped.body.code, "ngn_bvn_required");
+    assert.match(mapped.body.message ?? "", /BVN verification/i);
+    assert.equal(mapped.body.transactionId, undefined);
+  });
+
   it("passes through UpstreamProviderClientError as HTTP 400 with partner message", () => {
     const err = new UpstreamProviderClientError(
       "internal log",

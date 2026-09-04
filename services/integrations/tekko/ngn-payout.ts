@@ -26,6 +26,10 @@ import { PayoutCreationError } from "../../domestic/bangladesh/payout.js";
 import { getTekkoLiveConfig } from "./config.js";
 import { tekkoGet, tekkoPost, tekkoPlatformRequest } from "./client.js";
 import { assertTekkoNgnLiveEnvironment, type TekkoMerchantEnvironment } from "./ngn-collect.js";
+import {
+  assertMerchantTekkoBvnVerifiedForPayout,
+  tekkoDetailIndicatesBvnRequired,
+} from "./ngn-va.js";
 
 export const TEKKO_NGN_PAYOUT_PROVIDER = "tekko-ngn-payout";
 
@@ -304,6 +308,8 @@ export async function createTekkoNgnPayout(params: {
     );
   }
 
+  await assertMerchantTekkoBvnVerifiedForPayout(params.merchantId);
+
   const payoutFeePreview = await previewTransactionFee({
     merchantId: params.merchantId,
     environment: params.environment,
@@ -428,11 +434,14 @@ export async function createTekkoNgnPayout(params: {
       failureReason: detail,
     });
     if (withdrawRes.status >= 400 && withdrawRes.status < 500) {
+      const bvnBlocked = tekkoDetailIndicatesBvnRequired(detail);
       throw new PayoutCreationError(
-        "NGN payout could not be started. Check beneficiary details and balance.",
+        bvnBlocked
+          ? "BVN verification required before NGN payouts"
+          : "NGN payout could not be started. Check beneficiary details and balance.",
         tx.id,
         reference,
-        undefined,
+        bvnBlocked ? "ngn_bvn_required" : undefined,
         detail
       );
     }
