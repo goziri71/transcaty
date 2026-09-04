@@ -8,6 +8,20 @@ import { merchants, transactions, ledgerEntries, wallets } from "../../../src/db
 import { audit } from "../../../src/lib/audit.js";
 import { addAmount } from "../../../src/lib/money.js";
 import { UpstreamProviderClientError } from "../../../src/lib/merchant-facing-errors.js";
+import {
+  getNigeriaMarketCompliance,
+  saveNigeriaBvnSubmission,
+  updateNigeriaBvnVerificationStatus,
+  updateNigeriaVaDetails,
+  findMerchantIdByNigeriaVaAccountNumber,
+  normalizeBvnVerificationStatus,
+  type BvnVerificationStatus,
+} from "../../../src/lib/merchant-market-compliance.js";
+import {
+  findMerchantIdByProviderExternalId,
+  getMerchantProviderExternalId,
+  TEKKO_PROVIDER,
+} from "../../../src/lib/merchant-provider-links.js";
 import { tryApplyTransactionFee } from "../../../src/lib/billing/index.js";
 import {
   buildTransactionFeeBreakdown,
@@ -77,26 +91,23 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-function normalizeBvnStatus(raw: string | null | undefined): string {
-  const s = (raw ?? "").trim().toLowerCase();
-  if (s === "verified" || s === "pending" || s === "failed" || s === "not_submitted") return s;
-  if (!s) return "not_submitted";
-  return s;
+function normalizeBvnStatus(raw: string | null | undefined): BvnVerificationStatus {
+  return normalizeBvnVerificationStatus(raw);
 }
 
 /** Merchant-visible copy when Tekko blocks NGN payout until BVN is verified. */
 export const NGN_BVN_REQUIRED_PAYOUT_MESSAGE =
   "Complete BVN verification before NGN payouts. Submit your BVN under Nigeria virtual account settings.";
 
-/** Resolve local + remote Tekko BVN status for a merchant (no side effects except status refresh). */
+/** Resolve local + remote BVN status for a merchant (no side effects except status refresh). */
 export async function resolveMerchantTekkoBvnStatus(merchantId: string): Promise<string> {
-  let row = await loadMerchantVaRow(merchantId);
-  if (!row) return "not_submitted";
+  const compliance = await getNigeriaMarketCompliance(merchantId);
+  if (!compliance) return "not_submitted";
 
-  let status = normalizeBvnStatus(row.tekkoBvnStatus);
+  let status = compliance.bvnVerificationStatus;
   if (status === "verified") return status;
 
-  const customerIdRaw = row.tekkoCustomerId?.trim();
+  const customerIdRaw = await getMerchantProviderExternalId(merchantId, TEKKO_PROVIDER);
   if (customerIdRaw) {
     const customerId = Number(customerIdRaw);
     if (Number.isFinite(customerId)) {
@@ -106,7 +117,7 @@ export async function resolveMerchantTekkoBvnStatus(merchantId: string): Promise
         });
         const remote = extractBvnStatus(st.json);
         if (remote !== status) {
-          await persistVaFields(merchantId, { tekkoBvnStatus: remote });
+          await updateNigeriaBvnVerificationStatus(merchantId, remote);
           status = remote;
         }
       } catch {
@@ -150,49 +161,55 @@ export function extractNgnVaDetails(json: unknown): TekkoNgnVaDetails {
   };
 }
 
-function extractBvnStatus(json: unknown): string {
+function extractBvnStatus(json: unknown): BvnVerificationStatus {
   const root = asRecord(json);
   const data = asRecord(root?.data) ?? root;
   return normalizeBvnStatus(strField(data, "status", "bvnStatus", "bvn_status"));
 }
 
-async function loadMerchantVaRow(merchantId: string) {
+async function loadMerchantName(merchantId: string): Promise<string | null> {
   const [row] = await db
-    .select({
-      id: merchants.id,
-      name: merchants.name,
-      tekkoCustomerId: merchants.tekkoCustomerId,
-      tekkoBvnStatus: merchants.tekkoBvnStatus,
-      tekkoNgnVaStatus: merchants.tekkoNgnVaStatus,
-      tekkoNgnVaAccountNumber: merchants.tekkoNgnVaAccountNumber,
-      tekkoNgnVaBankName: merchants.tekkoNgnVaBankName,
-      tekkoNgnVaAccountName: merchants.tekkoNgnVaAccountName,
-    })
+    .select({ name: merchants.name })
     .from(merchants)
     .where(eq(merchants.id, merchantId))
     .limit(1);
-  return row ?? null;
+  return row?.name ?? null;
 }
 
-async function persistVaFields(
-  merchantId: string,
-  patch: {
-    tekkoBvnStatus?: string | null;
-    tekkoNgnVaStatus?: string | null;
-    tekkoNgnVaAccountNumber?: string | null;
-    tekkoNgnVaBankName?: string | null;
-    tekkoNgnVaAccountName?: string | null;
-  }
-): Promise<void> {
-  await db
-    .update(merchants)
-    .set({ ...patch, updatedAt: new Date() })
-    .where(eq(merchants.id, merchantId));
+function vaViewFromCompliance(
+  compliance: NonNullable<Awaited<ReturnType<typeof getNigeriaMarketCompliance>>>
+): {
+  status: string;
+  bvnStatus: string;
+  accountNumber: string | null;
+  bankName: string | null;
+  accountName: string | null;
+  currency: "NGN";
+  ready: boolean;
+} {
+  const bvnStatus = compliance.bvnVerificationStatus;
+  const accountNumber = compliance.vaAccountNumber;
+  const ready = Boolean(accountNumber) && (compliance.vaStatus ?? "").toLowerCase() !== "pending";
+  return {
+    status: ready
+      ? compliance.vaStatus?.trim() || "active"
+      : accountNumber
+        ? "pending"
+        : bvnStatus === "verified"
+          ? "bvn_verified"
+          : "bvn_required",
+    bvnStatus,
+    accountNumber,
+    bankName: compliance.vaBankName,
+    accountName: compliance.vaAccountName,
+    currency: "NGN",
+    ready,
+  };
 }
 
-async function pollBvnUntilTerminal(customerId: number): Promise<string> {
+async function pollBvnUntilTerminal(customerId: number): Promise<BvnVerificationStatus> {
   const delays = [500, 1000, 1500, 2000, 3000, 4000, 5000];
-  let last = "pending";
+  let last: BvnVerificationStatus = "pending";
   for (const delay of delays) {
     await sleep(delay);
     const res = await tekkoGet(`/customers/${customerId}/bvn/status`, {
@@ -228,6 +245,20 @@ export async function submitMerchantNgnBvn(params: {
     );
   }
 
+  await saveNigeriaBvnSubmission(params.merchantId, {
+    bvn,
+    firstName,
+    lastName,
+    phoneNumber: params.bvn.phoneNumber,
+    dateOfBirth: params.bvn.dateOfBirth,
+    customerEmail: params.bvn.customerEmail,
+  });
+  audit({
+    action: "merchant.market_compliance.bvn.submitted",
+    merchantId: params.merchantId,
+    meta: { market: "nigeria" },
+  });
+
   const customerId = await ensureTekkoCustomerForMerchant({
     merchantId: params.merchantId,
     displayName: `${firstName} ${lastName}`.slice(0, 200),
@@ -250,7 +281,7 @@ export async function submitMerchantNgnBvn(params: {
   let status = extractBvnStatus(res.json);
   if (res.status >= 400) {
     const detail = pickTekkoMessage(res.json, `Tekko BVN verify failed (${res.status})`);
-    await persistVaFields(params.merchantId, { tekkoBvnStatus: "failed" });
+    await updateNigeriaBvnVerificationStatus(params.merchantId, "failed");
     audit({
       action: "tekko.ngn.bvn.failed",
       merchantId: params.merchantId,
@@ -266,7 +297,7 @@ export async function submitMerchantNgnBvn(params: {
     status = await pollBvnUntilTerminal(customerId);
   }
 
-  await persistVaFields(params.merchantId, { tekkoBvnStatus: status });
+  await updateNigeriaBvnVerificationStatus(params.merchantId, status);
   audit({
     action: status === "verified" ? "tekko.ngn.bvn.verified" : "tekko.ngn.bvn.status",
     merchantId: params.merchantId,
@@ -360,29 +391,6 @@ async function onboardTekkoCustomerVa(params: {
   );
 }
 
-function vaViewFromRow(row: NonNullable<Awaited<ReturnType<typeof loadMerchantVaRow>>>): {
-  status: string;
-  bvnStatus: string;
-  accountNumber: string | null;
-  bankName: string | null;
-  accountName: string | null;
-  currency: "NGN";
-  ready: boolean;
-} {
-  const bvnStatus = normalizeBvnStatus(row.tekkoBvnStatus);
-  const accountNumber = row.tekkoNgnVaAccountNumber?.trim() || null;
-  const ready = Boolean(accountNumber) && (row.tekkoNgnVaStatus ?? "").toLowerCase() !== "pending";
-  return {
-    status: ready ? row.tekkoNgnVaStatus?.trim() || "active" : accountNumber ? "pending" : bvnStatus === "verified" ? "bvn_verified" : "bvn_required",
-    bvnStatus,
-    accountNumber,
-    bankName: row.tekkoNgnVaBankName?.trim() || null,
-    accountName: row.tekkoNgnVaAccountName?.trim() || null,
-    currency: "NGN",
-    ready,
-  };
-}
-
 /**
  * GET or provision permanent NGN VA for merchant. Requires verified BVN (pass bvn to submit).
  */
@@ -411,21 +419,22 @@ export async function getOrProvisionMerchantNgnVa(params: {
     });
   }
 
-  let row = await loadMerchantVaRow(params.merchantId);
-  if (!row) throw new Error("Merchant not found");
+  let compliance = await getNigeriaMarketCompliance(params.merchantId);
+  const merchantName = await loadMerchantName(params.merchantId);
+  if (!merchantName) throw new Error("Merchant not found");
 
   // Fast path: already provisioned locally.
-  if (row.tekkoNgnVaAccountNumber?.trim()) {
-    return { ...vaViewFromRow(row), environment: params.environment };
+  if (compliance?.vaAccountNumber?.trim()) {
+    return { ...vaViewFromCompliance(compliance), environment: params.environment };
   }
 
-  const bvnStatus = normalizeBvnStatus(row.tekkoBvnStatus);
+  const bvnStatus = compliance?.bvnVerificationStatus ?? "not_submitted";
   const shouldProvision = params.provision !== false;
 
   if (bvnStatus !== "verified" && !params.bvn) {
-    // Refresh BVN status from Tekko if we have a customer id.
-    if (row.tekkoCustomerId?.trim()) {
-      const customerId = Number(row.tekkoCustomerId.trim());
+    const customerIdRaw = await getMerchantProviderExternalId(params.merchantId, TEKKO_PROVIDER);
+    if (customerIdRaw) {
+      const customerId = Number(customerIdRaw);
       if (Number.isFinite(customerId)) {
         try {
           const st = await tekkoGet(`/customers/${customerId}/bvn/status`, {
@@ -433,15 +442,15 @@ export async function getOrProvisionMerchantNgnVa(params: {
           });
           const remote = extractBvnStatus(st.json);
           if (remote !== bvnStatus) {
-            await persistVaFields(params.merchantId, { tekkoBvnStatus: remote });
-            row = (await loadMerchantVaRow(params.merchantId)) ?? row;
+            await updateNigeriaBvnVerificationStatus(params.merchantId, remote);
+            compliance = await getNigeriaMarketCompliance(params.merchantId);
           }
         } catch {
           // ignore refresh errors
         }
       }
     }
-    const refreshed = normalizeBvnStatus(row.tekkoBvnStatus);
+    const refreshed = compliance?.bvnVerificationStatus ?? "not_submitted";
     if (refreshed !== "verified") {
       return {
         status: "bvn_required",
@@ -457,12 +466,24 @@ export async function getOrProvisionMerchantNgnVa(params: {
   }
 
   if (!shouldProvision) {
-    return { ...vaViewFromRow(row), environment: params.environment };
+    if (!compliance) {
+      return {
+        status: "bvn_required",
+        bvnStatus: "not_submitted",
+        accountNumber: null,
+        bankName: null,
+        accountName: null,
+        currency: "NGN",
+        ready: false,
+        environment: params.environment,
+      };
+    }
+    return { ...vaViewFromCompliance(compliance), environment: params.environment };
   }
 
   const customerId = await ensureTekkoCustomerForMerchant({
     merchantId: params.merchantId,
-    displayName: row.name,
+    displayName: merchantName,
   });
 
   // Re-check remote VA first (idempotent).
@@ -475,12 +496,11 @@ export async function getOrProvisionMerchantNgnVa(params: {
     });
   }
 
-  await persistVaFields(params.merchantId, {
-    tekkoBvnStatus: "verified",
-    tekkoNgnVaStatus: details.status || "active",
-    tekkoNgnVaAccountNumber: details.accountNumber,
-    tekkoNgnVaBankName: details.bankName,
-    tekkoNgnVaAccountName: details.accountName,
+  await updateNigeriaVaDetails(params.merchantId, {
+    vaStatus: details.status || "active",
+    vaAccountNumber: details.accountNumber,
+    vaBankName: details.bankName,
+    vaAccountName: details.accountName,
   });
 
   audit({
@@ -494,9 +514,9 @@ export async function getOrProvisionMerchantNgnVa(params: {
     },
   });
 
-  row = await loadMerchantVaRow(params.merchantId);
-  if (!row) throw new Error("Merchant not found after VA provision");
-  return { ...vaViewFromRow(row), environment: params.environment };
+  compliance = await getNigeriaMarketCompliance(params.merchantId);
+  if (!compliance) throw new Error("Compliance record missing after VA provision");
+  return { ...vaViewFromCompliance(compliance), environment: params.environment };
 }
 
 export async function getMerchantNgnVa(params: {
@@ -744,26 +764,12 @@ export async function settleTekkoNgnVaCredit(params: {
 export async function findMerchantIdByTekkoCustomerId(
   endUserId: string | number
 ): Promise<string | null> {
-  const id = String(endUserId).trim();
-  if (!id) return null;
-  const [row] = await db
-    .select({ id: merchants.id })
-    .from(merchants)
-    .where(eq(merchants.tekkoCustomerId, id))
-    .limit(1);
-  return row?.id ?? null;
+  return findMerchantIdByProviderExternalId(TEKKO_PROVIDER, String(endUserId));
 }
 
 /** Fallback when webhook omits endUserId but includes the permanent VA NUBAN. */
 export async function findMerchantIdByTekkoNgnVaAccountNumber(
   accountNumber: string
 ): Promise<string | null> {
-  const acct = accountNumber.replace(/\s/g, "").trim();
-  if (!acct) return null;
-  const [row] = await db
-    .select({ id: merchants.id })
-    .from(merchants)
-    .where(eq(merchants.tekkoNgnVaAccountNumber, acct))
-    .limit(1);
-  return row?.id ?? null;
+  return findMerchantIdByNigeriaVaAccountNumber(accountNumber);
 }

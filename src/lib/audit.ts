@@ -51,6 +51,7 @@ export type AuditAction =
   | "tekko.ngn.bvn.failed"
   | "tekko.ngn.bvn.verified"
   | "tekko.ngn.bvn.status"
+  | "merchant.market_compliance.bvn.submitted"
   | "tekko.ngn.va.provisioned"
   | "tekko.ngn.va.credit_out_of_limits"
   | "portal.payout.failed"

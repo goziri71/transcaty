@@ -10,6 +10,7 @@ import { createHmac } from "node:crypto";
 import { eq, and } from "drizzle-orm";
 import { closeDb, db } from "../src/db/index.js";
 import { merchants, merchantMarkets } from "../src/db/schema/index.js";
+import { getMerchantProviderExternalId, TEKKO_PROVIDER } from "../src/lib/merchant-provider-links.js";
 import {
   assertTekkoLiveEnvironment,
   createTekkoPyusdPaymentIntent,
@@ -87,15 +88,15 @@ async function main(): Promise<void> {
       name: merchants.name,
       status: merchants.status,
       kycStatus: merchants.kycStatus,
-      tekkoCustomerId: merchants.tekkoCustomerId,
     })
     .from(merchants)
     .where(eq(merchants.id, MERCHANT_ID))
     .limit(1);
   if (!merchant) fail("merchant lookup", new Error("merchant not found"));
+  const tekkoCustomer = await getMerchantProviderExternalId(MERCHANT_ID, TEKKO_PROVIDER);
   pass(
     "merchant",
-    `status=${merchant.status} kyc=${merchant.kycStatus} tekkoCustomer=${merchant.tekkoCustomerId ?? "(will create)"}`
+    `status=${merchant.status} kyc=${merchant.kycStatus} tekkoCustomer=${tekkoCustomer ?? "(will create)"}`
   );
 
   const [market] = await db

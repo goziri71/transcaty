@@ -114,7 +114,7 @@ No `expiryDate`, no `amount`.
 
 | Field | Required | Notes |
 |-------|----------|-------|
-| `bvn` | yes | 11 digits. Encrypt in transit; **do not store** raw BVN at rest in your systems if avoidable |
+| `bvn` | yes | 11 digits. Encrypted at rest in Transacty `merchant_market_compliance`; do not log plaintext |
 | `firstName` / `lastName` | yes | BVN Basic name match |
 | `phoneNumber` | no | |
 | `dateOfBirth` | no | `YYYY-MM-DD` |

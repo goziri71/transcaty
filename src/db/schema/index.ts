@@ -121,14 +121,17 @@ export const merchants = pgTable(
     kycStatus: text("kyc_status").default("pending"),
     webhookUrl: text("webhook_url"),
     webhookSecretEnc: text("webhook_secret_enc"),
-    /** Tekko Platform end-customer id for PYUSD checkout / NGN customer VA (one per merchant). */
+    /** @deprecated Use merchant_provider_links (provider=tekko). Kept for legacy DB columns only. */
     tekkoCustomerId: text("tekko_customer_id"),
-    /** Tekko BVN Basic status: not_submitted | pending | verified | failed. Never store raw BVN. */
+    /** @deprecated Use merchant_market_compliance (market=nigeria). */
     tekkoBvnStatus: text("tekko_bvn_status"),
-    /** Permanent NGN VA status e.g. active | pending | none. */
+    /** @deprecated Use merchant_market_compliance (market=nigeria). */
     tekkoNgnVaStatus: text("tekko_ngn_va_status"),
+    /** @deprecated Use merchant_market_compliance (market=nigeria). */
     tekkoNgnVaAccountNumber: text("tekko_ngn_va_account_number"),
+    /** @deprecated Use merchant_market_compliance (market=nigeria). */
     tekkoNgnVaBankName: text("tekko_ngn_va_bank_name"),
+    /** @deprecated Use merchant_market_compliance (market=nigeria). */
     tekkoNgnVaAccountName: text("tekko_ngn_va_account_name"),
     /** bcrypt hash of merchant payout PIN (4–6 digits). Required before portal payout writes. */
     payoutPinHash: text("payout_pin_hash"),
@@ -139,6 +142,58 @@ export const merchants = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index("merchants_slug_idx").on(t.slug)]
+);
+
+/** External payment-rail customer ids (Tekko endUserId, etc.) — not merchant KYC. */
+export const merchantProviderLinks = pgTable(
+  "merchant_provider_links",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    merchantId: uuid("merchant_id")
+      .notNull()
+      .references(() => merchants.id, { onDelete: "cascade" }),
+    provider: text("provider").notNull(),
+    externalCustomerId: text("external_customer_id").notNull(),
+    metadata: jsonb("metadata"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("merchant_provider_links_merchant_id_idx").on(t.merchantId),
+    index("merchant_provider_links_provider_external_idx").on(t.provider, t.externalCustomerId),
+    unique("merchant_provider_links_merchant_provider_unique").on(t.merchantId, t.provider),
+  ]
+);
+
+/** Per-market regulatory/compliance data (encrypted BVN, VA details) — provider-neutral. */
+export const merchantMarketCompliance = pgTable(
+  "merchant_market_compliance",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    merchantId: uuid("merchant_id")
+      .notNull()
+      .references(() => merchants.id, { onDelete: "cascade" }),
+    market: text("market").notNull(),
+    bvnEnc: text("bvn_enc"),
+    bvnFirstName: text("bvn_first_name"),
+    bvnLastName: text("bvn_last_name"),
+    bvnPhoneNumber: text("bvn_phone_number"),
+    bvnDateOfBirth: text("bvn_date_of_birth"),
+    bvnEmail: text("bvn_email"),
+    bvnVerificationStatus: text("bvn_verification_status").notNull().default("not_submitted"),
+    bvnVerifiedAt: timestamp("bvn_verified_at", { withTimezone: true }),
+    vaStatus: text("va_status"),
+    vaAccountNumber: text("va_account_number"),
+    vaBankName: text("va_bank_name"),
+    vaAccountName: text("va_account_name"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("merchant_market_compliance_merchant_id_idx").on(t.merchantId),
+    index("merchant_market_compliance_va_account_idx").on(t.vaAccountNumber),
+    unique("merchant_market_compliance_merchant_market_unique").on(t.merchantId, t.market),
+  ]
 );
 
 export const merchantMarkets = pgTable(

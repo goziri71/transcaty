@@ -44,7 +44,7 @@ Query/body: `environment` defaults to `live`. `environment: "test"` → `503` `p
 
 | Field | Required | Notes |
 |-------|----------|-------|
-| `bvn` | yes | 11 digits. Sent to Tekko only; **never** store or redisplay in UI after submit |
+| `bvn` | yes | 11 digits. Encrypted at rest in Transacty compliance store; **never** redisplay in UI after submit |
 | `firstName` / `lastName` | yes | Must match BVN Basic name check |
 | `phoneNumber` | no | |
 | `dateOfBirth` | no | `YYYY-MM-DD` |

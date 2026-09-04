@@ -5,6 +5,11 @@ import { eq } from "drizzle-orm";
 import { db } from "../../../src/db/index.js";
 import { merchants } from "../../../src/db/schema/index.js";
 import { UpstreamProviderClientError } from "../../../src/lib/merchant-facing-errors.js";
+import {
+  getMerchantProviderExternalId,
+  setMerchantProviderExternalId,
+  TEKKO_PROVIDER,
+} from "../../../src/lib/merchant-provider-links.js";
 import { tekkoGet, tekkoPost } from "./client.js";
 
 export function tekkoExternalIdForMerchant(merchantId: string): string {
@@ -29,7 +34,7 @@ function extractCustomerId(json: unknown): number | null {
 }
 
 /**
- * Ensure a Tekko customer exists for this merchant; persist `tekkoCustomerId` on merchants.
+ * Ensure a Tekko customer exists for this merchant; persist external id in merchant_provider_links.
  */
 export async function ensureTekkoCustomerForMerchant(params: {
   merchantId: string;
@@ -39,7 +44,6 @@ export async function ensureTekkoCustomerForMerchant(params: {
     .select({
       id: merchants.id,
       name: merchants.name,
-      tekkoCustomerId: merchants.tekkoCustomerId,
     })
     .from(merchants)
     .where(eq(merchants.id, params.merchantId))
@@ -47,8 +51,9 @@ export async function ensureTekkoCustomerForMerchant(params: {
 
   if (!row) throw new Error("Merchant not found");
 
-  if (row.tekkoCustomerId?.trim()) {
-    const n = Number(row.tekkoCustomerId.trim());
+  const existing = await getMerchantProviderExternalId(params.merchantId, TEKKO_PROVIDER);
+  if (existing) {
+    const n = Number(existing);
     if (Number.isFinite(n)) return n;
   }
 
@@ -84,10 +89,11 @@ export async function ensureTekkoCustomerForMerchant(params: {
     throw new Error(msg);
   }
 
-  await db
-    .update(merchants)
-    .set({ tekkoCustomerId: String(customerId), updatedAt: new Date() })
-    .where(eq(merchants.id, params.merchantId));
+  await setMerchantProviderExternalId({
+    merchantId: params.merchantId,
+    provider: TEKKO_PROVIDER,
+    externalCustomerId: String(customerId),
+  });
 
   return customerId;
 }

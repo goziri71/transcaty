@@ -11,7 +11,7 @@ Transacty offers **NGN** to merchants; Tekko is the rail. Merchants use Transact
 ## Product locks (docs scan 2026-09-02)
 
 - **Collect model:** one **permanent customer NGN VA per Transacty merchant** (`POST/GET …/customers/:id/ng/virtual-account*`). Reusable bank details; any inbound amount. **Not** exact-amount temporary collections for the merchant product.
-- **BVN:** Platform **BVN Basic** only (`POST …/bvn/verify`) — **never** send `faceImage`. Poll `GET …/bvn/status` if `pending`. Do **not** store raw BVN at rest.
+- **BVN:** Platform **BVN Basic** only (`POST …/bvn/verify`) — **never** send `faceImage`. Poll `GET …/bvn/status` if `pending`. Store encrypted BVN + identity in `merchant_market_compliance` (market=`nigeria`); Tekko customer id in `merchant_provider_links` (provider=`tekko`). Legacy `merchants.tekko_*` columns are deprecated.
 - **Tekko credit target:** customer NGN sub-ledger → map `endUserId` via `merchants.tekko_customer_id` → credit Transacty **NGN** pocket on `customer.wallet.credited`.
 - **Transacty settlement:** native **NGN** merchant pocket. No auto-swap to USDT/USDC. Do **not** credit Europe `USDC` or `PYUSD-USDC`.
 - **Payout:** `POST /master-wallet/ng/withdraw` (master ledger). Customer VA deposits and master withdraw are different Tekko ledgers — fail closed on insufficient master balance; confirm Tekko liquidity/sweep with ops before go-live.

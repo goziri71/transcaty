@@ -25,7 +25,7 @@ alwaysApply: false
 | Portal JWT | `api/portal/pyusd-payins.ts` → `/portal/me/pyusd/payment-intents` |
 | Webhooks | `POST /webhooks/tekko/:environment` |
 | Provider | `MARKET_IDS` includes `pyusd`; `POST /provider/tekko/pyusd/reconcile` |
-| Migration | `drizzle/0027_tekko_customer_id.sql` → `merchants.tekko_customer_id` |
+| Migration | `drizzle/0027_tekko_customer_id.sql` → legacy; use `0034_merchant_compliance_provider_links.sql` + `merchant_provider_links` |
 | Market | `pyusd` settles `["PYUSD-USDC"]` in `src/lib/merchant-markets.ts` (separate from Europe `USDC`) |
 | Currency constant | `src/lib/pyusd-settlement.ts` |
 
