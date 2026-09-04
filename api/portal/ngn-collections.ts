@@ -171,7 +171,7 @@ export async function registerPortalNgnRoutes(app: FastifyInstance) {
         }),
         response: {
           200: ngnVaResponseSchema,
-          400: errorResponse,
+          400: merchantFacingError,
           401: errorResponse,
           403: errorResponse,
           503: merchantFacingError,
@@ -344,7 +344,7 @@ export async function registerPortalNgnRoutes(app: FastifyInstance) {
               recipient: z.object({ masked: z.string() }),
             })
             .merge(transactionFeeBreakdownFieldsSchema.partial()),
-          400: errorResponse,
+          400: merchantFacingError,
           401: errorResponse,
           403: errorResponse,
           503: merchantFacingError,

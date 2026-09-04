@@ -113,6 +113,26 @@ Inbound credits create pay-ins automatically (`provider: tekko-ngn-va`). Merchan
 
 **Limits:** NGN payout **100 – 5,000,000** per request. Create response is `201` with fee breakdown fields when available; recipient shown as masked account only.
 
+**Payout errors (400):** responses include optional `code` — use it for routing, not only `message`:
+
+| `code` | Action |
+|--------|--------|
+| `ngn_bvn_required` | Redirect to Nigeria **Virtual account / BVN** (not global KYC). Merchant must `POST /portal/me/ngn/virtual-account` with BVN Basic fields until `bvnStatus === "verified"`. |
+| `insufficient_balance` | Show NGN wallet balance |
+| `payout_failed` | Generic retry / support |
+
+Example:
+
+```json
+{
+  "error": "Bad Request",
+  "code": "ngn_bvn_required",
+  "message": "Complete BVN verification before NGN payouts. Submit your BVN under Nigeria virtual account settings."
+}
+```
+
+Until a deploy that includes the schema fix, the same case may return **only** `error` + `message` (no `code`). Fallback: match `message` containing `"BVN verification"` or route users from VA `GET` when `bvnStatus !== "verified"`.
+
 Payouts can fail closed if Tekko master withdraw has insufficient liquidity even when the merchant NGN wallet has balance — show a generic failure and ops note (no Tekko branding).
 
 ## Transaction history
