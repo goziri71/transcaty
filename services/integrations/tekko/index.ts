@@ -54,6 +54,7 @@ export {
   findMerchantIdByTekkoNgnVaAccountNumber,
   extractNgnVaDetails,
   resolveMerchantTekkoBvnStatus,
+  forceSyncMerchantTekkoBvnStatusFromTekko,
   assertMerchantTekkoBvnVerifiedForPayout,
   markMerchantTekkoBvnPayoutBlocked,
   tekkoDetailIndicatesBvnRequired,

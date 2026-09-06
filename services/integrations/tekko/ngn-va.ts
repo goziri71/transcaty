@@ -138,6 +138,93 @@ export async function resolveMerchantTekkoBvnStatus(merchantId: string): Promise
   return normalizeBvnStatus(status);
 }
 
+/** Ops: always apply Tekko BVN status (overrides local `failed` from payout block). */
+export async function forceSyncMerchantTekkoBvnStatusFromTekko(merchantId: string): Promise<{
+  tekkoCustomerId: number | null;
+  previousStatus: BvnVerificationStatus;
+  remoteStatus: BvnVerificationStatus;
+  appliedStatus: BvnVerificationStatus;
+  tekkoHttpStatus: number | null;
+  error?: string;
+}> {
+  const compliance = await getNigeriaMarketCompliance(merchantId);
+  const previousStatus = compliance?.bvnVerificationStatus ?? "not_submitted";
+
+  const customerIdRaw = await getMerchantProviderExternalId(merchantId, TEKKO_PROVIDER);
+  if (!customerIdRaw) {
+    return {
+      tekkoCustomerId: null,
+      previousStatus,
+      remoteStatus: previousStatus,
+      appliedStatus: previousStatus,
+      tekkoHttpStatus: null,
+      error: "No Tekko customer link (merchant_provider_links)",
+    };
+  }
+
+  const customerId = Number(customerIdRaw);
+  if (!Number.isFinite(customerId)) {
+    return {
+      tekkoCustomerId: null,
+      previousStatus,
+      remoteStatus: previousStatus,
+      appliedStatus: previousStatus,
+      tekkoHttpStatus: null,
+      error: "Invalid Tekko customer id on provider link",
+    };
+  }
+
+  try {
+    const st = await tekkoGet(`/customers/${customerId}/bvn/status`, {
+      label: "tekko ngn bvn ops sync",
+    });
+    const remote = extractBvnStatus(st.json);
+    if (st.status >= 400) {
+      return {
+        tekkoCustomerId: customerId,
+        previousStatus,
+        remoteStatus: previousStatus,
+        appliedStatus: previousStatus,
+        tekkoHttpStatus: st.status,
+        error: pickTekkoMessage(st.json, `Tekko BVN status failed (${st.status})`),
+      };
+    }
+
+    if (remote !== previousStatus) {
+      await updateNigeriaBvnVerificationStatus(merchantId, remote);
+    }
+
+    audit({
+      action: "tekko.ngn.bvn.ops_sync",
+      merchantId,
+      meta: {
+        tekkoCustomerId: customerId,
+        previousStatus,
+        remoteStatus: remote,
+        tekkoHttpStatus: st.status,
+      },
+    });
+
+    return {
+      tekkoCustomerId: customerId,
+      previousStatus,
+      remoteStatus: remote,
+      appliedStatus: remote,
+      tekkoHttpStatus: st.status,
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      tekkoCustomerId: customerId,
+      previousStatus,
+      remoteStatus: previousStatus,
+      appliedStatus: previousStatus,
+      tekkoHttpStatus: null,
+      error: message,
+    };
+  }
+}
+
 /** Tekko rejected payout — surface BVN form again even when VA collect still works. */
 export async function markMerchantTekkoBvnPayoutBlocked(
   merchantId: string,

@@ -32,7 +32,7 @@ import { getDefaultPayokEnvironment, type PayokEnvironment } from "../../service
 import { pickPrimaryMerchantWallet, primaryMerchantBalanceByMerchantId } from "../../src/lib/provider-merchant-balance.js";
 import { reconcilePayokPayinByTransactionId } from "../../services/domestic/payok/reconcile-payin.js";
 import { reconcileCrossRampPayinByTransactionId } from "../../services/integrations/tylt/index.js";
-import { reconcileTekkoPyusdPayinByTransactionId, reconcileTekkoNgnByTransactionId, settleTekkoNgnVaCredit, findMerchantIdByTekkoCustomerId, findMerchantIdByTekkoNgnVaAccountNumber } from "../../services/integrations/tekko/index.js";
+import { reconcileTekkoPyusdPayinByTransactionId, reconcileTekkoNgnByTransactionId, settleTekkoNgnVaCredit, findMerchantIdByTekkoCustomerId, findMerchantIdByTekkoNgnVaAccountNumber, forceSyncMerchantTekkoBvnStatusFromTekko } from "../../services/integrations/tekko/index.js";
 import { ProviderCircuitOpenError } from "../../src/lib/provider-circuit-breaker.js";
 import { queueMerchantWebhook } from "../../src/lib/merchant-webhook.js";
 import { registerProviderMerchantRiskRoutes } from "./merchant-risk.js";
@@ -52,6 +52,7 @@ import {
 import { isMerchantUuid } from "../../src/lib/merchant-slug.js";
 import { providerMerchantAudit } from "../../src/lib/provider-audit.js";
 import { presentTransactionRail } from "../../src/lib/transaction-rail-label.js";
+import { assertMerchantAllowedForNgnBvnOpsSync } from "../../src/lib/tekko-ngn-bvn-ops-sync-allowlist.js";
 
 const errorResponse = z.object({
   error: z.string(),
@@ -3778,6 +3779,57 @@ export async function registerProviderRoutes(app: FastifyInstance) {
         const msg = err instanceof Error ? err.message : String(err);
         return reply.status(400).send({ error: "Bad Request", message: msg.slice(0, 300) });
       }
+    }
+  );
+
+  /** Ops: sync Tekko BVN status when merchant verified on Tekko but Transacty local row is wrong/missing. */
+  app.post(
+    "/provider/merchants/:merchantId/ngn/bvn/sync-from-tekko",
+    {
+      schema: {
+        params: z.object({ merchantId: merchantRefParamSchema }),
+        response: {
+          200: z.object({
+            merchantId: z.string(),
+            tekkoCustomerId: z.number().nullable(),
+            previousStatus: z.string(),
+            remoteStatus: z.string(),
+            appliedStatus: z.string(),
+            tekkoHttpStatus: z.number().nullable(),
+            error: z.string().optional(),
+          }),
+          401: errorResponse,
+          403: errorResponse,
+          404: errorResponse,
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!ensureProviderPermission(request, reply, "tx.reconcile")) return;
+      const { merchantId: merchantRef } = request.params as { merchantId: string };
+      const resolved = await resolveMerchantParam(merchantRef, reply);
+      if (!resolved) return;
+      const { merchantId } = resolved;
+
+      const gate = assertMerchantAllowedForNgnBvnOpsSync(merchantId);
+      if (!gate.ok) {
+        return reply.status(403).send({ error: "Forbidden", message: gate.message });
+      }
+
+      const result = await forceSyncMerchantTekkoBvnStatusFromTekko(merchantId);
+      providerMerchantAudit(request, {
+        action: "provider.tekko.ngn.bvn.sync",
+        merchantId,
+        meta: {
+          previousStatus: result.previousStatus,
+          remoteStatus: result.remoteStatus,
+          appliedStatus: result.appliedStatus,
+          tekkoCustomerId: result.tekkoCustomerId,
+          error: result.error ?? null,
+        },
+      });
+
+      return reply.send({ merchantId, ...result });
     }
   );
 

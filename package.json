@@ -39,6 +39,7 @@
     "test:tekko": "node --import tsx --test services/integrations/tekko/*.test.ts",
     "tekko:proxy-check": "tsx scripts/tekko-proxy-check.ts",
     "tekko:ngn-entitlement-check": "tsx scripts/tekko-ngn-entitlement-check.ts",
+    "tekko:sync-ngn-bvn": "tsx scripts/sync-merchant-ngn-bvn-from-tekko.ts",
     "zepto:test": "tsx scripts/zepto-test.ts"
   },
   "keywords": [
