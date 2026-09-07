@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { extractNgnVaDetails, tekkoDetailIndicatesBvnRequired } from "./ngn-va.js";
+import {
+  extractNgnVaDetails,
+  tekkoDetailIndicatesBvnRequired,
+  tekkoDetailIndicatesPartnerKybBvnRequired,
+} from "./ngn-va.js";
 
 describe("Tekko NGN VA parse", () => {
   it("extracts VA fields from data envelope", () => {
@@ -54,6 +58,17 @@ describe("Tekko NGN BVN payout gate", () => {
     assert.equal(
       tekkoDetailIndicatesBvnRequired("Merchant BVN verification required before NGN swaps"),
       true
+    );
+  });
+
+  it("detects Tekko partner KYB dashboard gate separately from customer BVN", () => {
+    const partnerMsg =
+      "Merchant BVN verification required before NGN swaps. Complete KYB → BVN in the dashboard.";
+    assert.equal(tekkoDetailIndicatesPartnerKybBvnRequired(partnerMsg), true);
+    assert.equal(tekkoDetailIndicatesBvnRequired(partnerMsg), true);
+    assert.equal(
+      tekkoDetailIndicatesPartnerKybBvnRequired("BVN verification required before NGN payouts"),
+      false
     );
   });
 });

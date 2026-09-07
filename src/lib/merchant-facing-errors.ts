@@ -93,6 +93,20 @@ function payoutCreationErrorResponse(err: Error & {
     };
   }
 
+  if (code === "ngn_payout_provider_kyb") {
+    return {
+      status: 503,
+      body: {
+        error: "Service Unavailable",
+        message:
+          "NGN payouts are temporarily unavailable. Please contact support — this is not fixed by re-submitting BVN.",
+        code: "ngn_payout_provider_kyb",
+        ...(err.transactionId ? base : {}),
+      },
+      logDetail: err.message,
+    };
+  }
+
   return {
     status: 400,
     body: {

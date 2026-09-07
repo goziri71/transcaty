@@ -256,6 +256,20 @@ export function tekkoDetailIndicatesBvnRequired(detail: string): boolean {
   return d.includes("bvn") && (d.includes("verification required") || d.includes("verify"));
 }
 
+/**
+ * Tekko partner/merchant KYB (dashboard) gate on master-wallet withdraw — not Transacty end-user BVN.
+ * Example: "Merchant BVN verification required before NGN swaps. Complete KYB → BVN in the dashboard."
+ */
+export function tekkoDetailIndicatesPartnerKybBvnRequired(detail: string): boolean {
+  const d = detail.toLowerCase();
+  if (!d.includes("bvn")) return false;
+  return (
+    d.includes("kyb") ||
+    d.includes("in the dashboard") ||
+    (d.includes("merchant bvn") && d.includes("ngn swaps"))
+  );
+}
+
 export function extractNgnVaDetails(json: unknown): TekkoNgnVaDetails {
   const root = asRecord(json);
   const data = asRecord(root?.data) ?? root;

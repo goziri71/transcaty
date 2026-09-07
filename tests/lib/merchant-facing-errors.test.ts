@@ -46,6 +46,19 @@ describe("merchantPaymentFlowErrorResponse", () => {
     assert.equal(mapped.body.transactionId, undefined);
   });
 
+  it("maps Tekko partner KYB gate to ngn_payout_provider_kyb", () => {
+    const err = new PayoutCreationError(
+      "NGN payout is temporarily unavailable. Contact support.",
+      "tx-kyb",
+      null,
+      "ngn_payout_provider_kyb"
+    );
+    const mapped = merchantPaymentFlowErrorResponse(err);
+    assert.equal(mapped.status, 503);
+    assert.equal(mapped.body.code, "ngn_payout_provider_kyb");
+    assert.match(mapped.body.message ?? "", /not fixed by re-submitting BVN/i);
+  });
+
   it("passes through UpstreamProviderClientError as HTTP 400 with partner message", () => {
     const err = new UpstreamProviderClientError(
       "internal log",

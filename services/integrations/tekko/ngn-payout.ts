@@ -30,6 +30,7 @@ import {
   assertMerchantTekkoBvnVerifiedForPayout,
   markMerchantTekkoBvnPayoutBlocked,
   tekkoDetailIndicatesBvnRequired,
+  tekkoDetailIndicatesPartnerKybBvnRequired,
 } from "./ngn-va.js";
 
 export const TEKKO_NGN_PAYOUT_PROVIDER = "tekko-ngn-payout";
@@ -435,6 +436,16 @@ export async function createTekkoNgnPayout(params: {
       failureReason: detail,
     });
     if (withdrawRes.status >= 400 && withdrawRes.status < 500) {
+      // Partner KYB on Tekko dashboard (not Transacty merchant portal BVN).
+      if (tekkoDetailIndicatesPartnerKybBvnRequired(detail)) {
+        throw new PayoutCreationError(
+          "NGN payout is temporarily unavailable. Contact support.",
+          tx.id,
+          reference,
+          "ngn_payout_provider_kyb",
+          detail
+        );
+      }
       const bvnBlocked = tekkoDetailIndicatesBvnRequired(detail);
       if (bvnBlocked) {
         await markMerchantTekkoBvnPayoutBlocked(params.merchantId, detail);

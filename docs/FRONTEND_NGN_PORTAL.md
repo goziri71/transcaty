@@ -118,6 +118,7 @@ Inbound credits create pay-ins automatically (`provider: tekko-ngn-va`). Merchan
 | `code` | Action |
 |--------|--------|
 | `ngn_bvn_required` | Redirect to Nigeria **Virtual account / BVN** (not global KYC). Merchant must `POST /portal/me/ngn/virtual-account` with BVN Basic fields until `bvnStatus === "verified"`. |
+| `ngn_payout_provider_kyb` | **Do not** ask merchant to re-submit BVN. Tekko partner KYB on the provider side is incomplete; show support/ops message (503). |
 | `insufficient_balance` | Show NGN wallet balance |
 | `payout_failed` | Generic retry / support |
 

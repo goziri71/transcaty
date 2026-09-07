@@ -9,7 +9,7 @@ Before enabling Transacty NGN in production, confirm the **Tekko partner account
 | `ngn_collections` | Permanent per-merchant customer NGN VA (`…/customers/:id/ng/virtual-account*`) |
 | `ngn_payouts` | `POST /master-wallet/ng/withdraw` and related bank payout |
 
-Also: **merchant BVN** on Tekko (partner go-live checklist) before NGN withdraw works.
+Also: **merchant BVN / KYB on Tekko** (partner go-live checklist in the Tekko dashboard) before NGN withdraw works. Customer BVN on Transacty VA is **not** the same gate — if Tekko returns `Complete KYB → BVN in the dashboard`, ops must finish partner KYB on Tekko; re-submitting portal BVN will not unlock payouts.
 
 ## Product note
 
