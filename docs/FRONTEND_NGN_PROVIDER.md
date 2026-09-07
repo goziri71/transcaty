@@ -32,8 +32,8 @@ Approving provisions the merchant **NGN** settlement wallet (live only). Merchan
 
 - **Collect:** one permanent **customer** NGN VA per Transacty merchant (not shared master VA, not temp exact-amount collect).
 - **Credit:** `customer.wallet.credited` + NGN → Transacty NGN wallet (`provider: tekko-ngn-va`).
-- **Payout:** Tekko master `ng/withdraw` (`provider: tekko-ngn-payout`). Fail closed on insufficient master balance.
-- **Liquidity risk:** customer VA credits Tekko customer sub-ledger; withdraw debits master. Confirm sweep/funding with Tekko before treating VA+payout as production-ready together. See ops doc.
+- **Payout:** Tekko **customer** `ng/withdraw` (`provider: tekko-ngn-payout`) — same customer ledger as VA credits. Fail closed on insufficient customer NGN balance.
+- **Do not** use master-wallet withdraw for merchant product payouts (that requires partner KYB merchant BVN). See ops doc.
 
 ## Transactions
 
@@ -83,4 +83,4 @@ Resolve merchant via `merchantId`, else `endUserId` → `tekko_customer_id`, els
 - [ ] Note: settles to **NGN** (native), live-only upstream
 - [ ] Tx detail: Nigeria rail label; Reconcile → `POST /provider/tekko/ngn/reconcile`
 - [ ] Distinguish VA pay-in vs payout vs legacy collect in filters/chips
-- [ ] Ops reminder: customer VA liquidity ≠ master withdraw balance until Tekko confirms funding path
+- [ ] Ops reminder: merchant payouts use customer `ng/withdraw` (same ledger as VA credits); master-wallet withdraw is treasury-only

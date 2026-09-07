@@ -51,7 +51,9 @@ function payoutCreationErrorResponse(err: Error & {
         message:
           err.message === "Insufficient USDC balance"
             ? "Insufficient USDC balance. Complete a successful EU pay-in to fund your USDC wallet, then retry the payout."
-            : "Insufficient balance",
+            : err.message === "Insufficient NGN balance for payout"
+              ? "Insufficient NGN balance to complete this payout. Check your Nigeria wallet balance and try again."
+              : "Insufficient balance",
         code: "insufficient_balance",
         ...base,
       },
@@ -101,6 +103,20 @@ function payoutCreationErrorResponse(err: Error & {
         message:
           "NGN payouts are temporarily unavailable. Please contact support — this is not fixed by re-submitting BVN.",
         code: "ngn_payout_provider_kyb",
+        ...(err.transactionId ? base : {}),
+      },
+      logDetail: err.message,
+    };
+  }
+
+  if (code === "ngn_va_required") {
+    return {
+      status: 400,
+      body: {
+        error: "Bad Request",
+        message:
+          "Provision your Nigeria NGN virtual account before creating payouts.",
+        code: "ngn_va_required",
         ...(err.transactionId ? base : {}),
       },
       logDetail: err.message,

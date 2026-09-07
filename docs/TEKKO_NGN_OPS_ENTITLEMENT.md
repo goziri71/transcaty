@@ -7,15 +7,17 @@ Before enabling Transacty NGN in production, confirm the **Tekko partner account
 | Tekko flag | Needed for |
 |------------|------------|
 | `ngn_collections` | Permanent per-merchant customer NGN VA (`…/customers/:id/ng/virtual-account*`) |
-| `ngn_payouts` | `POST /master-wallet/ng/withdraw` and related bank payout |
-
-Also: **merchant BVN / KYB on Tekko** (partner go-live checklist in the Tekko dashboard) before NGN withdraw works. Customer BVN on Transacty VA is **not** the same gate — if Tekko returns `Complete KYB → BVN in the dashboard`, ops must finish partner KYB on Tekko; re-submitting portal BVN will not unlock payouts.
+| `ngn_payouts` | Customer bank payout (`POST /customers/:id/ng/withdraw`) and related bank payout |
 
 ## Product note
 
 Transacty merchant collect is **permanent customer VA** (BVN Basic, no faceImage) — not temporary exact-amount collections.
 
-Customer VA credits land on Tekko **customer** NGN sub-ledger; payouts debit **master**. Confirm with Tekko how deposits become available for `ng/withdraw` before go-live of VA + payout together.
+Customer VA credits land on Tekko **customer** NGN sub-ledger. Merchant product payouts call **`POST /customers/:id/ng/withdraw`** (same customer ledger). Do **not** use `POST /master-wallet/ng/withdraw` for merchant dashboard/API payouts — that route debits **merchant treasury** and requires partner KYB merchant BVN (`MERCHANT_BVN_REQUIRED`), which blocks foreign partners.
+
+Master-wallet NGN withdraw remains treasury-only (ops), out of the merchant product path.
+
+Customer BVN on Transacty VA onboard is still required before payouts (`assertMerchantTekkoBvnVerifiedForPayout`). Partner KYB on Tekko’s dashboard is **not** required for customer-ledger withdraw.
 
 ## How to verify
 
@@ -47,7 +49,7 @@ The script calls (read-only where possible):
 npm run db:migrate
 ```
 
-Applies `0030_tekko_ngn_va` (VA status columns on `merchants`; no raw BVN stored).
+Applies `0030_tekko_ngn_va` (VA status columns on `merchants`; no raw BVN stored) and later compliance/provider-link migrations as needed.
 
 ## Record
 

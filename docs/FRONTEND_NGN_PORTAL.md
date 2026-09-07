@@ -118,8 +118,9 @@ Inbound credits create pay-ins automatically (`provider: tekko-ngn-va`). Merchan
 | `code` | Action |
 |--------|--------|
 | `ngn_bvn_required` | Redirect to Nigeria **Virtual account / BVN** (not global KYC). Merchant must `POST /portal/me/ngn/virtual-account` with BVN Basic fields until `bvnStatus === "verified"`. |
-| `ngn_payout_provider_kyb` | **Do not** ask merchant to re-submit BVN. Tekko partner KYB on the provider side is incomplete; show support/ops message (503). |
-| `insufficient_balance` | Show NGN wallet balance |
+| `ngn_va_required` | Provision NGN virtual account first (`POST /portal/me/ngn/virtual-account`). |
+| `ngn_payout_provider_kyb` | Rare after customer-withdraw path. **Do not** ask merchant to re-submit BVN; show support/ops message (503). |
+| `insufficient_balance` | Show NGN wallet balance (local and/or provider customer ledger). |
 | `payout_failed` | Generic retry / support |
 
 Example:
@@ -134,7 +135,7 @@ Example:
 
 Until a deploy that includes the schema fix, the same case may return **only** `error` + `message` (no `code`). Fallback: match `message` containing `"BVN verification"` or route users from VA `GET` when `bvnStatus !== "verified"`.
 
-Payouts can fail closed if Tekko master withdraw has insufficient liquidity even when the merchant NGN wallet has balance — show a generic failure and ops note (no Tekko branding).
+Payouts debit the Tekko **customer** NGN ledger (same as VA credits). They can still fail closed if that ledger has insufficient balance even when the Transacty NGN wallet shows funds — show balance/support messaging (no Tekko branding).
 
 ## Transaction history
 

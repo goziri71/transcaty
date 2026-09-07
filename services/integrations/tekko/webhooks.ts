@@ -365,7 +365,7 @@ export async function applyTekkoWebhookPayload(
   const netAmount = resolveWebhookAmount(data);
   const withdrawalStatus = strField(data, "status", "withdrawalStatus", "withdrawal_status");
 
-  // NGN bank payout webhooks (Tekko master-wallet/ng/withdraw).
+  // NGN bank payout webhooks (Tekko customer ng/withdraw; legacy master withdraw).
   if (eventType === "withdrawal.completed" || eventType === "withdrawal.failed") {
     const withdrawRef = strField(data, "reference", "withdrawalReference", "withdrawal_reference");
     let payoutTx = transactyTransactionId

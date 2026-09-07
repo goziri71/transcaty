@@ -59,6 +59,31 @@ describe("merchantPaymentFlowErrorResponse", () => {
     assert.match(mapped.body.message ?? "", /not fixed by re-submitting BVN/i);
   });
 
+  it("maps NGN VA required to ngn_va_required", () => {
+    const err = new PayoutCreationError(
+      "NGN virtual account required before payouts",
+      "",
+      null,
+      "ngn_va_required"
+    );
+    const mapped = merchantPaymentFlowErrorResponse(err);
+    assert.equal(mapped.status, 400);
+    assert.equal(mapped.body.code, "ngn_va_required");
+    assert.match(mapped.body.message ?? "", /virtual account/i);
+  });
+
+  it("maps NGN provider insufficient balance message", () => {
+    const err = new PayoutCreationError(
+      "Insufficient NGN balance for payout",
+      "tx-ngn",
+      null,
+      "insufficient_balance"
+    );
+    const mapped = merchantPaymentFlowErrorResponse(err);
+    assert.equal(mapped.body.code, "insufficient_balance");
+    assert.match(mapped.body.message ?? "", /NGN balance/i);
+  });
+
   it("passes through UpstreamProviderClientError as HTTP 400 with partner message", () => {
     const err = new UpstreamProviderClientError(
       "internal log",

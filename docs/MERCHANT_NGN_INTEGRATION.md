@@ -247,4 +247,4 @@ Payload currency for NGN money movements is **`NGN`**.
 - Partner entitlements: `ngn_collections` (VA) + `ngn_payouts` (withdraw). Probe: `npm run tekko:ngn-entitlement-check`
 - DB: migration `0030` adds merchant VA status columns (no raw BVN stored)
 - Provider: approve `nigeria` market; `POST /provider/tekko/ngn/reconcile` for stuck txs
-- **Liquidity:** VA deposits fund Tekko **customer** NGN; payouts debit Tekko **master**. Confirm funding/sweep with Tekko before production volume on both rails together
+- **Liquidity:** VA deposits and merchant product payouts both use Tekko **customer** NGN (`POST /customers/:id/ng/withdraw`). Master-wallet withdraw is treasury-only and is not the merchant payout path.

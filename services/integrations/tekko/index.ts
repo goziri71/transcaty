@@ -74,6 +74,11 @@ export {
   reconcileTekkoNgnByTransactionId,
   isNgnWithdrawalSuccess,
   isNgnWithdrawalFailure,
+  tekkoCustomerNgnWithdrawPath,
+  tekkoCustomerNgnWithdrawPollPaths,
+  tekkoNgnWithdrawErrorKind,
+  tekkoDetailIndicatesVaRequired,
+  tekkoDetailIndicatesInsufficientCustomerNgn,
 } from "./ngn-payout.js";
 export type { TekkoNgnPayoutReconcileResult, NgnPayoutBeneficiary } from "./ngn-payout.js";
 export {

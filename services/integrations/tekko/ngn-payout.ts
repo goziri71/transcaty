@@ -1,6 +1,7 @@
 /**
- * Tekko NGN bank payout from merchant NGN pocket → Tekko master-wallet withdraw.
- * Requires Tekko `ngn_payouts` entitlement + merchant BVN on Tekko (ops).
+ * Tekko NGN bank payout: debit Transacty merchant NGN pocket, then
+ * `POST /customers/:id/ng/withdraw` (customer ledger where VA credits land).
+ * Do not use master-wallet withdraw for merchant product payouts (partner KYB gate).
  */
 import { and, eq } from "drizzle-orm";
 import { db } from "../../../src/db/index.js";
@@ -18,6 +19,10 @@ import {
   feeBreakdownToWebhookFields,
 } from "../../../src/lib/billing/transaction-fee-breakdown.js";
 import type { WebhookEvent } from "../../../src/lib/merchant-webhook.js";
+import {
+  getMerchantProviderExternalId,
+  TEKKO_PROVIDER,
+} from "../../../src/lib/merchant-provider-links.js";
 import {
   NGN_SETTLEMENT_CURRENCY,
   NGN_SETTLEMENT_DISPLAY_NAME,
@@ -94,6 +99,18 @@ function pickTekkoMessage(json: unknown, fallback: string): string {
   return fallback;
 }
 
+function pickTekkoCode(json: unknown): string | null {
+  const root = asRecord(json);
+  if (!root) return null;
+  const data = asRecord(root.data);
+  for (const obj of [root, data]) {
+    if (!obj) continue;
+    const code = obj.code ?? obj.errorCode ?? obj.error_code;
+    if (typeof code === "string" && code.trim()) return code.trim();
+  }
+  return null;
+}
+
 function extractWithdraw(json: unknown): WithdrawShape | null {
   if (!json || typeof json !== "object") return null;
   const root = json as Record<string, unknown>;
@@ -104,6 +121,77 @@ function extractWithdraw(json: unknown): WithdrawShape | null {
   return null;
 }
 
+/** Platform path for customer NGN bank withdraw (not master-wallet). */
+export function tekkoCustomerNgnWithdrawPath(tekkoCustomerId: number): string {
+  return `/customers/${tekkoCustomerId}/ng/withdraw`;
+}
+
+/** Status / detail poll paths for a customer NGN withdrawal reference. */
+export function tekkoCustomerNgnWithdrawPollPaths(
+  tekkoCustomerId: number,
+  reference: string
+): string[] {
+  const ref = encodeURIComponent(reference);
+  const base = `/customers/${tekkoCustomerId}`;
+  return [`${base}/ng/withdraw/${ref}/status`, `${base}/ng/withdrawals/${ref}`];
+}
+
+export function tekkoDetailIndicatesVaRequired(detail: string, code?: string | null): boolean {
+  const c = (code ?? "").trim().toUpperCase();
+  if (
+    c === "END_USER_BRAILS_VA_REQUIRED" ||
+    c === "NGN_VA_REQUIRED" ||
+    c === "VIRTUAL_ACCOUNT_REQUIRED"
+  ) {
+    return true;
+  }
+  const d = detail.toLowerCase();
+  return (
+    (d.includes("virtual account") || d.includes("brails")) &&
+    (d.includes("required") || d.includes("onboard"))
+  );
+}
+
+export function tekkoDetailIndicatesInsufficientCustomerNgn(
+  detail: string,
+  code?: string | null
+): boolean {
+  const c = (code ?? "").trim().toUpperCase();
+  if (c === "INSUFFICIENT_NGN_BALANCE" || c === "INSUFFICIENT_BALANCE") return true;
+  const d = detail.toLowerCase();
+  return d.includes("insufficient") && (d.includes("ngn") || d.includes("balance") || d.includes("customer"));
+}
+
+export function tekkoNgnWithdrawErrorKind(
+  detail: string,
+  code?: string | null
+): "partner_kyb" | "customer_bvn" | "va_required" | "insufficient" | "other" {
+  const c = (code ?? "").trim().toUpperCase();
+  if (c === "MERCHANT_BVN_REQUIRED" || tekkoDetailIndicatesPartnerKybBvnRequired(detail)) {
+    return "partner_kyb";
+  }
+  if (tekkoDetailIndicatesVaRequired(detail, code)) return "va_required";
+  if (tekkoDetailIndicatesInsufficientCustomerNgn(detail, code)) return "insufficient";
+  if (c === "BVN_VERIFICATION_REQUIRED" || tekkoDetailIndicatesBvnRequired(detail)) {
+    return "customer_bvn";
+  }
+  return "other";
+}
+
+async function resolveTekkoCustomerIdForPayout(merchantId: string): Promise<number> {
+  const existing = await getMerchantProviderExternalId(merchantId, TEKKO_PROVIDER);
+  const n = existing ? Number(existing) : NaN;
+  if (!Number.isFinite(n) || n <= 0) {
+    throw new PayoutCreationError(
+      "NGN virtual account required before payouts",
+      "",
+      null,
+      "ngn_va_required"
+    );
+  }
+  return n;
+}
+
 export function isNgnWithdrawalSuccess(status: string | null | undefined): boolean {
   const s = (status ?? "").trim().toLowerCase();
   return s === "completed" || s === "success" || s === "successful" || s === "paid";
@@ -112,6 +200,34 @@ export function isNgnWithdrawalSuccess(status: string | null | undefined): boole
 export function isNgnWithdrawalFailure(status: string | null | undefined): boolean {
   const s = (status ?? "").trim().toLowerCase();
   return s === "failed" || s === "reversed" || s === "declined" || s === "cancelled";
+}
+
+function findWithdrawInList(json: unknown, reference: string): WithdrawShape | null {
+  const root = asRecord(json);
+  const data = root?.data;
+  const rows: unknown[] = Array.isArray(data)
+    ? data
+    : Array.isArray(root?.items)
+      ? (root.items as unknown[])
+      : Array.isArray(root?.withdrawals)
+        ? (root.withdrawals as unknown[])
+        : Array.isArray(asRecord(data)?.items)
+          ? ((asRecord(data)?.items as unknown[]) ?? [])
+          : [];
+  for (const row of rows) {
+    const rec = asRecord(row);
+    if (!rec) continue;
+    const ref = strField(rec, "reference", "withdrawalReference", "id");
+    if (ref === reference) {
+      return {
+        reference: ref,
+        status: strField(rec, "status", "withdrawalStatus") ?? undefined,
+        amount: rec.amount as string | number | undefined,
+        currency: typeof rec.currency === "string" ? rec.currency : undefined,
+      };
+    }
+  }
+  return null;
 }
 
 async function refundPendingNgnPayout(params: {
@@ -311,6 +427,7 @@ export async function createTekkoNgnPayout(params: {
   }
 
   await assertMerchantTekkoBvnVerifiedForPayout(params.merchantId);
+  const tekkoCustomerId = await resolveTekkoCustomerIdForPayout(params.merchantId);
 
   const payoutFeePreview = await previewTransactionFee({
     merchantId: params.merchantId,
@@ -358,6 +475,8 @@ export async function createTekkoNgnPayout(params: {
         metadata: JSON.stringify({
           rail: "tekko",
           tekkoProduct: "ngn_payout",
+          tekkoWithdrawMode: "customer",
+          tekkoCustomerId,
           environment: params.environment,
           beneficiary,
           merchantReference: params.merchantReference ?? null,
@@ -399,7 +518,7 @@ export async function createTekkoNgnPayout(params: {
   let withdrawRes: { status: number; json: unknown };
   try {
     withdrawRes = await tekkoPost(
-      "/master-wallet/ng/withdraw",
+      tekkoCustomerNgnWithdrawPath(tekkoCustomerId),
       {
         amount: params.amount,
         accountNumber: beneficiary.accountNumber,
@@ -409,7 +528,7 @@ export async function createTekkoNgnPayout(params: {
         description,
       },
       idempotencyKey,
-      { label: "tekko ngn withdraw" }
+      { label: "tekko ngn customer withdraw" }
     );
   } catch (err) {
     await refundPendingNgnPayout({
@@ -427,6 +546,7 @@ export async function createTekkoNgnPayout(params: {
   const reference = withdraw?.reference?.trim() || null;
   if (withdrawRes.status >= 400 || !reference) {
     const detail = pickTekkoMessage(withdrawRes.json, `Tekko NGN withdraw failed (${withdrawRes.status})`);
+    const tekkoCode = pickTekkoCode(withdrawRes.json);
     await refundPendingNgnPayout({
       txId: tx.id,
       merchantId: params.merchantId,
@@ -436,8 +556,8 @@ export async function createTekkoNgnPayout(params: {
       failureReason: detail,
     });
     if (withdrawRes.status >= 400 && withdrawRes.status < 500) {
-      // Partner KYB on Tekko dashboard (not Transacty merchant portal BVN).
-      if (tekkoDetailIndicatesPartnerKybBvnRequired(detail)) {
+      const kind = tekkoNgnWithdrawErrorKind(detail, tekkoCode);
+      if (kind === "partner_kyb") {
         throw new PayoutCreationError(
           "NGN payout is temporarily unavailable. Contact support.",
           tx.id,
@@ -446,17 +566,39 @@ export async function createTekkoNgnPayout(params: {
           detail
         );
       }
-      const bvnBlocked = tekkoDetailIndicatesBvnRequired(detail);
-      if (bvnBlocked) {
+      if (kind === "va_required") {
+        throw new PayoutCreationError(
+          "NGN virtual account required before payouts",
+          tx.id,
+          reference,
+          "ngn_va_required",
+          detail
+        );
+      }
+      if (kind === "insufficient") {
+        throw new PayoutCreationError(
+          "Insufficient NGN balance for payout",
+          tx.id,
+          reference,
+          "insufficient_balance",
+          detail
+        );
+      }
+      if (kind === "customer_bvn") {
         await markMerchantTekkoBvnPayoutBlocked(params.merchantId, detail);
+        throw new PayoutCreationError(
+          "BVN verification required before NGN payouts",
+          tx.id,
+          reference,
+          "ngn_bvn_required",
+          detail
+        );
       }
       throw new PayoutCreationError(
-        bvnBlocked
-          ? "BVN verification required before NGN payouts"
-          : "NGN payout could not be started. Check beneficiary details and balance.",
+        "NGN payout could not be started. Check beneficiary details and balance.",
         tx.id,
         reference,
-        bvnBlocked ? "ngn_bvn_required" : undefined,
+        undefined,
         detail
       );
     }
@@ -477,6 +619,8 @@ export async function createTekkoNgnPayout(params: {
       metadata: mergeMeta(tx.metadata, {
         withdrawalReference: reference,
         withdrawalStatus,
+        tekkoCustomerId,
+        tekkoWithdrawMode: "customer",
       }),
       updatedAt: new Date(),
     })
@@ -492,6 +636,8 @@ export async function createTekkoNgnPayout(params: {
       provider: TEKKO_NGN_PAYOUT_PROVIDER,
       reference,
       amount: params.amount,
+      tekkoCustomerId,
+      tekkoWithdrawMode: "customer",
       source: params.portalActor ? "portal" : "api",
     },
   });
@@ -546,13 +692,35 @@ export async function getTekkoNgnPayoutStatus(params: {
       : null;
 
   if (tx.environment === "live" && tx.status === "pending" && reference) {
-    for (const path of [
-      `/master-wallet/ng/withdraw/${encodeURIComponent(reference)}/status`,
-      `/master-wallet/ng/withdrawals/${encodeURIComponent(reference)}`,
-    ]) {
+    let tekkoCustomerId =
+      typeof meta.tekkoCustomerId === "number"
+        ? meta.tekkoCustomerId
+        : typeof meta.tekkoCustomerId === "string" && /^\d+$/.test(meta.tekkoCustomerId)
+          ? Number(meta.tekkoCustomerId)
+          : null;
+    if (tekkoCustomerId == null || !Number.isFinite(tekkoCustomerId)) {
       try {
-        const res = await tekkoGet(path, { label: "tekko ngn withdraw status" });
-        const withdraw = extractWithdraw(res.json);
+        tekkoCustomerId = await resolveTekkoCustomerIdForPayout(params.merchantId);
+      } catch {
+        tekkoCustomerId = null;
+      }
+    }
+
+    const pollPaths =
+      tekkoCustomerId != null && Number.isFinite(tekkoCustomerId)
+        ? [
+            ...tekkoCustomerNgnWithdrawPollPaths(tekkoCustomerId, reference),
+            `/customers/${tekkoCustomerId}/ng/withdrawals`,
+          ]
+        : [];
+
+    for (const path of pollPaths) {
+      try {
+        const res = await tekkoGet(path, { label: "tekko ngn customer withdraw status" });
+        let withdraw = extractWithdraw(res.json);
+        if (!withdraw?.status && path.endsWith("/ng/withdrawals")) {
+          withdraw = findWithdrawInList(res.json, reference);
+        }
         if (withdraw?.status) {
           withdrawalStatus = withdraw.status;
           await db
@@ -561,6 +729,7 @@ export async function getTekkoNgnPayoutStatus(params: {
               metadata: mergeMeta(tx.metadata, {
                 withdrawalStatus,
                 lastPolledAt: new Date().toISOString(),
+                ...(tekkoCustomerId != null ? { tekkoCustomerId, tekkoWithdrawMode: "customer" } : {}),
               }),
               updatedAt: new Date(),
             })
