@@ -3,7 +3,7 @@
  * `POST /customers/:id/ng/withdraw` (customer ledger where VA credits land).
  * Do not use master-wallet withdraw for merchant product payouts (partner KYB gate).
  */
-import { and, eq } from "drizzle-orm";
+import { and, eq, desc } from "drizzle-orm";
 import { db } from "../../../src/db/index.js";
 import { transactions, wallets, ledgerEntries } from "../../../src/db/schema/index.js";
 import { audit } from "../../../src/lib/audit.js";
@@ -111,14 +111,66 @@ function pickTekkoCode(json: unknown): string | null {
   return null;
 }
 
-function extractWithdraw(json: unknown): WithdrawShape | null {
-  if (!json || typeof json !== "object") return null;
-  const root = json as Record<string, unknown>;
-  const data = asRecord(root.data) ?? root;
-  if (typeof data.reference === "string" || typeof data.status === "string") {
-    return data as WithdrawShape;
+/** Parse Tekko NGN withdraw create/status JSON (exports for unit tests). */
+export function extractTekkoNgnWithdraw(json: unknown): WithdrawShape | null {
+  const root = asRecord(json);
+  if (!root) return null;
+
+  const candidates: Array<Record<string, unknown> | null> = [
+    asRecord(root.data),
+    asRecord(asRecord(root.data)?.withdrawal),
+    asRecord(asRecord(root.data)?.payout),
+    asRecord(asRecord(root.data)?.result),
+    asRecord(root.withdrawal),
+    asRecord(root.payout),
+    root,
+  ];
+
+  for (const data of candidates) {
+    if (!data) continue;
+    const reference = strField(
+      data,
+      "reference",
+      "withdrawalReference",
+      "withdrawal_reference",
+      "payoutReference",
+      "payout_reference",
+      "transactionReference",
+      "transaction_reference",
+      "externalId",
+      "external_id",
+      "id"
+    );
+    const status = strField(data, "status", "withdrawalStatus", "withdrawal_status", "state");
+    if (reference || status) {
+      return {
+        reference: reference ?? undefined,
+        status: status ?? undefined,
+        amount: (data.amount as string | number | undefined) ?? undefined,
+        currency: typeof data.currency === "string" ? data.currency : undefined,
+      };
+    }
   }
   return null;
+}
+
+function extractWithdraw(json: unknown): WithdrawShape | null {
+  return extractTekkoNgnWithdraw(json);
+}
+
+/** True when Tekko accepted a withdraw create (2xx) even if body shape is sparse. */
+export function tekkoWithdrawCreateAccepted(httpStatus: number, json: unknown, reference: string | null): boolean {
+  if (httpStatus < 200 || httpStatus >= 300) return false;
+  if (reference) return true;
+  const msg = pickTekkoMessage(json, "").toLowerCase();
+  return (
+    msg.includes("initiated") ||
+    msg.includes("accepted") ||
+    msg.includes("processing") ||
+    msg.includes("queued") ||
+    msg.includes("pending") ||
+    msg.includes("success")
+  );
 }
 
 /** Platform path for customer NGN bank withdraw (not master-wallet). */
@@ -213,14 +265,17 @@ function findWithdrawInList(json: unknown, reference: string): WithdrawShape | n
         ? (root.withdrawals as unknown[])
         : Array.isArray(asRecord(data)?.items)
           ? ((asRecord(data)?.items as unknown[]) ?? [])
-          : [];
+          : Array.isArray(asRecord(data)?.withdrawals)
+            ? ((asRecord(data)?.withdrawals as unknown[]) ?? [])
+            : [];
+  const want = reference.trim();
   for (const row of rows) {
     const rec = asRecord(row);
     if (!rec) continue;
     const ref = strField(rec, "reference", "withdrawalReference", "id");
-    if (ref === reference) {
+    if (want && ref === want) {
       return {
-        reference: ref,
+        reference: ref ?? undefined,
         status: strField(rec, "status", "withdrawalStatus") ?? undefined,
         amount: rec.amount as string | number | undefined,
         currency: typeof rec.currency === "string" ? rec.currency : undefined,
@@ -228,6 +283,43 @@ function findWithdrawInList(json: unknown, reference: string): WithdrawShape | n
     }
   }
   return null;
+}
+
+function extractNewestWithdrawFromList(json: unknown): WithdrawShape | null {
+  const root = asRecord(json);
+  const data = root?.data;
+  const rows: unknown[] = Array.isArray(data)
+    ? data
+    : Array.isArray(root?.items)
+      ? (root.items as unknown[])
+      : Array.isArray(root?.withdrawals)
+        ? (root.withdrawals as unknown[])
+        : Array.isArray(asRecord(data)?.items)
+          ? ((asRecord(data)?.items as unknown[]) ?? [])
+          : Array.isArray(asRecord(data)?.withdrawals)
+            ? ((asRecord(data)?.withdrawals as unknown[]) ?? [])
+            : [];
+  let best: WithdrawShape | null = null;
+  let bestTs = 0;
+  for (const row of rows) {
+    const rec = asRecord(row);
+    if (!rec) continue;
+    const ref = strField(rec, "reference", "withdrawalReference", "id");
+    if (!ref) continue;
+    const created =
+      strField(rec, "createdAt", "created_at", "updatedAt", "updated_at") ?? "";
+    const ts = Date.parse(created) || 0;
+    if (!best || ts >= bestTs) {
+      bestTs = ts;
+      best = {
+        reference: ref,
+        status: strField(rec, "status", "withdrawalStatus") ?? undefined,
+        amount: rec.amount as string | number | undefined,
+        currency: typeof rec.currency === "string" ? rec.currency : undefined,
+      };
+    }
+  }
+  return best;
 }
 
 async function refundPendingNgnPayout(params: {
@@ -543,8 +635,11 @@ export async function createTekkoNgnPayout(params: {
   }
 
   const withdraw = extractWithdraw(withdrawRes.json);
-  const reference = withdraw?.reference?.trim() || null;
-  if (withdrawRes.status >= 400 || !reference) {
+  let reference = withdraw?.reference?.trim() || null;
+  const accepted = tekkoWithdrawCreateAccepted(withdrawRes.status, withdrawRes.json, reference);
+
+  // Never treat a 2xx "initiated" response as failure — money may already have left Tekko.
+  if (!accepted) {
     const detail = pickTekkoMessage(withdrawRes.json, `Tekko NGN withdraw failed (${withdrawRes.status})`);
     const tekkoCode = pickTekkoCode(withdrawRes.json);
     await refundPendingNgnPayout({
@@ -611,6 +706,23 @@ export async function createTekkoNgnPayout(params: {
     );
   }
 
+  // Recover reference from list if create body was sparse (message-only success).
+  if (!reference) {
+    try {
+      const listed = await tekkoGet(`/customers/${tekkoCustomerId}/ng/withdrawals`, {
+        label: "tekko ngn customer withdraw list after create",
+      });
+      const fromList = extractNewestWithdrawFromList(listed.json);
+      if (fromList?.reference?.trim()) reference = fromList.reference.trim();
+    } catch {
+      // Keep pending without external id; webhook may still attach via metadata match later.
+    }
+  }
+  if (!reference) {
+    // Stable interim key so webhooks/reconcile can still find this row via metadata.
+    reference = idempotencyKey;
+  }
+
   const withdrawalStatus = withdraw?.status ?? "processing";
   await db
     .update(transactions)
@@ -621,6 +733,8 @@ export async function createTekkoNgnPayout(params: {
         withdrawalStatus,
         tekkoCustomerId,
         tekkoWithdrawMode: "customer",
+        createHttpStatus: withdrawRes.status,
+        createMessage: pickTekkoMessage(withdrawRes.json, ""),
       }),
       updatedAt: new Date(),
     })
@@ -947,14 +1061,30 @@ export async function findTekkoNgnPayoutByReference(
 ): Promise<(typeof transactions.$inferSelect) | null> {
   const ref = reference.trim();
   if (!ref) return null;
-  const [tx] = await db
+  const [byExternal] = await db
     .select()
     .from(transactions)
     .where(
       and(eq(transactions.externalId, ref), eq(transactions.provider, TEKKO_NGN_PAYOUT_PROVIDER))
     )
     .limit(1);
-  return tx ?? null;
+  if (byExternal) return byExternal;
+
+  // Create response may have stored reference only in metadata (or interim idempotency key).
+  const recent = await db
+    .select()
+    .from(transactions)
+    .where(eq(transactions.provider, TEKKO_NGN_PAYOUT_PROVIDER))
+    .orderBy(desc(transactions.createdAt))
+    .limit(50);
+  for (const row of recent) {
+    const meta = parseMeta(row.metadata);
+    if (typeof meta.withdrawalReference === "string" && meta.withdrawalReference === ref) {
+      return row;
+    }
+    if (row.metadata?.includes(ref)) return row;
+  }
+  return null;
 }
 
 export type TekkoNgnPayoutReconcileResult =

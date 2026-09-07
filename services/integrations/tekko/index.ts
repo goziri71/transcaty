@@ -79,6 +79,8 @@ export {
   tekkoNgnWithdrawErrorKind,
   tekkoDetailIndicatesVaRequired,
   tekkoDetailIndicatesInsufficientCustomerNgn,
+  tekkoWithdrawCreateAccepted,
+  extractTekkoNgnWithdraw,
 } from "./ngn-payout.js";
 export type { TekkoNgnPayoutReconcileResult, NgnPayoutBeneficiary } from "./ngn-payout.js";
 export {

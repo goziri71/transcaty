@@ -8,6 +8,8 @@ import {
   tekkoNgnWithdrawErrorKind,
   tekkoDetailIndicatesVaRequired,
   tekkoDetailIndicatesInsufficientCustomerNgn,
+  tekkoWithdrawCreateAccepted,
+  extractTekkoNgnWithdraw,
 } from "./ngn-payout.js";
 
 describe("Tekko NGN payout status mapping", () => {
@@ -38,6 +40,29 @@ describe("Tekko NGN customer withdraw paths", () => {
       "/customers/29/ng/withdraw/ref-abc/status",
       "/customers/29/ng/withdrawals/ref-abc",
     ]);
+  });
+});
+
+describe("Tekko NGN withdraw create response parsing", () => {
+  it("extracts reference from data.id when status/reference missing", () => {
+    const w = extractTekkoNgnWithdraw({
+      message: "Customer NGN payout initiated",
+      data: { id: "plt_ngn_payout_6ca9b8e3-1d0e-42ec-9122-50eec1f3cd2d" },
+    });
+    assert.equal(w?.reference, "plt_ngn_payout_6ca9b8e3-1d0e-42ec-9122-50eec1f3cd2d");
+  });
+
+  it("treats 2xx initiated message as accepted without reference", () => {
+    assert.equal(
+      tekkoWithdrawCreateAccepted(200, { message: "Customer NGN payout initiated" }, null),
+      true
+    );
+    assert.equal(
+      tekkoWithdrawCreateAccepted(400, { message: "Customer NGN payout initiated" }, null),
+      false
+    );
+    assert.equal(tekkoWithdrawCreateAccepted(200, { message: "Boom" }, null), false);
+    assert.equal(tekkoWithdrawCreateAccepted(201, {}, "plt_ref"), true);
   });
 });
 
