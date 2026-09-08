@@ -7,7 +7,13 @@ import { and, eq, desc } from "drizzle-orm";
 import { db } from "../../../src/db/index.js";
 import { transactions, wallets, ledgerEntries } from "../../../src/db/schema/index.js";
 import { audit } from "../../../src/lib/audit.js";
-import { addAmount, assertPositive, cmpAmount, subAmount } from "../../../src/lib/money.js";
+import {
+  addAmount,
+  assertPositive,
+  cmpAmount,
+  normalizeMoneyAmountToTwoDecimals,
+  subAmount,
+} from "../../../src/lib/money.js";
 import { UpstreamProviderClientError } from "../../../src/lib/merchant-facing-errors.js";
 import {
   previewTransactionFee,
@@ -52,7 +58,81 @@ type WithdrawShape = {
   status?: string;
   amount?: string | number;
   currency?: string;
+  /** Tekko rail fee (not Transacty platform fee) — pass-through debit on merchant NGN. */
+  tekkoFee?: string;
 };
+
+/** Ledger reference for idempotent Tekko fee debit/refund on a payout tx. */
+export function tekkoNgnProviderFeeLedgerRef(transactionId: string): string {
+  return `tekko_fee:${transactionId}`;
+}
+
+function moneyFromUnknown(v: unknown): string | null {
+  if (v == null) return null;
+  try {
+    if (typeof v === "number") {
+      if (!Number.isFinite(v) || v <= 0) return null;
+      return normalizeMoneyAmountToTwoDecimals(String(v));
+    }
+    if (typeof v === "string" && v.trim()) {
+      const n = normalizeMoneyAmountToTwoDecimals(v.trim());
+      if (cmpAmount(n, "0") <= 0) return null;
+      return n;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+/**
+ * Extract Tekko's NGN withdraw fee from create/status/list/webhook JSON.
+ * Prefer explicit tekkoFee; else max(0, totalDebited − beneficiary amount).
+ */
+export function extractTekkoNgnWithdrawFees(
+  json: unknown,
+  beneficiaryAmount?: string | null
+): { tekkoFee: string | null; totalDebited: string | null; providerFee: string | null } {
+  const root = asRecord(json);
+  const data = asRecord(root?.data) ?? root;
+  const fees = asRecord(data?.fees);
+  const breakdown = asRecord(data?.feeBreakdown) ?? asRecord(fees?.breakdown);
+
+  const tekkoFeeDirect =
+    moneyFromUnknown(data?.tekkoFee) ??
+    moneyFromUnknown(data?.tekko_fee) ??
+    moneyFromUnknown(fees?.tekkoFee) ??
+    moneyFromUnknown(fees?.tekko_fee) ??
+    moneyFromUnknown(breakdown?.tekkoFeeNgn) ??
+    moneyFromUnknown(breakdown?.tekkoFee) ??
+    moneyFromUnknown(breakdown?.serviceFee);
+
+  const totalDebited =
+    moneyFromUnknown(data?.totalDebited) ??
+    moneyFromUnknown(data?.total_debited) ??
+    moneyFromUnknown(fees?.totalDebited) ??
+    moneyFromUnknown(breakdown?.totalDebitedNgn) ??
+    moneyFromUnknown(breakdown?.totalDebited);
+
+  const providerFee =
+    moneyFromUnknown(data?.providerFee) ??
+    moneyFromUnknown(data?.provider_fee) ??
+    moneyFromUnknown(fees?.providerFee) ??
+    moneyFromUnknown(breakdown?.transferFee);
+
+  let tekkoFee = tekkoFeeDirect ?? providerFee;
+  if (!tekkoFee && totalDebited && beneficiaryAmount) {
+    try {
+      const base = normalizeMoneyAmountToTwoDecimals(String(beneficiaryAmount));
+      const delta = subAmount(totalDebited, base);
+      if (cmpAmount(delta, "0") > 0) tekkoFee = delta;
+    } catch {
+      // ignore malformed amounts
+    }
+  }
+
+  return { tekkoFee, totalDebited, providerFee };
+}
 
 type BankRow = {
   code?: string;
@@ -143,11 +223,13 @@ export function extractTekkoNgnWithdraw(json: unknown): WithdrawShape | null {
     );
     const status = strField(data, "status", "withdrawalStatus", "withdrawal_status", "state");
     if (reference || status) {
+      const fees = extractTekkoNgnWithdrawFees(json, data.amount != null ? String(data.amount) : null);
       return {
         reference: reference ?? undefined,
         status: status ?? undefined,
         amount: (data.amount as string | number | undefined) ?? undefined,
         currency: typeof data.currency === "string" ? data.currency : undefined,
+        ...(fees.tekkoFee ? { tekkoFee: fees.tekkoFee } : {}),
       };
     }
   }
@@ -274,11 +356,13 @@ function findWithdrawInList(json: unknown, reference: string): WithdrawShape | n
     if (!rec) continue;
     const ref = strField(rec, "reference", "withdrawalReference", "id");
     if (want && ref === want) {
+      const fees = extractTekkoNgnWithdrawFees(rec, rec.amount != null ? String(rec.amount) : null);
       return {
         reference: ref ?? undefined,
         status: strField(rec, "status", "withdrawalStatus") ?? undefined,
         amount: rec.amount as string | number | undefined,
         currency: typeof rec.currency === "string" ? rec.currency : undefined,
+        ...(fees.tekkoFee ? { tekkoFee: fees.tekkoFee } : {}),
       };
     }
   }
@@ -311,11 +395,13 @@ function extractNewestWithdrawFromList(json: unknown): WithdrawShape | null {
     const ts = Date.parse(created) || 0;
     if (!best || ts >= bestTs) {
       bestTs = ts;
+      const fees = extractTekkoNgnWithdrawFees(rec, rec.amount != null ? String(rec.amount) : null);
       best = {
         reference: ref,
         status: strField(rec, "status", "withdrawalStatus") ?? undefined,
         amount: rec.amount as string | number | undefined,
         currency: typeof rec.currency === "string" ? rec.currency : undefined,
+        ...(fees.tekkoFee ? { tekkoFee: fees.tekkoFee } : {}),
       };
     }
   }
@@ -379,10 +465,20 @@ async function refundPendingNgnPayout(params: {
       referenceId: params.txId,
     });
 
+    let nextBalance = addAmount(wallet.balance, params.amount);
+    nextBalance = await refundTekkoNgnProviderFeeInTx({
+      txDb,
+      walletId: wallet.id,
+      environment: params.environment,
+      transactionId: params.txId,
+      metadata: pending.metadata,
+      balance: nextBalance,
+    });
+
     await txDb
       .update(wallets)
       .set({
-        balance: addAmount(wallet.balance, params.amount),
+        balance: nextBalance,
         updatedAt: new Date(),
       })
       .where(eq(wallets.id, wallet.id));
@@ -398,6 +494,179 @@ async function refundPendingNgnPayout(params: {
       failureReason: params.failureReason,
     },
   });
+}
+
+type FeeDbTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+async function hasTekkoNgnProviderFeeDebit(
+  txDb: FeeDbTx,
+  transactionId: string
+): Promise<boolean> {
+  const ref = tekkoNgnProviderFeeLedgerRef(transactionId);
+  const [row] = await txDb
+    .select({ id: ledgerEntries.id })
+    .from(ledgerEntries)
+    .where(
+      and(
+        eq(ledgerEntries.referenceId, ref),
+        eq(ledgerEntries.type, "provider_fee"),
+        eq(ledgerEntries.direction, "debit")
+      )
+    )
+    .limit(1);
+  return Boolean(row);
+}
+
+/**
+ * Debit merchant NGN for Tekko's rail fee once fee is known. Idempotent.
+ * Does not fail the payout if wallet cannot cover the fee (ops flag in metadata).
+ */
+export async function ensureTekkoNgnProviderFeeDebited(params: {
+  transactionId: string;
+  merchantId: string;
+  environment: TekkoMerchantEnvironment;
+  tekkoFee: string;
+  source: "create" | "poll" | "webhook" | "reconcile";
+}): Promise<{ debited: boolean; fee: string | null }> {
+  let fee: string;
+  try {
+    fee = normalizeMoneyAmountToTwoDecimals(params.tekkoFee);
+    assertPositive(fee);
+  } catch {
+    return { debited: false, fee: null };
+  }
+
+  return db.transaction(async (txDb) => {
+    const [tx] = await txDb
+      .select()
+      .from(transactions)
+      .where(eq(transactions.id, params.transactionId))
+      .limit(1);
+    if (!tx || tx.provider !== TEKKO_NGN_PAYOUT_PROVIDER) {
+      return { debited: false, fee: null };
+    }
+
+    if (await hasTekkoNgnProviderFeeDebit(txDb, tx.id)) {
+      return { debited: false, fee };
+    }
+
+    const [wallet] = await txDb
+      .select()
+      .from(wallets)
+      .where(
+        and(
+          eq(wallets.merchantId, params.merchantId),
+          eq(wallets.environment, params.environment),
+          eq(wallets.type, "merchant"),
+          eq(wallets.currency, NGN_SETTLEMENT_CURRENCY)
+        )
+      )
+      .for("update")
+      .limit(1);
+    if (!wallet) {
+      return { debited: false, fee };
+    }
+
+    if (cmpAmount(wallet.balance, fee) < 0) {
+      await txDb
+        .update(transactions)
+        .set({
+          metadata: mergeMeta(tx.metadata, {
+            tekkoFee: fee,
+            tekkoFeeDebitFailed: true,
+            tekkoFeeDebitFailedAt: new Date().toISOString(),
+            tekkoFeeDebitFailedReason: "insufficient_merchant_ngn_for_provider_fee",
+          }),
+          updatedAt: new Date(),
+        })
+        .where(eq(transactions.id, tx.id));
+      audit({
+        action: "payout.provider_fee.debit_failed",
+        resource: tx.id,
+        merchantId: params.merchantId,
+        meta: { fee, source: params.source, balance: String(wallet.balance) },
+      });
+      return { debited: false, fee };
+    }
+
+    await txDb.insert(ledgerEntries).values({
+      walletId: wallet.id,
+      environment: params.environment,
+      amount: fee,
+      direction: "debit",
+      type: "provider_fee",
+      referenceId: tekkoNgnProviderFeeLedgerRef(tx.id),
+    });
+    await txDb
+      .update(wallets)
+      .set({
+        balance: subAmount(wallet.balance, fee),
+        updatedAt: new Date(),
+      })
+      .where(eq(wallets.id, wallet.id));
+    await txDb
+      .update(transactions)
+      .set({
+        metadata: mergeMeta(tx.metadata, {
+          tekkoFee: fee,
+          tekkoFeeDebited: true,
+          tekkoFeeDebitedAt: new Date().toISOString(),
+          tekkoFeeDebitedFrom: params.source,
+          tekkoFeeDebitFailed: false,
+        }),
+        updatedAt: new Date(),
+      })
+      .where(eq(transactions.id, tx.id));
+
+    audit({
+      action: "payout.provider_fee.debited",
+      resource: tx.id,
+      merchantId: params.merchantId,
+      meta: { fee, source: params.source },
+    });
+    return { debited: true, fee };
+  });
+}
+
+async function refundTekkoNgnProviderFeeInTx(params: {
+  txDb: FeeDbTx;
+  walletId: string;
+  environment: TekkoMerchantEnvironment;
+  transactionId: string;
+  metadata: string | null;
+  balance: string;
+}): Promise<string> {
+  const meta = parseMeta(params.metadata);
+  const feeFromMeta =
+    typeof meta.tekkoFee === "string" ? moneyFromUnknown(meta.tekkoFee) : null;
+  if (!(await hasTekkoNgnProviderFeeDebit(params.txDb, params.transactionId))) {
+    return params.balance;
+  }
+  if (!feeFromMeta) return params.balance;
+
+  const refundRef = tekkoNgnProviderFeeLedgerRef(params.transactionId);
+  const [existingRefund] = await params.txDb
+    .select({ id: ledgerEntries.id })
+    .from(ledgerEntries)
+    .where(
+      and(
+        eq(ledgerEntries.referenceId, refundRef),
+        eq(ledgerEntries.type, "provider_fee_refund"),
+        eq(ledgerEntries.direction, "credit")
+      )
+    )
+    .limit(1);
+  if (existingRefund) return params.balance;
+
+  await params.txDb.insert(ledgerEntries).values({
+    walletId: params.walletId,
+    environment: params.environment,
+    amount: feeFromMeta,
+    direction: "credit",
+    type: "provider_fee_refund",
+    referenceId: refundRef,
+  });
+  return addAmount(params.balance, feeFromMeta);
 }
 
 export async function listTekkoNgnBanks(params?: { search?: string }): Promise<
@@ -634,7 +903,8 @@ export async function createTekkoNgnPayout(params: {
     throw err;
   }
 
-  const withdraw = extractWithdraw(withdrawRes.json);
+  const withdrawResExtract = extractWithdraw(withdrawRes.json);
+  let withdraw = withdrawResExtract;
   let reference = withdraw?.reference?.trim() || null;
   const accepted = tekkoWithdrawCreateAccepted(withdrawRes.status, withdrawRes.json, reference);
 
@@ -714,6 +984,9 @@ export async function createTekkoNgnPayout(params: {
       });
       const fromList = extractNewestWithdrawFromList(listed.json);
       if (fromList?.reference?.trim()) reference = fromList.reference.trim();
+      if (!withdraw?.tekkoFee && fromList?.tekkoFee) {
+        withdraw = { ...(withdraw ?? {}), ...fromList };
+      }
     } catch {
       // Keep pending without external id; webhook may still attach via metadata match later.
     }
@@ -724,6 +997,9 @@ export async function createTekkoNgnPayout(params: {
   }
 
   const withdrawalStatus = withdraw?.status ?? "processing";
+  const createFees = extractTekkoNgnWithdrawFees(withdrawRes.json, params.amount);
+  const tekkoFee = withdraw?.tekkoFee ?? createFees.tekkoFee;
+
   await db
     .update(transactions)
     .set({
@@ -735,10 +1011,23 @@ export async function createTekkoNgnPayout(params: {
         tekkoWithdrawMode: "customer",
         createHttpStatus: withdrawRes.status,
         createMessage: pickTekkoMessage(withdrawRes.json, ""),
+        ...(tekkoFee ? { tekkoFee } : {}),
+        ...(createFees.totalDebited ? { tekkoTotalDebited: createFees.totalDebited } : {}),
+        ...(createFees.providerFee ? { tekkoProviderFee: createFees.providerFee } : {}),
       }),
       updatedAt: new Date(),
     })
     .where(eq(transactions.id, tx.id));
+
+  if (tekkoFee) {
+    await ensureTekkoNgnProviderFeeDebited({
+      transactionId: tx.id,
+      merchantId: params.merchantId,
+      environment: params.environment,
+      tekkoFee,
+      source: "create",
+    });
+  }
 
   audit({
     action: "payout.created",
@@ -837,6 +1126,8 @@ export async function getTekkoNgnPayoutStatus(params: {
         }
         if (withdraw?.status) {
           withdrawalStatus = withdraw.status;
+          const pollFees = extractTekkoNgnWithdrawFees(res.json, String(tx.amount));
+          const tekkoFee = withdraw.tekkoFee ?? pollFees.tekkoFee;
           await db
             .update(transactions)
             .set({
@@ -844,16 +1135,29 @@ export async function getTekkoNgnPayoutStatus(params: {
                 withdrawalStatus,
                 lastPolledAt: new Date().toISOString(),
                 ...(tekkoCustomerId != null ? { tekkoCustomerId, tekkoWithdrawMode: "customer" } : {}),
+                ...(tekkoFee ? { tekkoFee } : {}),
+                ...(pollFees.totalDebited ? { tekkoTotalDebited: pollFees.totalDebited } : {}),
               }),
               updatedAt: new Date(),
             })
             .where(eq(transactions.id, tx.id));
+
+          if (tekkoFee) {
+            await ensureTekkoNgnProviderFeeDebited({
+              transactionId: tx.id,
+              merchantId: params.merchantId,
+              environment: tx.environment as TekkoMerchantEnvironment,
+              tekkoFee,
+              source: "poll",
+            });
+          }
 
           if (isNgnWithdrawalSuccess(withdrawalStatus)) {
             await finalizeTekkoNgnPayoutSuccess({
               transactionId: tx.id,
               withdrawalStatus,
               source: "poll",
+              tekkoFee: tekkoFee ?? undefined,
             });
           } else if (isNgnWithdrawalFailure(withdrawalStatus)) {
             await finalizeTekkoNgnPayoutFailure({
@@ -893,6 +1197,7 @@ export async function finalizeTekkoNgnPayoutSuccess(params: {
   transactionId: string;
   withdrawalStatus: string;
   source: "webhook" | "poll" | "reconcile";
+  tekkoFee?: string | null;
 }): Promise<{ merchantId: string; event: WebhookEvent } | null> {
   const [tx] = await db
     .select()
@@ -903,15 +1208,37 @@ export async function finalizeTekkoNgnPayoutSuccess(params: {
     return null;
   }
 
+  const meta = parseMeta(tx.metadata);
+  const feeFromMeta = typeof meta.tekkoFee === "string" ? meta.tekkoFee : null;
+  const tekkoFee = params.tekkoFee ?? feeFromMeta;
+  if (tekkoFee) {
+    await ensureTekkoNgnProviderFeeDebited({
+      transactionId: tx.id,
+      merchantId: tx.merchantId,
+      environment: tx.environment as TekkoMerchantEnvironment,
+      tekkoFee,
+      source: params.source,
+    });
+  }
+
+  // Re-read metadata so fee-debit flags from ensureTekkoNgnProviderFeeDebited are preserved.
+  const [fresh] = await db
+    .select({ metadata: transactions.metadata })
+    .from(transactions)
+    .where(eq(transactions.id, tx.id))
+    .limit(1);
+  const metadataBase = fresh?.metadata ?? tx.metadata;
+
   const result = await db.transaction(async (txDb) => {
     const [updated] = await txDb
       .update(transactions)
       .set({
         status: "success",
-        metadata: mergeMeta(tx.metadata, {
+        metadata: mergeMeta(metadataBase, {
           withdrawalStatus: params.withdrawalStatus,
           settledAt: new Date().toISOString(),
           settledFrom: params.source,
+          ...(tekkoFee ? { tekkoFee } : {}),
         }),
         updatedAt: new Date(),
       })
@@ -1023,10 +1350,19 @@ export async function finalizeTekkoNgnPayoutFailure(params: {
         type: "payout_refund",
         referenceId: tx.id,
       });
+      let nextBalance = addAmount(wallet.balance, String(tx.amount));
+      nextBalance = await refundTekkoNgnProviderFeeInTx({
+        txDb,
+        walletId: wallet.id,
+        environment: tx.environment,
+        transactionId: tx.id,
+        metadata: tx.metadata,
+        balance: nextBalance,
+      });
       await txDb
         .update(wallets)
         .set({
-          balance: addAmount(wallet.balance, String(tx.amount)),
+          balance: nextBalance,
           updatedAt: new Date(),
         })
         .where(eq(wallets.id, wallet.id));

@@ -81,6 +81,8 @@ export {
   tekkoDetailIndicatesInsufficientCustomerNgn,
   tekkoWithdrawCreateAccepted,
   extractTekkoNgnWithdraw,
+  extractTekkoNgnWithdrawFees,
+  tekkoNgnProviderFeeLedgerRef,
 } from "./ngn-payout.js";
 export type { TekkoNgnPayoutReconcileResult, NgnPayoutBeneficiary } from "./ngn-payout.js";
 export {

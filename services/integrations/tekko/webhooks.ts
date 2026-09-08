@@ -30,6 +30,7 @@ import {
 } from "./ngn-va.js";
 import {
   TEKKO_NGN_PAYOUT_PROVIDER,
+  extractTekkoNgnWithdrawFees,
   findTekkoNgnPayoutByReference,
   finalizeTekkoNgnPayoutSuccess,
   finalizeTekkoNgnPayoutFailure,
@@ -375,6 +376,8 @@ export async function applyTekkoWebhookPayload(
       payoutTx = await findTekkoNgnPayoutByReference(withdrawRef);
     }
     if (payoutTx) {
+      const fees = extractTekkoNgnWithdrawFees(parsed, String(payoutTx.amount));
+      const tekkoFee = fees.tekkoFee;
       await db
         .update(transactions)
         .set({
@@ -382,6 +385,8 @@ export async function applyTekkoWebhookPayload(
             withdrawalStatus: withdrawalStatus ?? (eventType === "withdrawal.completed" ? "completed" : "failed"),
             lastWebhookEvent: eventType,
             lastWebhookAt: new Date().toISOString(),
+            ...(tekkoFee ? { tekkoFee } : {}),
+            ...(fees.totalDebited ? { tekkoTotalDebited: fees.totalDebited } : {}),
           }),
           updatedAt: new Date(),
         })
@@ -392,6 +397,7 @@ export async function applyTekkoWebhookPayload(
           transactionId: payoutTx.id,
           withdrawalStatus: withdrawalStatus ?? "completed",
           source: "webhook",
+          tekkoFee,
         });
       }
       if (eventType === "withdrawal.failed" || isNgnWithdrawalFailure(withdrawalStatus)) {

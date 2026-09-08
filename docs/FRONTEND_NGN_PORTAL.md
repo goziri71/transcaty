@@ -135,7 +135,9 @@ Example:
 
 Until a deploy that includes the schema fix, the same case may return **only** `error` + `message` (no `code`). Fallback: match `message` containing `"BVN verification"` or route users from VA `GET` when `bvnStatus !== "verified"`.
 
-Payouts debit the Tekko **customer** NGN ledger (same as VA credits). They can still fail closed if that ledger has insufficient balance even when the Transacty NGN wallet shows funds — show balance/support messaging (no Tekko branding).
+Payouts debit the merchant **NGN** wallet for the send amount, then (when Tekko returns it) an additional **rail fee** (`metadata.tekkoFee`, ledger type `provider_fee`) so Transacty stays aligned with Tekko’s customer ledger. Failed payouts refund both the amount and any debited rail fee.
+
+Payouts still debit Tekko’s **customer** NGN ledger (same pocket VA credits land in). They can fail closed if that ledger is short even when Transacty shows funds — show balance/support messaging (no Tekko branding). Optional UI: surface `metadata.tekkoFee` on payout detail when present.
 
 ## Transaction history
 

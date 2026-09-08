@@ -10,6 +10,8 @@ import {
   tekkoDetailIndicatesInsufficientCustomerNgn,
   tekkoWithdrawCreateAccepted,
   extractTekkoNgnWithdraw,
+  extractTekkoNgnWithdrawFees,
+  tekkoNgnProviderFeeLedgerRef,
 } from "./ngn-payout.js";
 
 describe("Tekko NGN payout status mapping", () => {
@@ -63,6 +65,31 @@ describe("Tekko NGN withdraw create response parsing", () => {
     );
     assert.equal(tekkoWithdrawCreateAccepted(200, { message: "Boom" }, null), false);
     assert.equal(tekkoWithdrawCreateAccepted(201, {}, "plt_ref"), true);
+  });
+});
+
+describe("Tekko NGN withdraw fee extraction", () => {
+  it("builds stable provider fee ledger reference", () => {
+    assert.equal(tekkoNgnProviderFeeLedgerRef("tx-1"), "tekko_fee:tx-1");
+  });
+
+  it("reads explicit tekkoFee from payload", () => {
+    const fees = extractTekkoNgnWithdrawFees({ data: { tekkoFee: "0.50", amount: "500" } }, "500");
+    assert.equal(fees.tekkoFee, "0.50");
+  });
+
+  it("derives fee from totalDebited − beneficiary amount", () => {
+    const fees = extractTekkoNgnWithdrawFees(
+      { data: { totalDebited: "500.50", amount: "500" } },
+      "500.00"
+    );
+    assert.equal(fees.tekkoFee, "0.50");
+    assert.equal(fees.totalDebited, "500.50");
+  });
+
+  it("falls back to providerFee when tekkoFee missing", () => {
+    const fees = extractTekkoNgnWithdrawFees({ data: { providerFee: "1.25" } }, "100");
+    assert.equal(fees.tekkoFee, "1.25");
   });
 });
 

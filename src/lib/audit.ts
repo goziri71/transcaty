@@ -14,6 +14,8 @@ export type AuditAction =
   | "payout.created"
   | "payout.completed"
   | "payout.failed"
+  | "payout.provider_fee.debited"
+  | "payout.provider_fee.debit_failed"
   | "auth.failed"
   | "auth.password_reset_requested"
   | "auth.password_reset_completed"
