@@ -36,6 +36,30 @@ const errorResponse = z.object({
 const FX_PRODUCT = ["cpg_payout", "eur_payout"] as const;
 const FEE_RAIL = ["bangladesh", "brazil", "india", "europe", "cpg_crypto", "nigeria"] as const;
 const FEE_TYPE = ["payin", "payout"] as const;
+/** Rails that only settle on live (no test money path). */
+const LIVE_ONLY_FEE_RAILS = new Set<string>(["nigeria"]);
+
+function validateFeeScheduleCreate(body: {
+  environment: string;
+  rail: string;
+  currency: string;
+}): { ok: true } | { ok: false; message: string } {
+  const currency = body.currency.trim().toUpperCase();
+  if (LIVE_ONLY_FEE_RAILS.has(body.rail) && body.environment !== "live") {
+    return {
+      ok: false,
+      message: `${body.rail} fee schedules must use environment "live" (this rail has no test settlement).`,
+    };
+  }
+  if (body.rail === "nigeria" && currency !== "NGN") {
+    return { ok: false, message: 'nigeria rail requires currency "NGN"' };
+  }
+  if (currency === "NGN" && body.rail !== "nigeria") {
+    return { ok: false, message: 'NGN fee schedules must use rail "nigeria"' };
+  }
+  return { ok: true };
+}
+
 const ENV = ["test", "live"] as const;
 
 function ensurePermission(
@@ -569,6 +593,14 @@ export async function registerProviderAdminConfigRoutes(app: FastifyInstance) {
       const feePct = parseFeePercentageInput(body.feePercentage as string | undefined);
       if (!feePct.ok) {
         return reply.status(400).send({ error: "Bad Request", message: feePct.message });
+      }
+      const scheduleCheck = validateFeeScheduleCreate({
+        environment: String(body.environment),
+        rail: String(body.rail),
+        currency: String(body.currency),
+      });
+      if (!scheduleCheck.ok) {
+        return reply.status(400).send({ error: "Bad Request", message: scheduleCheck.message });
       }
       const [row] = await db
         .insert(merchantFeeSchedules)

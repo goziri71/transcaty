@@ -32,6 +32,20 @@ export async function resolveFeeSchedule(params: {
   });
   if (schedule) return schedule;
 
+  // NGN schedules are stored under rail `nigeria`. Fall back if provider mapping
+  // still resolves elsewhere (e.g. older builds mapped tekko-* → europe).
+  if (currency === "NGN" && rail !== "nigeria") {
+    const ngnSchedule = await lookupSchedule({
+      merchantId: params.merchantId,
+      environment: params.environment,
+      rail: "nigeria",
+      currency: "NGN",
+      feeType: params.feeType,
+      now,
+    });
+    if (ngnSchedule) return ngnSchedule;
+  }
+
   if (rail === "bangladesh" && currency === "BDT") {
     const legacy = await getMerchantPricing(params.merchantId);
     if (legacy) {
@@ -197,7 +211,34 @@ export async function resolveFeeSchedulesBatch(
     }
   }
 
+  // Also index nigeria/NGN rows so europe-mapped NGN lookups can fall back.
+  const nigeriaNgnByLookup = new Map<string, (typeof rows)[number]>();
+  for (const row of rows) {
+    if (row.rail !== "nigeria" || row.currency !== "NGN") continue;
+    const alt = `${row.merchantId}|${row.environment}|NGN|${row.feeType}`;
+    const existing = nigeriaNgnByLookup.get(alt);
+    if (!existing || row.effectiveFrom > existing.effectiveFrom) {
+      nigeriaNgnByLookup.set(alt, row);
+    }
+  }
+
   for (const [cacheKey, row] of bestByKey) {
+    result.set(cacheKey, {
+      id: row.id,
+      billingMode: row.billingMode,
+      feePercentage: row.feePercentage != null ? String(row.feePercentage) : null,
+      feeFlat: row.feeFlat != null ? String(row.feeFlat) : null,
+      feeMin: row.feeMin != null ? String(row.feeMin) : null,
+      feeMax: row.feeMax != null ? String(row.feeMax) : null,
+    });
+  }
+
+  for (const [cacheKey, record] of records) {
+    if (result.has(cacheKey)) continue;
+    if (record.currency !== "NGN") continue;
+    const alt = `${record.merchantId}|${record.environment}|NGN|${record.feeType}`;
+    const row = nigeriaNgnByLookup.get(alt);
+    if (!row) continue;
     result.set(cacheKey, {
       id: row.id,
       billingMode: row.billingMode,
