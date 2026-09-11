@@ -12,6 +12,11 @@ test("payoutTotalWalletDebit includes platform fee", () => {
   assert.equal(payoutTotalWalletDebit("500.00", null), "500.00");
 });
 
+test("payoutTotalWalletDebit includes provider rail fee", () => {
+  assert.equal(payoutTotalWalletDebit("500.00", "10.00", "0.50"), "510.50");
+  assert.equal(payoutTotalWalletDebit("500.00", null, "0.50"), "500.50");
+});
+
 test("transactionFeeReferenceId is stable for idempotency", () => {
   assert.equal(transactionFeeReferenceId("tx-1", "payout"), "fee:tx-1:payout");
 });

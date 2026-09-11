@@ -135,9 +135,17 @@ Example:
 
 Until a deploy that includes the schema fix, the same case may return **only** `error` + `message` (no `code`). Fallback: match `message` containing `"BVN verification"` or route users from VA `GET` when `bvnStatus !== "verified"`.
 
-Payouts debit the merchant **NGN** wallet for the send amount, then (when Tekko returns it) an additional **rail fee** (`metadata.tekkoFee`, ledger type `provider_fee`) so Transacty stays aligned with Tekko’s customer ledger. Failed payouts refund both the amount and any debited rail fee.
+Payouts debit the merchant **NGN** wallet for:
 
-Payouts still debit Tekko’s **customer** NGN ledger (same pocket VA credits land in). They can fail closed if that ledger is short even when Transacty shows funds — show balance/support messaging (no Tekko branding). Optional UI: surface `metadata.tekkoFee` on payout detail when present.
+1. **Send amount** (beneficiary)
+2. **Tekko rail fee** when returned (`fees.providerFee` / `metadata.tekkoFee`, ledger `provider_fee`)
+3. **Transacty platform fee** when a schedule exists (`fees.platformFee`, ledger `platform_fee`)
+
+`totalWalletDebit` = amount + platform fee + provider fee. Failed payouts refund the send amount and any rail fee already debited; platform fee is only collected on success.
+
+Ops must create an active fee schedule with `rail: "nigeria"`, `currency: "NGN"`, `feeType: "payout"` (and pay-in if desired) via `POST /provider/merchants/:id/fee-schedules` — otherwise `platformFee` stays `0.00` / `none`.
+
+Payouts still debit Tekko’s **customer** NGN ledger (same pocket VA credits land in). They can fail closed if that ledger is short even when Transacty shows funds — show balance/support messaging (no Tekko branding). SPA: show `fees.platformFee` and `fees.providerFee` on payout detail when non-zero.
 
 ## Transaction history
 

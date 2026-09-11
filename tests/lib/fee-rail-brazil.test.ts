@@ -20,4 +20,11 @@ describe("providerToFeeRail", () => {
     assert.equal(providerToFeeRail("tekko-pyusd-payin", "PYUSD-USDC"), "europe");
     assert.equal(providerToFeeRail("tekko-pyusd-payin", "PYUSD"), "europe");
   });
+
+  it("maps tekko-ngn providers and NGN currency to nigeria", () => {
+    assert.equal(providerToFeeRail("tekko-ngn-payout", "NGN"), "nigeria");
+    assert.equal(providerToFeeRail("tekko-ngn-va", "NGN"), "nigeria");
+    assert.equal(providerToFeeRail("tekko-ngn-collect", "NGN"), "nigeria");
+    assert.equal(providerToFeeRail(null, "NGN"), "nigeria");
+  });
 });

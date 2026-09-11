@@ -51,9 +51,27 @@ export async function previewTransactionFee(input: TransactionFeePreviewInput): 
   return computeTransactionFeeAmount(input);
 }
 
-/** Payout debit + platform fee — used to validate wallet balance before create. */
-export function payoutTotalWalletDebit(payoutAmount: string, feeAmount: string | null): string {
-  return feeAmount ? addAmount(payoutAmount, feeAmount) : payoutAmount;
+/**
+ * Payout debit + Transacty platform fee + optional provider/rail fee.
+ * Used to validate wallet balance before create and for API totalWalletDebit.
+ */
+export function payoutTotalWalletDebit(
+  payoutAmount: string,
+  feeAmount: string | null,
+  providerFeeAmount?: string | null
+): string {
+  let total = feeAmount ? addAmount(payoutAmount, feeAmount) : payoutAmount;
+  if (providerFeeAmount) {
+    try {
+      const pf = providerFeeAmount.trim();
+      if (pf && pf !== "0" && pf !== "0.00") {
+        total = addAmount(total, pf);
+      }
+    } catch {
+      /* ignore malformed provider fee */
+    }
+  }
+  return total;
 }
 
 export async function hasTransactionFeeApplied(

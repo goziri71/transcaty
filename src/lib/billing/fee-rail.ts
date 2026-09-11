@@ -1,6 +1,12 @@
 import type { TransactionFeeType } from "./fee-calculator.js";
 
-export type FeeRail = "bangladesh" | "india" | "europe" | "cpg_crypto" | "brazil";
+export type FeeRail =
+  | "bangladesh"
+  | "india"
+  | "europe"
+  | "cpg_crypto"
+  | "brazil"
+  | "nigeria";
 
 export function providerToFeeRail(provider: string | null | undefined, currency: string): FeeRail {
   const p = provider?.trim() ?? "";
@@ -11,11 +17,21 @@ export function providerToFeeRail(provider: string | null | undefined, currency:
   if (p.startsWith("payok")) return "bangladesh";
   if (p === "tylt-cpg-payout" || p === "tylt-cpg-payin") return "cpg_crypto";
   if (p === "tylt-eur-payout" || p === "tylt-eur-payin" || p.startsWith("tylt-eur")) return "europe";
+  // NGN VA / payout (and legacy collect) use nigeria schedules — before generic tekko- → europe.
+  if (
+    p === "tekko-ngn-payout" ||
+    p === "tekko-ngn-va" ||
+    p === "tekko-ngn-collect" ||
+    p.startsWith("tekko-ngn")
+  ) {
+    return "nigeria";
+  }
   // PYUSD collects as PYUSD and settles PYUSD-USDC — reuse europe USDC fee schedules.
   if (p === "tekko-pyusd-payin" || p.startsWith("tekko-")) return "europe";
   if (p.startsWith("tylt-")) return "india";
   if (c === "BDT") return "bangladesh";
   if (c === "BRL") return "brazil";
+  if (c === "NGN") return "nigeria";
   if (c === "EUR" || c === "USDC" || c === "PYUSD" || c === "PYUSD-USDC") return "europe";
   if (c === "USDT" || c === "INR") return "india";
   return "bangladesh";

@@ -225,7 +225,7 @@ Requires `EMAIL_FROM` + ZeptoMail/Resend/SMTP on API (see [PASSWORD_RESET_AND_EM
 
 Per-merchant fees by **environment × rail × currency × fee type**.
 
-**Rails:** `bangladesh` | `india` | `europe` | `cpg_crypto`  
+**Rails:** `bangladesh` | `india` | `europe` | `cpg_crypto` | `nigeria`  
 **Fee types:** `payin` | `payout`
 
 ### List

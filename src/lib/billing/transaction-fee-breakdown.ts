@@ -2,7 +2,7 @@ import { z } from "zod";
 import { and, eq, inArray } from "drizzle-orm";
 import { db } from "../../db/index.js";
 import { ledgerEntries } from "../../db/schema/index.js";
-import { subAmount } from "../money.js";
+import { cmpAmount, subAmount } from "../money.js";
 import type { TransactionFeeType } from "./fee-calculator.js";
 import {
   feeAmountFromSchedule,
@@ -15,6 +15,8 @@ import { feeScheduleCacheKey, resolveFeeSchedulesBatch } from "./fee-schedules.j
 
 export const transactionFeesSchema = z.object({
   platformFee: z.string(),
+  /** Provider/rail fee (e.g. Tekko NGN withdraw fee). Zero when none. */
+  providerFee: z.string().default("0.00"),
   feeType: z.enum(["payin", "payout"]),
   feeStatus: z.enum(["none", "estimated", "applied"]),
 });
@@ -53,6 +55,22 @@ const ZERO_FEE = "0.00";
 
 function normalizeCurrency(currency: string): string {
   return currency.trim().toUpperCase() || "BDT";
+}
+
+/** Tekko (and similar) rail fee stored on payout metadata when known. */
+export function providerFeeFromMetadata(metadata?: string | null): string | null {
+  if (!metadata?.trim()) return null;
+  try {
+    const meta = JSON.parse(metadata) as Record<string, unknown>;
+    const raw = meta.tekkoFee ?? meta.providerFee;
+    if (typeof raw !== "string" && typeof raw !== "number") return null;
+    const n = String(raw).trim();
+    if (!n) return null;
+    if (cmpAmount(n, "0") <= 0) return null;
+    return n.includes(".") ? n : `${n}.00`;
+  } catch {
+    return null;
+  }
 }
 
 /** Amount used for fee schedule lookup (may differ from display amount on EUR rails). */
@@ -145,21 +163,33 @@ export function formatTransactionFeeBreakdown(params: {
   feeStatus: "none" | "estimated" | "applied";
   provider?: string | null;
   metadata?: string | null;
+  providerFee?: string | null;
 }): TransactionFeeBreakdownFields {
   const platformFee = params.platformFee ?? ZERO_FEE;
+  const providerFee =
+    params.providerFee ?? providerFeeFromMetadata(params.metadata) ?? ZERO_FEE;
   const currency = normalizeCurrency(params.currency);
   const fees = {
     platformFee,
+    providerFee,
     feeType: params.type,
     feeStatus: params.feeStatus,
   } as const;
 
   if (params.type === "payin") {
     const gross = params.paidAmount?.trim() ? params.paidAmount : params.amount;
+    let net = subAmount(gross, platformFee);
+    if (providerFee !== ZERO_FEE && cmpAmount(providerFee, "0") > 0) {
+      try {
+        net = subAmount(net, providerFee);
+      } catch {
+        /* keep platform-only net */
+      }
+    }
     return {
       currency,
       fees,
-      netAmount: subAmount(gross, platformFee),
+      netAmount: net,
       totalWalletDebit: null,
     };
   }
@@ -170,11 +200,14 @@ export function formatTransactionFeeBreakdown(params: {
     provider: params.provider,
     metadata: params.metadata,
   });
+  const platformForTotal = platformFee === ZERO_FEE ? null : platformFee;
+  const providerForTotal =
+    providerFee === ZERO_FEE || cmpAmount(providerFee, "0") <= 0 ? null : providerFee;
   return {
     currency,
     fees,
     netAmount: null,
-    totalWalletDebit: payoutTotalWalletDebit(payoutBase, platformFee === ZERO_FEE ? null : platformFee),
+    totalWalletDebit: payoutTotalWalletDebit(payoutBase, platformForTotal, providerForTotal),
   };
 }
 
@@ -195,6 +228,7 @@ export async function buildTransactionFeeBreakdown(
     return null;
   }
   const feeType = input.type;
+  const providerFee = providerFeeFromMetadata(input.metadata);
 
   if (input.status === "failed") {
     return formatTransactionFeeBreakdown({
@@ -203,6 +237,7 @@ export async function buildTransactionFeeBreakdown(
       ...formatFieldsFromInput(input),
       platformFee: ZERO_FEE,
       feeStatus: "none",
+      providerFee,
     });
   }
 
@@ -215,6 +250,7 @@ export async function buildTransactionFeeBreakdown(
         ...formatFieldsFromInput(input),
         platformFee: applied,
         feeStatus: "applied",
+        providerFee,
       });
     }
     const preview = await previewTransactionFee(feePreviewInput(input, feeType));
@@ -224,6 +260,7 @@ export async function buildTransactionFeeBreakdown(
       ...formatFieldsFromInput(input),
       platformFee: preview,
       feeStatus: preview ? "estimated" : "none",
+      providerFee,
     });
   }
 
@@ -234,6 +271,7 @@ export async function buildTransactionFeeBreakdown(
     ...formatFieldsFromInput(input),
     platformFee: preview,
     feeStatus: preview ? "estimated" : "none",
+    providerFee,
   });
 }
 
@@ -272,6 +310,7 @@ export async function buildTransactionFeeBreakdownBatch(
         return null;
       }
       const feeType = row.type;
+      const providerFee = providerFeeFromMetadata(row.metadata);
 
       if (row.status === "failed") {
         return formatTransactionFeeBreakdown({
@@ -280,6 +319,7 @@ export async function buildTransactionFeeBreakdownBatch(
           ...formatFieldsFromInput(row),
           platformFee: ZERO_FEE,
           feeStatus: "none",
+          providerFee,
         });
       }
 
@@ -292,6 +332,7 @@ export async function buildTransactionFeeBreakdownBatch(
             ...formatFieldsFromInput(row),
             platformFee: applied,
             feeStatus: "applied",
+            providerFee,
           });
         }
       }
@@ -312,6 +353,7 @@ export async function buildTransactionFeeBreakdownBatch(
         ...formatFieldsFromInput(row),
         platformFee: preview,
         feeStatus: preview ? "estimated" : "none",
+        providerFee,
       });
     })
   );

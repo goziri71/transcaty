@@ -17,6 +17,7 @@ test("formatTransactionFeeBreakdown payin pending shows estimated net", () => {
     feeStatus: "estimated",
   });
   assert.equal(breakdown.fees.platformFee, "15.00");
+  assert.equal(breakdown.fees.providerFee, "0.00");
   assert.equal(breakdown.fees.feeType, "payin");
   assert.equal(breakdown.fees.feeStatus, "estimated");
   assert.equal(breakdown.netAmount, "985.00");
@@ -35,6 +36,22 @@ test("formatTransactionFeeBreakdown payout uses EUR debit amount from metadata",
     metadata: JSON.stringify({ debitAmount: "95.50", fiatAmount: "100.00" }),
   });
   assert.equal(breakdown.totalWalletDebit, "97.50");
+});
+
+test("formatTransactionFeeBreakdown payout includes Tekko provider fee in totalWalletDebit", () => {
+  const breakdown = formatTransactionFeeBreakdown({
+    type: "payout",
+    status: "success",
+    amount: "500.00",
+    currency: "NGN",
+    platformFee: "5.00",
+    feeStatus: "applied",
+    provider: "tekko-ngn-payout",
+    metadata: JSON.stringify({ tekkoFee: "0.50" }),
+  });
+  assert.equal(breakdown.fees.platformFee, "5.00");
+  assert.equal(breakdown.fees.providerFee, "0.50");
+  assert.equal(breakdown.totalWalletDebit, "505.50");
 });
 
 test("resolveTransactionFeeBaseAmount prefers paidAmount for payin", () => {
@@ -60,6 +77,7 @@ test("feeSummaryFromBreakdown omits currency when list already has it", () => {
     })
   );
   assert.equal(summary.fees?.platformFee, "10.00");
+  assert.equal(summary.fees?.providerFee, "0.00");
   assert.equal(summary.totalWalletDebit, "510.00");
   assert.equal("currency" in summary, false);
 });
@@ -78,5 +96,4 @@ test("feeBreakdownToWebhookFields includes net and debit fields", () => {
   );
   assert.equal(fields.currency, "BDT");
   assert.equal(fields.netAmount, "98.50");
-  assert.equal(fields.totalWalletDebit, undefined);
 });

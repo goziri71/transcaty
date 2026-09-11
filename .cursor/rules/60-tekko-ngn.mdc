@@ -15,6 +15,7 @@ Transacty offers **NGN** to merchants; Tekko is the rail. Merchants use Transact
 - **Tekko credit target:** customer NGN sub-ledger → map `endUserId` via `merchants.tekko_customer_id` → credit Transacty **NGN** pocket on `customer.wallet.credited`.
 - **Transacty settlement:** native **NGN** merchant pocket. No auto-swap to USDT/USDC. Do **not** credit Europe `USDC` or `PYUSD-USDC`.
 - **Payout:** `POST /customers/:id/ng/withdraw` (customer NGN ledger where VA credits land). Do **not** use `POST /master-wallet/ng/withdraw` for merchant product payouts — that is merchant treasury and requires partner KYB merchant BVN. Fail closed on insufficient **customer** NGN balance.
+- Merchant Transacty NGN debit on payout = **amount + Tekko rail fee** (`provider_fee`) **+ Transacty platform fee** (`platform_fee` via `nigeria`/`NGN` fee schedule). Fee rail for `tekko-ngn-*` is **`nigeria`** (not europe). Refund rail + platform fees on payout failure where collected.
 - When Tekko returns a rail fee, debit merchant Transacty **NGN** (`provider_fee`, ref `tekko_fee:{txId}`) so wallets stay aligned; refund that fee on payout failure.
 - **Out of scope:** MoMo KE/UG, swaps, Waverlite, face capture, shared master VA as merchant product; master-wallet treasury withdraw as the merchant payout product.
 - **Live-only:** same Tekko Platform credential model as PYUSD (no sandbox). `test` fails closed.
