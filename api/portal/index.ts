@@ -24,6 +24,7 @@ import { registerPortalAuditLogRoutes } from "./audit-log.js";
 import { registerPortalSecurityRoutes } from "./security.js";
 import { registerPortalFeesRoutes } from "./fees.js";
 import { registerPortalPayoutPinRoutes } from "./payout-pin.js";
+import { registerPortalPayoutApprovalRoutes } from "./payout-approvals.js";
 
 export async function registerPortalRoutes(app: FastifyInstance) {
   await registerPortalAuthRoutes(app);
@@ -45,5 +46,6 @@ export async function registerPortalRoutes(app: FastifyInstance) {
   await registerPortalBrazilRoutes(app);
   await registerPortalPyusdRoutes(app);
   await registerPortalNgnRoutes(app);
+  await registerPortalPayoutApprovalRoutes(app);
   await registerPortalAuditLogRoutes(app);
 }

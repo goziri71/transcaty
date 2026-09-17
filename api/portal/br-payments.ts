@@ -2,11 +2,8 @@
  * Portal Brazil (PayOK PIX) pay-in + payout. Kept in its own file so Brazil stays
  * isolated from the Bangladesh portal routes; shared PayOK transport underneath.
  */
-import type { FastifyInstance, FastifyReply } from "fastify";
+import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { eq } from "drizzle-orm";
-import { db } from "../../src/db/index.js";
-import { merchants } from "../../src/db/schema/index.js";
 import {
   createPayinOrder as createBrazilPayinOrder,
   createPayoutOrder as createBrazilPayoutOrder,
@@ -14,7 +11,7 @@ import {
 import { LIMITS } from "../../src/lib/limits.js";
 import { validateMerchantReturnUrl } from "../../src/lib/merchant-return-url.js";
 import { audit } from "../../src/lib/audit.js";
-import { assertMerchantMarketApiAccess } from "../../src/lib/merchant-markets.js";
+import { requirePortalBrazilAccess } from "../../src/lib/portal-payout-access.js";
 import { queueTransactionalEmail } from "../../src/lib/transactional-email-queue.js";
 import { merchantPaymentFlowErrorResponse, sendMerchantFacingReply } from "../../src/lib/merchant-facing-errors.js";
 import {
@@ -24,7 +21,8 @@ import {
 } from "../../src/lib/billing/transaction-fee-breakdown.js";
 import { requirePortalMoneyGuards, requirePortalPayoutGuards } from "../../src/lib/portal-roles.js";
 import { portalPayoutPinSchema } from "../../src/lib/merchant-payout-pin.js";
-import { withIdempotency } from "../../src/lib/idempotency.js";
+import { withIdempotency, readIdempotencyKey } from "../../src/lib/idempotency.js";
+import { evaluatePortalPayoutGate } from "../../src/lib/payout-approvals.js";
 
 const errorResponse = z.object({
   error: z.string(),
@@ -39,51 +37,17 @@ const payoutErrorResponse = errorResponse.extend({
   platformOrderId: z.string().nullable().optional(),
   code: z.string().optional(),
 });
+const payoutApprovalQueuedResponseSchema = z.object({
+  requestId: z.string(),
+  status: z.literal("pending"),
+  requiresApproval: z.literal(true),
+  expiresAt: z.string(),
+});
 
 function maskRecipient(value: string): string {
   const v = value.replace(/\s/g, "");
   if (v.length <= 4) return `****${v}`;
   return `****${v.slice(-4)}`;
-}
-
-/** Gate portal Brazil flows on KYC (live/forced) + the `brazil` market entitlement. */
-async function requirePortalBrazilAccess(
-  merchantId: string,
-  environment: "test" | "live",
-  reply: FastifyReply
-): Promise<boolean> {
-  const kycRequired = process.env.KYC_REQUIRED === "true";
-
-  if (environment === "live" || kycRequired) {
-    const [merchant] = await db
-      .select({ status: merchants.status, kycStatus: merchants.kycStatus })
-      .from(merchants)
-      .where(eq(merchants.id, merchantId))
-      .limit(1);
-    if (!merchant) {
-      reply.status(401).send({ error: "Unauthorized" });
-      return false;
-    }
-    if (environment === "live" && merchant.status !== "active") {
-      reply.status(403).send({ error: "Forbidden", message: "Merchant account is not active" });
-      return false;
-    }
-    if (merchant.kycStatus !== "verified") {
-      reply.status(403).send({
-        error: "Forbidden",
-        message: "KYC verification required for Brazil payments",
-      });
-      return false;
-    }
-  }
-
-  const gate = await assertMerchantMarketApiAccess({ merchantId, market: "brazil", kycRequired });
-  if (!gate.ok) {
-    reply.status(403).send({ error: "Forbidden", message: gate.message, code: gate.code });
-    return false;
-  }
-
-  return true;
 }
 
 export async function registerPortalBrazilRoutes(app: FastifyInstance) {
@@ -252,6 +216,7 @@ export async function registerPortalBrazilRoutes(app: FastifyInstance) {
               estimatedCompletion: z.string().nullable(),
             })
             .merge(transactionFeeBreakdownFieldsSchema.partial()),
+          202: payoutApprovalQueuedResponseSchema,
           400: payoutErrorResponse,
           401: errorResponse,
           403: errorResponse,
@@ -291,7 +256,7 @@ export async function registerPortalBrazilRoutes(app: FastifyInstance) {
         const response = await withIdempotency(
           { request, reply, merchantId: user.merchantId, body, required: true },
           async () => {
-            const result = await createBrazilPayoutOrder({
+            const executorParams = {
               merchantId: user.merchantId,
               environment: body.environment,
               amount: body.amount,
@@ -299,7 +264,24 @@ export async function registerPortalBrazilRoutes(app: FastifyInstance) {
               benificiaryAccountInfo: body.benificiaryAccountInfo,
               cardHolderInfo: body.cardHolderInfo,
               portalActor: { merchantUserId: user.merchantUserId, email: user.email },
+            };
+
+            const gate = await evaluatePortalPayoutGate({
+              rail: "br",
+              merchantId: user.merchantId,
+              merchantUserId: user.merchantUserId,
+              actorEmail: user.email,
+              environment: body.environment,
+              amount: body.amount,
+              currency: "BRL",
+              idempotencyKey: readIdempotencyKey(request)!,
+              executorParams,
             });
+            if (gate.kind === "queued") {
+              return { queued: true as const, requestId: gate.requestId, expiresAt: gate.expiresAt };
+            }
+
+            const result = await createBrazilPayoutOrder(executorParams);
 
             queueTransactionalEmail({
               kind: "merchant_portal_payout",
@@ -320,23 +302,35 @@ export async function registerPortalBrazilRoutes(app: FastifyInstance) {
               provider: "payok-br-payout",
             });
 
-            return attachFeeBreakdown(
-              {
-                transactionId: result.transactionId,
-                reference: result.transactionId,
-                status: result.status ?? "pending",
-                amount: body.amount,
-                platformOrderId: result.platformOrderId ?? null,
-                environment: body.environment,
-                recipient: { masked: maskRecipient(body.benificiaryAccountInfo.number) },
-                estimatedCompletion: null,
-              },
-              breakdown
-            );
+            return {
+              queued: false as const,
+              ...attachFeeBreakdown(
+                {
+                  transactionId: result.transactionId,
+                  reference: result.transactionId,
+                  status: result.status ?? "pending",
+                  amount: body.amount,
+                  platformOrderId: result.platformOrderId ?? null,
+                  environment: body.environment,
+                  recipient: { masked: maskRecipient(body.benificiaryAccountInfo.number) },
+                  estimatedCompletion: null,
+                },
+                breakdown
+              ),
+            };
           }
         );
         if (response === undefined) return;
-        return reply.status(201).send(response);
+        if (response.queued) {
+          return reply.status(202).send({
+            requestId: response.requestId,
+            status: "pending",
+            requiresApproval: true,
+            expiresAt: response.expiresAt,
+          });
+        }
+        const { queued, ...built } = response;
+        return reply.status(201).send(built);
       } catch (err) {
         const rawMsg = err instanceof Error ? err.message : String(err);
         audit({

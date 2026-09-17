@@ -1,14 +1,14 @@
 /**
  * Portal India CPG payouts: USDT wallet debit → on-chain crypto send (TL Pay CPG).
  */
-import type { FastifyInstance, FastifyReply } from "fastify";
+import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { eq } from "drizzle-orm";
 import { db } from "../../src/db/index.js";
-import { merchants, transactions } from "../../src/db/schema/index.js";
+import { transactions } from "../../src/db/schema/index.js";
 import { LIMITS } from "../../src/lib/limits.js";
 import { audit } from "../../src/lib/audit.js";
-import { assertMerchantMarketApiAccess } from "../../src/lib/merchant-markets.js";
+import { requirePortalIndiaAccess } from "../../src/lib/portal-payout-access.js";
 import {
   merchantPaymentFlowErrorResponse,
   sendMerchantFacingReply,
@@ -24,7 +24,8 @@ import {
 } from "../../services/integrations/tylt/cpg-payout.js";
 import { requirePortalPayoutGuards } from "../../src/lib/portal-roles.js";
 import { portalPayoutPinSchema } from "../../src/lib/merchant-payout-pin.js";
-import { withIdempotency } from "../../src/lib/idempotency.js";
+import { withIdempotency, readIdempotencyKey } from "../../src/lib/idempotency.js";
+import { evaluatePortalPayoutGate } from "../../src/lib/payout-approvals.js";
 
 const errorResponse = z.object({
   error: z.string(),
@@ -33,6 +34,13 @@ const errorResponse = z.object({
 });
 
 const merchantFacingError = errorResponse;
+
+const payoutApprovalQueuedResponseSchema = z.object({
+  requestId: z.string(),
+  status: z.literal("pending"),
+  requiresApproval: z.literal(true),
+  expiresAt: z.string(),
+});
 
 const cpgPayoutCreateResponseSchema = z
   .object({
@@ -59,53 +67,6 @@ const cpgPayoutStatusResponseSchema = z.object({
   environment: z.enum(["test", "live"]),
 });
 
-async function requirePortalIndiaAccess(
-  merchantId: string,
-  environment: "test" | "live",
-  reply: FastifyReply
-): Promise<boolean> {
-  const kycRequired = process.env.KYC_REQUIRED === "true";
-
-  if (environment === "live" || kycRequired) {
-    const [merchant] = await db
-      .select({ status: merchants.status, kycStatus: merchants.kycStatus })
-      .from(merchants)
-      .where(eq(merchants.id, merchantId))
-      .limit(1);
-    if (!merchant) {
-      reply.status(401).send({ error: "Unauthorized" });
-      return false;
-    }
-    if (environment === "live" && merchant.status !== "active") {
-      reply.status(403).send({ error: "Forbidden", message: "Merchant account is not active" });
-      return false;
-    }
-    if (merchant.kycStatus !== "verified") {
-      reply.status(403).send({
-        error: "Forbidden",
-        message: "KYC verification required for India payouts",
-      });
-      return false;
-    }
-  }
-
-  const gate = await assertMerchantMarketApiAccess({
-    merchantId,
-    market: "india",
-    kycRequired,
-  });
-  if (!gate.ok) {
-    reply.status(403).send({
-      error: "Forbidden",
-      message: gate.message,
-      code: gate.code,
-    });
-    return false;
-  }
-
-  return true;
-}
-
 export async function registerPortalCpgPayoutRoutes(app: FastifyInstance) {
   app.post(
     "/portal/me/cpg/payout-requests",
@@ -122,6 +83,7 @@ export async function registerPortalCpgPayoutRoutes(app: FastifyInstance) {
         }),
         response: {
           201: cpgPayoutCreateResponseSchema,
+          202: payoutApprovalQueuedResponseSchema,
           400: merchantFacingError,
           401: errorResponse,
           403: errorResponse,
@@ -185,7 +147,7 @@ export async function registerPortalCpgPayoutRoutes(app: FastifyInstance) {
         const response = await withIdempotency(
           { request, reply, merchantId: user.merchantId, body, required: true },
           async () => {
-            const result = await createTyltCpgPayoutRequest({
+            const executorParams = {
               merchantId: user.merchantId,
               environment: body.environment,
               baseUrl,
@@ -194,7 +156,24 @@ export async function registerPortalCpgPayoutRoutes(app: FastifyInstance) {
               networkSymbol: body.networkSymbol,
               address: body.address.trim(),
               beneficiaryDetails: body.beneficiaryDetails,
+            };
+
+            const gate = await evaluatePortalPayoutGate({
+              rail: "cpg",
+              merchantId: user.merchantId,
+              merchantUserId: user.merchantUserId,
+              actorEmail: user.email,
+              environment: body.environment,
+              amount: body.amount,
+              currency: settledCurrency,
+              idempotencyKey: readIdempotencyKey(request)!,
+              executorParams,
             });
+            if (gate.kind === "queued") {
+              return { queued: true as const, requestId: gate.requestId, expiresAt: gate.expiresAt };
+            }
+
+            const result = await createTyltCpgPayoutRequest(executorParams);
 
             const [txRow] = await db
               .select({
@@ -245,11 +224,20 @@ export async function registerPortalCpgPayoutRoutes(app: FastifyInstance) {
               },
             });
 
-            return built;
+            return { queued: false as const, ...built };
           }
         );
         if (response === undefined) return;
-        return reply.status(201).send(response);
+        if (response.queued) {
+          return reply.status(202).send({
+            requestId: response.requestId,
+            status: "pending",
+            requiresApproval: true,
+            expiresAt: response.expiresAt,
+          });
+        }
+        const { queued, ...built } = response;
+        return reply.status(201).send(built);
       } catch (err) {
         const rawMsg = err instanceof Error ? err.message : String(err);
         audit({

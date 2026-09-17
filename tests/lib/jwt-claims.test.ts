@@ -17,6 +17,7 @@ import { strict as assert } from "node:assert";
 import jwt from "jsonwebtoken";
 import {
   __setJwtRevocationLookupForTesting,
+  __setJwtRevocationClaimForTesting,
   clearJwtRevocationCache,
 } from "../../src/lib/jwt-revocation.js";
 
@@ -38,9 +39,11 @@ describe("portal JWT (P4 hardening)", () => {
     if (ORIGINAL_PROVIDER_SECRET == null) delete process.env.PROVIDER_JWT_SECRET;
     else process.env.PROVIDER_JWT_SECRET = ORIGINAL_PROVIDER_SECRET;
     __setJwtRevocationLookupForTesting(null);
+    __setJwtRevocationClaimForTesting(null);
     clearJwtRevocationCache();
     const portal = await import("../../src/lib/portal-auth.js");
     portal.__setPortalSessionVersionLookupForTesting(null);
+    portal.__setPortalStepUpMfaLookupForTesting(null);
   });
 
   it("signed portal token carries iss, aud, jti, sub, exp", async () => {
@@ -146,5 +149,61 @@ describe("portal JWT (P4 hardening)", () => {
     // A step-up token must not work as a normal session.
     const verified = await provider.verifyProviderToken(stepUpToken);
     assert.equal(verified, null);
+  });
+
+  it("portal step-up token is single-use — a second use within its window is rejected", async () => {
+    const portal = await import("../../src/lib/portal-auth.js");
+    portal.__setPortalStepUpMfaLookupForTesting(async () => true);
+
+    const claimed = new Set<string>();
+    __setJwtRevocationClaimForTesting(async (input) => {
+      if (claimed.has(input.jti)) return false;
+      claimed.add(input.jti);
+      return true;
+    });
+
+    const token = portal.signPortalStepUpToken({
+      merchantUserId: "u1",
+      action: "money.write",
+    });
+
+    const user = { merchantUserId: "u1", merchantId: "m1", email: "u@example.com", role: "admin" };
+    function fakeReply() {
+      const calls: Array<{ status: number; body: unknown }> = [];
+      const reply = {
+        status(code: number) {
+          return {
+            send(body: unknown) {
+              calls.push({ status: code, body });
+              return reply;
+            },
+          };
+        },
+        calls,
+      };
+      return reply;
+    }
+    function fakeRequest(headers: Record<string, string>) {
+      return { portalUser: user, headers } as unknown as import("fastify").FastifyRequest;
+    }
+
+    const reply1 = fakeReply();
+    const first = await portal.requirePortalStepUp(
+      fakeRequest({ "x-portal-step-up": token }),
+      reply1 as unknown as import("fastify").FastifyReply,
+      "money.write"
+    );
+    assert.equal(first, true);
+    assert.equal(reply1.calls.length, 0);
+
+    const reply2 = fakeReply();
+    const second = await portal.requirePortalStepUp(
+      fakeRequest({ "x-portal-step-up": token }),
+      reply2 as unknown as import("fastify").FastifyReply,
+      "money.write"
+    );
+    assert.equal(second, false);
+    assert.equal(reply2.calls[0]?.status, 403);
+    assert.match((reply2.calls[0]?.body as { message: string }).message, /already used/i);
   });
 });

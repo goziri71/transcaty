@@ -17,7 +17,8 @@ import { randomUUID } from "node:crypto";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcrypt";
 import { eq, sql } from "drizzle-orm";
-import { isJtiRevoked } from "./jwt-revocation.js";
+import { isJtiRevoked, claimJtiOnce } from "./jwt-revocation.js";
+import { audit } from "./audit.js";
 import { db } from "../db/index.js";
 import { merchantUsers, merchants } from "../db/schema/index.js";
 
@@ -53,6 +54,7 @@ export type PortalStepUpAction =
   | "webhook.write"
   | "money.write"
   | "payout_pin.write"
+  | "payout_approval.review"
   | "audit.export";
 
 declare module "fastify" {
@@ -158,6 +160,28 @@ export function __setPortalSessionVersionLookupForTesting(
 
 export function invalidatePortalSessionVersionCache(userId: string): void {
   sessionVersionCache.delete(userId);
+}
+
+/** Test seam: stub the mfaEnabled lookup used by requirePortalStepUp
+ * without a live DB. */
+type MfaEnabledLookupFn = (merchantUserId: string) => Promise<boolean>;
+let mfaEnabledLookupOverride: MfaEnabledLookupFn | null = null;
+export function __setPortalStepUpMfaLookupForTesting(
+  fn: MfaEnabledLookupFn | null
+): void {
+  mfaEnabledLookupOverride = fn;
+}
+
+async function loadPortalUserMfaEnabled(merchantUserId: string): Promise<boolean> {
+  if (mfaEnabledLookupOverride) {
+    return mfaEnabledLookupOverride(merchantUserId);
+  }
+  const [row] = await db
+    .select({ mfaEnabled: merchantUsers.mfaEnabled })
+    .from(merchantUsers)
+    .where(eq(merchantUsers.id, merchantUserId))
+    .limit(1);
+  return row?.mfaEnabled ?? false;
 }
 
 async function loadSessionVersion(userId: string): Promise<number | null> {
@@ -306,18 +330,22 @@ export function signPortalStepUpToken(payload: {
 export function verifyPortalStepUpToken(
   token: string,
   action: PortalStepUpAction
-): { merchantUserId: string; jti: string } | null {
+): { merchantUserId: string; jti: string; exp: number | null } | null {
   try {
     const decoded = jwt.verify(token, getJwtSecret(), {
       audience: PORTAL_STEP_UP_AUDIENCE,
       issuer: PORTAL_JWT_ISSUER,
       clockTolerance: CLOCK_TOLERANCE_SEC,
-    }) as { merchantUserId: string; action: PortalStepUpAction; jti?: string };
+    }) as { merchantUserId: string; action: PortalStepUpAction; jti?: string; exp?: number };
     // Exact match only — a step-up token proven for one sensitive action must
     // never authorize a different one (see security review: scoping bypass).
     if (decoded.action !== action) return null;
     if (!decoded.merchantUserId) return null;
-    return { merchantUserId: decoded.merchantUserId, jti: decoded.jti ?? "" };
+    return {
+      merchantUserId: decoded.merchantUserId,
+      jti: decoded.jti ?? "",
+      exp: typeof decoded.exp === "number" ? decoded.exp : null,
+    };
   } catch {
     return null;
   }
@@ -339,13 +367,9 @@ export async function requirePortalStepUp(
     return false;
   }
 
-  const [row] = await db
-    .select({ mfaEnabled: merchantUsers.mfaEnabled })
-    .from(merchantUsers)
-    .where(eq(merchantUsers.id, user.merchantUserId))
-    .limit(1);
+  const mfaEnabled = await loadPortalUserMfaEnabled(user.merchantUserId);
 
-  if (!row?.mfaEnabled) {
+  if (!mfaEnabled) {
     return true;
   }
 
@@ -371,6 +395,36 @@ export async function requirePortalStepUp(
     });
     return false;
   }
+
+  // Single-use: claim the token's jti so a second call within its 5-minute
+  // window (e.g. an intercepted header replayed by an attacker) is rejected
+  // instead of silently authorizing another sensitive action.
+  if (verified.jti) {
+    const claimed = await claimJtiOnce({
+      realm: "portal",
+      jti: verified.jti,
+      expiresAt: verified.exp ? new Date(verified.exp * 1000) : new Date(Date.now() + 5 * 60 * 1000),
+      subjectId: user.merchantUserId,
+      reason: "step_up_consumed",
+    });
+    if (!claimed) {
+      audit({
+        action: "auth.failed",
+        merchantId: user.merchantId,
+        merchantUserId: user.merchantUserId,
+        actorEmail: user.email,
+        meta: { realm: "portal", reason: "step_up_replayed", stepUpAction: action },
+      });
+      reply.status(403).send({
+        error: "Forbidden",
+        message: "Step-up token already used",
+        stepUpRequired: true,
+        action,
+      });
+      return false;
+    }
+  }
+
   return true;
 }
 

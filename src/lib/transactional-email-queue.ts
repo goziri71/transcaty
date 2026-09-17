@@ -73,6 +73,16 @@ export type TransactionalEmailPayload =
       amount: string;
       paidAmount?: string;
       platformOrderId: string | null;
+    }
+  | {
+      kind: "portal_payout_approval_pending";
+      to: string;
+      rail: string;
+      amount: string;
+      currency: string;
+      requestId: string;
+      requestedByEmail: string;
+      expiresAt: string;
     };
 
 export async function queueTransactionalEmail(payload: TransactionalEmailPayload): Promise<void> {
@@ -235,6 +245,35 @@ export async function deliverTransactionalEmail(payload: TransactionalEmailPaylo
       `.trim(),
     });
     if (!ok) throw new Error("portal_payout_pin_reset email delivery failed");
+    return;
+  }
+
+  if (payload.kind === "portal_payout_approval_pending") {
+    const whenFormatted = formatLoginTimestamp(payload.expiresAt);
+    const ok = await sendTransactionalEmail({
+      to: payload.to,
+      subject: `Payout approval needed – ${appName}`,
+      text: [
+        `${payload.requestedByEmail} submitted a ${payload.rail.toUpperCase()} payout of ${payload.amount} ${payload.currency} that needs a second admin/finance approval before it executes.`,
+        "",
+        `Request ID: ${payload.requestId}`,
+        `Expires: ${whenFormatted}`,
+        "",
+        `Review it in your ${appName} merchant portal under pending payout approvals.`,
+      ].join("\n"),
+      html: `
+        <div style="font-family: system-ui, sans-serif; max-width: 480px; padding: 24px;">
+          <h2 style="margin: 0 0 16px; font-size: 18px;">Payout approval needed</h2>
+          <p style="margin: 0 0 16px; color: #374151;">${escapeHtml(payload.requestedByEmail)} submitted a ${escapeHtml(payload.rail.toUpperCase())} payout of <strong>${escapeHtml(payload.amount)} ${escapeHtml(payload.currency)}</strong> that needs a second admin/finance approval before it executes.</p>
+          <div style="background: #f3f4f6; padding: 16px; border-radius: 8px; margin: 16px 0;">
+            <p style="margin: 0 0 8px; font-size: 14px;"><strong>Request ID:</strong> ${escapeHtml(payload.requestId)}</p>
+            <p style="margin: 0; font-size: 14px;"><strong>Expires:</strong> ${escapeHtml(whenFormatted)}</p>
+          </div>
+          <p style="margin: 16px 0 0; color: #374151;">Review it in your ${appName} merchant portal under pending payout approvals.</p>
+        </div>
+      `.trim(),
+    });
+    if (!ok) throw new Error("portal_payout_approval_pending email delivery failed");
     return;
   }
 

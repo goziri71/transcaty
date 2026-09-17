@@ -82,7 +82,13 @@ export type AuditAction =
   | "merchant.payout_pin.reset_requested"
   | "merchant.payout_pin.failed"
   | "portal.h2h_payin.created"
-  | "portal.h2h_payin.confirmed";
+  | "portal.h2h_payin.confirmed"
+  | "portal.payout_velocity.exceeded_log_only"
+  | "portal.payout_approval.queued"
+  | "portal.payout_approval.approved"
+  | "portal.payout_approval.rejected"
+  | "portal.payout_approval.execution_failed"
+  | "portal.payout_approval.expired";
 
 export interface AuditEntry {
   action: AuditAction;

@@ -21,6 +21,7 @@
     "db:migrate-api-key-hint": "tsx scripts/migrate-api-key-hint.ts",
     "db:migrate-provider-session-version": "tsx scripts/migrate-provider-session-version.ts",
     "db:migrate-merchant-compliance": "tsx scripts/migrate-merchant-compliance.ts",
+    "db:migrate-portal-payout-approvals": "tsx scripts/migrate-portal-payout-approvals.ts",
     "db:push": "drizzle-kit push",
     "db:seed-merchant": "tsx scripts/seed-merchant.ts",
     "db:seed-portal-user": "tsx scripts/seed-portal-user.ts",

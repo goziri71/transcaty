@@ -1,15 +1,15 @@
 /**
  * Portal Europe payouts: USDC wallet debit → EUR bank beneficiary (TL Pay Open Banking).
  */
-import type { FastifyInstance, FastifyReply } from "fastify";
+import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { eq } from "drizzle-orm";
 import { db } from "../../src/db/index.js";
-import { merchants, transactions } from "../../src/db/schema/index.js";
+import { transactions } from "../../src/db/schema/index.js";
 import { LIMITS } from "../../src/lib/limits.js";
 import { validateMerchantReturnUrl } from "../../src/lib/merchant-return-url.js";
 import { audit } from "../../src/lib/audit.js";
-import { assertMerchantMarketApiAccess } from "../../src/lib/merchant-markets.js";
+import { requirePortalEuropeAccess } from "../../src/lib/portal-payout-access.js";
 import {
   merchantPaymentFlowErrorResponse,
   sendMerchantFacingReply,
@@ -25,13 +25,10 @@ import {
   getMerchantEurPayoutStatus,
 } from "../../services/integrations/tylt/eur-payout.js";
 import { pickTyltJsonPrimaryMessage } from "../../services/integrations/tylt/h2h-upi.js";
-import { requirePortalPayoutGuards, requirePortalMoneyRole } from "../../src/lib/portal-roles.js";
-import {
-  portalPayoutPinSchema,
-  requireMerchantPayoutPin,
-} from "../../src/lib/merchant-payout-pin.js";
-import { requirePortalStepUp } from "../../src/lib/portal-auth.js";
-import { withIdempotency } from "../../src/lib/idempotency.js";
+import { requirePortalPayoutGuards } from "../../src/lib/portal-roles.js";
+import { portalPayoutPinSchema } from "../../src/lib/merchant-payout-pin.js";
+import { withIdempotency, readIdempotencyKey } from "../../src/lib/idempotency.js";
+import { evaluatePortalPayoutGate } from "../../src/lib/payout-approvals.js";
 
 const errorResponse = z.object({
   error: z.string(),
@@ -40,6 +37,27 @@ const errorResponse = z.object({
 });
 
 const merchantFacingError = errorResponse;
+
+/** Preserves the exact status/code mapping the approve route already had
+ * for upstream rejections, without forcing UpstreamProviderClientError's
+ * fixed 400-only mapping onto a route that also needs a 503 branch. */
+class EurPayoutApproveUpstreamError extends Error {
+  constructor(
+    message: string,
+    public readonly httpStatus: 400 | 503,
+    public readonly code: "payment_unavailable" | "payment_provider_rejected"
+  ) {
+    super(message);
+    this.name = "EurPayoutApproveUpstreamError";
+  }
+}
+
+const payoutApprovalQueuedResponseSchema = z.object({
+  requestId: z.string(),
+  status: z.literal("pending"),
+  requiresApproval: z.literal(true),
+  expiresAt: z.string(),
+});
 
 const tyltEurMerchantDetailsBodySchema = z
   .object({
@@ -79,53 +97,6 @@ const eurPayoutStatusResponseSchema = z.object({
   environment: z.enum(["test", "live"]),
 });
 
-async function requirePortalEuropeAccess(
-  merchantId: string,
-  environment: "test" | "live",
-  reply: FastifyReply
-): Promise<boolean> {
-  const kycRequired = process.env.KYC_REQUIRED === "true";
-
-  if (environment === "live" || kycRequired) {
-    const [merchant] = await db
-      .select({ status: merchants.status, kycStatus: merchants.kycStatus })
-      .from(merchants)
-      .where(eq(merchants.id, merchantId))
-      .limit(1);
-    if (!merchant) {
-      reply.status(401).send({ error: "Unauthorized" });
-      return false;
-    }
-    if (environment === "live" && merchant.status !== "active") {
-      reply.status(403).send({ error: "Forbidden", message: "Merchant account is not active" });
-      return false;
-    }
-    if (merchant.kycStatus !== "verified") {
-      reply.status(403).send({
-        error: "Forbidden",
-        message: "KYC verification required for Europe payouts",
-      });
-      return false;
-    }
-  }
-
-  const gate = await assertMerchantMarketApiAccess({
-    merchantId,
-    market: "europe",
-    kycRequired,
-  });
-  if (!gate.ok) {
-    reply.status(403).send({
-      error: "Forbidden",
-      message: gate.message,
-      code: gate.code,
-    });
-    return false;
-  }
-
-  return true;
-}
-
 export async function registerPortalEurPayoutRoutes(app: FastifyInstance) {
   app.post(
     "/portal/me/eur/payout-instances",
@@ -146,6 +117,7 @@ export async function registerPortalEurPayoutRoutes(app: FastifyInstance) {
         }),
         response: {
           201: eurPayoutCreateResponseSchema,
+          202: payoutApprovalQueuedResponseSchema,
           400: merchantFacingError,
           401: errorResponse,
           403: errorResponse,
@@ -195,12 +167,12 @@ export async function registerPortalEurPayoutRoutes(app: FastifyInstance) {
         const response = await withIdempotency(
           { request, reply, merchantId: user.merchantId, body, required: true },
           async () => {
-            const result = await createTyltEurPayoutInstance({
+            const executorParams = {
               merchantId: user.merchantId,
               environment: body.environment,
               baseUrl,
               amount: body.amount,
-              currencySymbol: "EUR",
+              currencySymbol: "EUR" as const,
               returnUrl: returnCheck.normalized!,
               userDetails: body.userDetails ?? {},
               payeeDetails: body.payeeDetails,
@@ -208,7 +180,24 @@ export async function registerPortalEurPayoutRoutes(app: FastifyInstance) {
               merchantUrl: body.merchantUrl,
               merchantDetails: body.merchantDetails,
               cryptoUi: body.cryptoUi,
+            };
+
+            const gate = await evaluatePortalPayoutGate({
+              rail: "eur",
+              merchantId: user.merchantId,
+              merchantUserId: user.merchantUserId,
+              actorEmail: user.email,
+              environment: body.environment,
+              amount: body.amount,
+              currency: "EUR",
+              idempotencyKey: readIdempotencyKey(request)!,
+              executorParams,
             });
+            if (gate.kind === "queued") {
+              return { queued: true as const, requestId: gate.requestId, expiresAt: gate.expiresAt };
+            }
+
+            const result = await createTyltEurPayoutInstance(executorParams);
 
             const [txRow] = await db
               .select({
@@ -262,11 +251,20 @@ export async function registerPortalEurPayoutRoutes(app: FastifyInstance) {
               },
             });
 
-            return built;
+            return { queued: false as const, ...built };
           }
         );
         if (response === undefined) return;
-        return reply.status(201).send(response);
+        if (response.queued) {
+          return reply.status(202).send({
+            requestId: response.requestId,
+            status: "pending",
+            requiresApproval: true,
+            expiresAt: response.expiresAt,
+          });
+        }
+        const { queued, ...built } = response;
+        return reply.status(201).send(built);
       } catch (err) {
         const rawMsg = err instanceof Error ? err.message : String(err);
         audit({
@@ -311,12 +309,10 @@ export async function registerPortalEurPayoutRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const user = request.portalUser;
       if (!user) return reply.status(401).send({ error: "Unauthorized" });
-      if (!(await requirePortalMoneyRole(request, reply))) return;
-      if (!(await requirePortalStepUp(request, reply, "money.write"))) return;
-      if (!(await requireMerchantPayoutPin(request, reply, (request.body as { pin?: string })?.pin))) return;
-
       const { transactionId } = request.params as { transactionId: string };
       const { environment } = request.query as { environment: "test" | "live" };
+      const body = request.body as { pin: string };
+      if (!(await requirePortalPayoutGuards(request, reply, body.pin))) return;
 
       if (!(await requirePortalEuropeAccess(user.merchantId, environment, reply))) return;
 
@@ -330,56 +326,69 @@ export async function registerPortalEurPayoutRoutes(app: FastifyInstance) {
       }
 
       try {
-        const res = await approveTyltEurPayout({
-          environment,
-          transactionId,
-          merchantId: user.merchantId,
-        });
-        if (res.status >= 400) {
-          const merchantMsg =
-            pickTyltJsonPrimaryMessage(res.json) ??
-            (res.status >= 500
-              ? "Payout approval is temporarily unavailable. Try again shortly."
-              : "Payout approval rejected");
-          request.log.warn(
-            {
+        const response = await withIdempotency(
+          {
+            request,
+            reply,
+            merchantId: user.merchantId,
+            body: { transactionId, environment, pin: body.pin },
+            required: true,
+          },
+          async () => {
+            const res = await approveTyltEurPayout({
+              environment,
               transactionId,
-              status: res.status,
-              upstreamMessage: merchantMsg,
               merchantId: user.merchantId,
-            },
-            "portal eur payout approve rejected"
-          );
-          if (res.status >= 500) {
-            return reply.status(503).send({
-              error: "Service Unavailable",
-              message: merchantMsg,
-              code: "payment_unavailable",
             });
+            if (res.status >= 400) {
+              const merchantMsg =
+                pickTyltJsonPrimaryMessage(res.json) ??
+                (res.status >= 500
+                  ? "Payout approval is temporarily unavailable. Try again shortly."
+                  : "Payout approval rejected");
+              request.log.warn(
+                {
+                  transactionId,
+                  status: res.status,
+                  upstreamMessage: merchantMsg,
+                  merchantId: user.merchantId,
+                },
+                "portal eur payout approve rejected"
+              );
+              throw new EurPayoutApproveUpstreamError(
+                merchantMsg,
+                res.status >= 500 ? 503 : 400,
+                res.status >= 500 ? "payment_unavailable" : "payment_provider_rejected"
+              );
+            }
+
+            audit({
+              action: "portal.eur_payout.approved",
+              merchantId: user.merchantId,
+              merchantUserId: user.merchantUserId,
+              actorEmail: user.email,
+              resource: transactionId,
+              meta: { environment },
+            });
+
+            return { transactionId, acknowledged: true, environment };
           }
-          return reply.status(400).send({
-            error: "Bad Request",
-            message: merchantMsg,
-            code: "payment_provider_rejected",
-          });
-        }
-
-        audit({
-          action: "portal.eur_payout.approved",
-          merchantId: user.merchantId,
-          merchantUserId: user.merchantUserId,
-          actorEmail: user.email,
-          resource: transactionId,
-          meta: { environment },
-        });
-
-        return { transactionId, acknowledged: true, environment };
+        );
+        if (response === undefined) return;
+        return response;
       } catch (err) {
         const rawMsg = err instanceof Error ? err.message : String(err);
         request.log.warn(
           { logDetail: rawMsg, merchantId: user.merchantId, transactionId },
           "portal eur payout approve failed"
         );
+        if (err instanceof EurPayoutApproveUpstreamError) {
+          return reply.status(err.httpStatus).send({
+            error: err.httpStatus >= 500 ? "Service Unavailable" : "Bad Request",
+            message: err.message,
+            code: err.code,
+          });
+        }
         const mapped = merchantPaymentFlowErrorResponse(err);
         sendMerchantFacingReply(reply, mapped);
         return;

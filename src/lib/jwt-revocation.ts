@@ -99,14 +99,14 @@ export async function isJtiRevoked(realm: "portal" | "provider", jti: string | u
   return revoked;
 }
 
-export async function revokeJti(input: {
+async function insertRevocationClaim(input: {
   realm: "portal" | "provider";
   jti: string;
   expiresAt: Date;
   subjectId?: string | null;
   reason?: string;
-}): Promise<void> {
-  await db
+}): Promise<boolean> {
+  const rows = await db
     .insert(jwtRevocations)
     .values({
       jti: input.jti,
@@ -115,7 +115,8 @@ export async function revokeJti(input: {
       reason: input.reason ?? null,
       expiresAt: input.expiresAt,
     })
-    .onConflictDoNothing({ target: jwtRevocations.jti });
+    .onConflictDoNothing({ target: jwtRevocations.jti })
+    .returning({ jti: jwtRevocations.jti });
   // Invalidate any negative cache entry so the next read sees the
   // revocation immediately on this instance. Other instances pick it
   // up within `NEGATIVE_TTL_MS`.
@@ -123,6 +124,49 @@ export async function revokeJti(input: {
     revoked: true,
     expiresAt: Date.now() + POSITIVE_TTL_MS,
   });
+  return rows.length > 0;
+}
+
+export async function revokeJti(input: {
+  realm: "portal" | "provider";
+  jti: string;
+  expiresAt: Date;
+  subjectId?: string | null;
+  reason?: string;
+}): Promise<void> {
+  await insertRevocationClaim(input);
+}
+
+/** Test seam: override the atomic claim used by claimJtiOnce. Production
+ * code never calls this; tests use it to stub the DB layer. */
+type ClaimFn = (input: {
+  realm: "portal" | "provider";
+  jti: string;
+  expiresAt: Date;
+  subjectId?: string | null;
+  reason?: string;
+}) => Promise<boolean>;
+let claimOverride: ClaimFn | null = null;
+export function __setJwtRevocationClaimForTesting(fn: ClaimFn | null): void {
+  claimOverride = fn;
+}
+
+/**
+ * Atomically claims a jti for one-time use (e.g. a step-up MFA token).
+ * Returns `true` only on the call that actually performs the insert;
+ * `false` means the jti was already claimed by an earlier call — the
+ * caller should treat this as a replay and reject the request. Race-safe:
+ * relies on the `jwt_revocations` primary key, not a read-then-write.
+ */
+export async function claimJtiOnce(input: {
+  realm: "portal" | "provider";
+  jti: string;
+  expiresAt: Date;
+  subjectId?: string | null;
+  reason?: string;
+}): Promise<boolean> {
+  if (claimOverride) return claimOverride(input);
+  return insertRevocationClaim(input);
 }
 
 /** Test/debug helper. */

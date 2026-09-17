@@ -5,7 +5,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { eq, and, count, desc, or, like, not } from "drizzle-orm";
 import { db } from "../../src/db/index.js";
-import { merchants, transactions } from "../../src/db/schema/index.js";
+import { transactions } from "../../src/db/schema/index.js";
 import {
   transferToCustomer,
   refundToCustomer,
@@ -34,6 +34,9 @@ import {
 } from "../../src/lib/billing/transaction-fee-breakdown.js";
 import { requirePortalMoneyGuards, requirePortalPayoutGuards } from "../../src/lib/portal-roles.js";
 import { portalPayoutPinSchema } from "../../src/lib/merchant-payout-pin.js";
+import { withIdempotency, readIdempotencyKey } from "../../src/lib/idempotency.js";
+import { requirePortalBangladeshAccess } from "../../src/lib/portal-payout-access.js";
+import { evaluatePortalPayoutGate } from "../../src/lib/payout-approvals.js";
 
 const transactionRailFieldsSchema = z.object({
   currency: z.string(),
@@ -53,6 +56,7 @@ function portalTransactionRailFields(row: {
   });
 }
 
+
 const errorResponse = z.object({
   error: z.string(),
   message: z.string().optional(),
@@ -70,6 +74,13 @@ const merchantFacingPayoutError = payoutErrorResponse.extend({
 
 const merchantFacingOperationError = errorResponse.extend({
   code: z.string().optional(),
+});
+
+const payoutApprovalQueuedResponseSchema = z.object({
+  requestId: z.string(),
+  status: z.literal("pending"),
+  requiresApproval: z.literal(true),
+  expiresAt: z.string(),
 });
 
 const metadataSchema = z.record(z.any());
@@ -425,6 +436,7 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
               estimatedCompletion: z.string().nullable(),
             })
             .merge(transactionFeeBreakdownFieldsSchema.partial()),
+          202: payoutApprovalQueuedResponseSchema,
           400: payoutErrorResponse,
           401: errorResponse,
           403: errorResponse,
@@ -467,67 +479,88 @@ export async function registerPortalTransactionsRoutes(app: FastifyInstance) {
           .send({ error: "Bad Request", message: `Amount must be between ${LIMITS.payout.min} and ${LIMITS.payout.max} BDT` });
       }
 
-      if (body.environment === "live") {
-        const [merchant] = await db
-          .select({ status: merchants.status, kycStatus: merchants.kycStatus })
-          .from(merchants)
-          .where(eq(merchants.id, user.merchantId))
-          .limit(1);
-        if (!merchant) return reply.status(401).send({ error: "Unauthorized" });
-        if (merchant.status !== "active") {
-          return reply.status(403).send({ error: "Forbidden", message: "Merchant account is not active" });
-        }
-        if (merchant.kycStatus !== "verified") {
-          return reply.status(403).send({ error: "Forbidden", message: "KYC verification required for live payouts" });
-        }
-      }
+      if (!(await requirePortalBangladeshAccess(user.merchantId, body.environment, reply))) return;
 
       const baseUrl = process.env.APP_BASE_URL ?? `http://localhost:${process.env.PORT ?? 3000}`;
       try {
-        const result = await createPayoutOrder({
-          merchantId: user.merchantId,
-          environment: body.environment,
-          amount: body.amount,
-          baseUrl,
-          benificiaryAccountInfo: body.benificiaryAccountInfo,
-          cardHolderInfo: body.cardHolderInfo,
-          portalActor: { merchantUserId: user.merchantUserId, email: user.email },
-        });
-
-        queueTransactionalEmail({
-          kind: "merchant_portal_payout",
-          to: user.email,
-          amount: body.amount,
-          transactionId: result.transactionId,
-          recipientMasked: maskRecipient(body.benificiaryAccountInfo.number),
-        }).catch(() => {});
-
-        const breakdown = await buildTransactionFeeBreakdown({
-          merchantId: user.merchantId,
-          environment: body.environment,
-          transactionId: result.transactionId,
-          type: "payout",
-          status: "pending",
-          amount: body.amount,
-          currency: "BDT",
-          provider: "payok-bd-payout",
-        });
-
-        return reply.status(201).send(
-          attachFeeBreakdown(
-            {
-              transactionId: result.transactionId,
-              reference: result.transactionId,
-              status: result.status ?? "pending",
-              amount: body.amount,
-              platformOrderId: result.platformOrderId ?? null,
+        const response = await withIdempotency(
+          { request, reply, merchantId: user.merchantId, body, required: true },
+          async () => {
+            const executorParams = {
+              merchantId: user.merchantId,
               environment: body.environment,
-              recipient: { masked: maskRecipient(body.benificiaryAccountInfo.number) },
-              estimatedCompletion: null,
-            },
-            breakdown
-          )
+              amount: body.amount,
+              baseUrl,
+              benificiaryAccountInfo: body.benificiaryAccountInfo,
+              cardHolderInfo: body.cardHolderInfo,
+              portalActor: { merchantUserId: user.merchantUserId, email: user.email },
+            };
+
+            const gate = await evaluatePortalPayoutGate({
+              rail: "bd",
+              merchantId: user.merchantId,
+              merchantUserId: user.merchantUserId,
+              actorEmail: user.email,
+              environment: body.environment,
+              amount: body.amount,
+              currency: "BDT",
+              idempotencyKey: readIdempotencyKey(request)!,
+              executorParams,
+            });
+            if (gate.kind === "queued") {
+              return { queued: true as const, requestId: gate.requestId, expiresAt: gate.expiresAt };
+            }
+
+            const result = await createPayoutOrder(executorParams);
+
+            queueTransactionalEmail({
+              kind: "merchant_portal_payout",
+              to: user.email,
+              amount: body.amount,
+              transactionId: result.transactionId,
+              recipientMasked: maskRecipient(body.benificiaryAccountInfo.number),
+            }).catch(() => {});
+
+            const breakdown = await buildTransactionFeeBreakdown({
+              merchantId: user.merchantId,
+              environment: body.environment,
+              transactionId: result.transactionId,
+              type: "payout",
+              status: "pending",
+              amount: body.amount,
+              currency: "BDT",
+              provider: "payok-bd-payout",
+            });
+
+            return {
+              queued: false as const,
+              ...attachFeeBreakdown(
+                {
+                  transactionId: result.transactionId,
+                  reference: result.transactionId,
+                  status: result.status ?? "pending",
+                  amount: body.amount,
+                  platformOrderId: result.platformOrderId ?? null,
+                  environment: body.environment,
+                  recipient: { masked: maskRecipient(body.benificiaryAccountInfo.number) },
+                  estimatedCompletion: null,
+                },
+                breakdown
+              ),
+            };
+          }
         );
+        if (response === undefined) return;
+        if (response.queued) {
+          return reply.status(202).send({
+            requestId: response.requestId,
+            status: "pending",
+            requiresApproval: true,
+            expiresAt: response.expiresAt,
+          });
+        }
+        const { queued, ...built } = response;
+        return reply.status(201).send(built);
       } catch (err) {
         const rawMsg = err instanceof Error ? err.message : String(err);
         audit({

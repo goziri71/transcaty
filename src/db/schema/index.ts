@@ -828,3 +828,62 @@ export const providerActionRequests = pgTable(
     index("provider_action_requests_created_at_idx").on(t.createdAt),
   ]
 );
+
+export const portalPayoutRailEnum = pgEnum("portal_payout_rail", ["eur", "cpg", "br", "ngn", "bd"]);
+export const portalPayoutApprovalStatusEnum = pgEnum("portal_payout_approval_status", [
+  "pending",
+  "approved",
+  "rejected",
+  "executed",
+  "expired",
+  "execution_failed",
+  "cancelled",
+]);
+
+/**
+ * Maker-checker approval queue for large merchant-portal payouts. A row is
+ * created instead of executing the payout when evaluatePortalPayoutGate
+ * (src/lib/payout-approvals.ts) decides the request needs a second
+ * admin/finance user's sign-off (amount over threshold, or platform
+ * payout-velocity review mode). `payload` holds the full validated
+ * request body so the original rail executor can be re-invoked once
+ * approved, without re-parsing anything the maker didn't actually submit.
+ */
+export const portalPayoutApprovalRequests = pgTable(
+  "portal_payout_approval_requests",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    rail: portalPayoutRailEnum("rail").notNull(),
+    status: portalPayoutApprovalStatusEnum("status").notNull().default("pending"),
+    merchantId: uuid("merchant_id")
+      .notNull()
+      .references(() => merchants.id, { onDelete: "cascade" }),
+    environment: payokEnvironmentEnum("environment").notNull().default("test"),
+    requestedBy: uuid("requested_by").references(() => merchantUsers.id, { onDelete: "set null" }),
+    approvedBy: uuid("approved_by").references(() => merchantUsers.id, { onDelete: "set null" }),
+    idempotencyKey: text("idempotency_key").notNull(),
+    bodyHash: text("body_hash").notNull(),
+    payload: text("payload").notNull(), // JSON string — full validated request body
+    amount: decimal("amount", { precision: 18, scale: 2 }).notNull(),
+    currency: text("currency").notNull(),
+    triggerReason: text("trigger_reason").notNull(), // 'dual_control_threshold' | 'velocity_ceiling'
+    reason: text("reason"),
+    rejectedReason: text("rejected_reason"),
+    lastError: text("last_error"),
+    executedTransactionId: uuid("executed_transaction_id").references(() => transactions.id, {
+      onDelete: "set null",
+    }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    executedAt: timestamp("executed_at", { withTimezone: true }),
+    rejectedAt: timestamp("rejected_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique("portal_payout_approval_requests_merchant_idem_uniq").on(t.merchantId, t.idempotencyKey),
+    index("portal_payout_approval_requests_merchant_status_idx").on(t.merchantId, t.status),
+    index("portal_payout_approval_requests_status_idx").on(t.status),
+    index("portal_payout_approval_requests_requested_by_idx").on(t.requestedBy),
+    index("portal_payout_approval_requests_expires_at_idx").on(t.expiresAt),
+  ]
+);

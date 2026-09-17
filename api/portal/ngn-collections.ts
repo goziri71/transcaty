@@ -2,11 +2,8 @@
  * Portal NGN (Tekko): permanent per-merchant VA + bank payout.
  * Settle currency is native NGN. Live-only upstream. Isolated from PYUSD / PayOK / Tylt.
  */
-import type { FastifyInstance, FastifyReply } from "fastify";
+import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { eq } from "drizzle-orm";
-import { db } from "../../src/db/index.js";
-import { merchants } from "../../src/db/schema/index.js";
 import {
   createTekkoNgnPayout,
   getOrProvisionMerchantNgnVa,
@@ -20,7 +17,7 @@ import {
 } from "../../services/integrations/tekko/index.js";
 import { LIMITS } from "../../src/lib/limits.js";
 import { audit } from "../../src/lib/audit.js";
-import { assertMerchantMarketApiAccess } from "../../src/lib/merchant-markets.js";
+import { requirePortalNgnAccess } from "../../src/lib/portal-payout-access.js";
 import {
   merchantPaymentFlowErrorResponse,
   sendMerchantFacingReply,
@@ -33,7 +30,8 @@ import {
 import { requirePortalMoneyGuards, requirePortalPayoutGuards, requirePortalMoneyRole } from "../../src/lib/portal-roles.js";
 import { portalPayoutPinSchema } from "../../src/lib/merchant-payout-pin.js";
 import { PayoutCreationError } from "../../services/domestic/bangladesh/payout.js";
-import { withIdempotency } from "../../src/lib/idempotency.js";
+import { withIdempotency, readIdempotencyKey } from "../../src/lib/idempotency.js";
+import { evaluatePortalPayoutGate } from "../../src/lib/payout-approvals.js";
 
 const errorResponse = z.object({
   error: z.string(),
@@ -41,6 +39,13 @@ const errorResponse = z.object({
 });
 const merchantFacingError = errorResponse.extend({
   code: z.string().optional(),
+});
+
+const payoutApprovalQueuedResponseSchema = z.object({
+  requestId: z.string(),
+  status: z.literal("pending"),
+  requiresApproval: z.literal(true),
+  expiresAt: z.string(),
 });
 
 const ngnVaResponseSchema = z.object({
@@ -66,58 +71,6 @@ function maskAccountNumber(value: string): string {
   const v = value.replace(/\s/g, "");
   if (v.length <= 4) return `****${v}`;
   return `****${v.slice(-4)}`;
-}
-
-async function requirePortalNgnAccess(
-  merchantId: string,
-  environment: "test" | "live",
-  reply: FastifyReply
-): Promise<boolean> {
-  if (environment === "test") {
-    reply.status(503).send({
-      error: "Service Unavailable",
-      message: "NGN is only available in the live environment",
-      code: "payment_unavailable",
-    });
-    return false;
-  }
-
-  const kycRequired = process.env.KYC_REQUIRED === "true";
-
-  if (environment === "live" || kycRequired) {
-    const [merchant] = await db
-      .select({ status: merchants.status, kycStatus: merchants.kycStatus })
-      .from(merchants)
-      .where(eq(merchants.id, merchantId))
-      .limit(1);
-    if (!merchant) {
-      reply.status(401).send({ error: "Unauthorized" });
-      return false;
-    }
-    if (environment === "live" && merchant.status !== "active") {
-      reply.status(403).send({ error: "Forbidden", message: "Merchant account is not active" });
-      return false;
-    }
-    if (merchant.kycStatus !== "verified") {
-      reply.status(403).send({
-        error: "Forbidden",
-        message: "KYC verification required for NGN",
-      });
-      return false;
-    }
-  }
-
-  const gate = await assertMerchantMarketApiAccess({
-    merchantId,
-    market: "nigeria",
-    kycRequired,
-  });
-  if (!gate.ok) {
-    reply.status(403).send({ error: "Forbidden", message: gate.message, code: gate.code });
-    return false;
-  }
-
-  return true;
 }
 
 export async function registerPortalNgnRoutes(app: FastifyInstance) {
@@ -345,6 +298,7 @@ export async function registerPortalNgnRoutes(app: FastifyInstance) {
               recipient: z.object({ masked: z.string() }),
             })
             .merge(transactionFeeBreakdownFieldsSchema.partial()),
+          202: payoutApprovalQueuedResponseSchema,
           400: merchantFacingError,
           401: errorResponse,
           403: errorResponse,
@@ -382,7 +336,7 @@ export async function registerPortalNgnRoutes(app: FastifyInstance) {
         const response = await withIdempotency(
           { request, reply, merchantId: user.merchantId, body, required: true },
           async () => {
-            const result = await createTekkoNgnPayout({
+            const executorParams = {
               merchantId: user.merchantId,
               environment: body.environment,
               amount: body.amount,
@@ -390,7 +344,24 @@ export async function registerPortalNgnRoutes(app: FastifyInstance) {
               description: body.description,
               merchantReference: body.merchantReference,
               portalActor: { merchantUserId: user.merchantUserId, email: user.email },
+            };
+
+            const gate = await evaluatePortalPayoutGate({
+              rail: "ngn",
+              merchantId: user.merchantId,
+              merchantUserId: user.merchantUserId,
+              actorEmail: user.email,
+              environment: body.environment,
+              amount: body.amount,
+              currency: "NGN",
+              idempotencyKey: readIdempotencyKey(request)!,
+              executorParams,
             });
+            if (gate.kind === "queued") {
+              return { queued: true as const, requestId: gate.requestId, expiresAt: gate.expiresAt };
+            }
+
+            const result = await createTekkoNgnPayout(executorParams);
             const breakdown = await buildTransactionFeeBreakdown({
               merchantId: user.merchantId,
               environment: body.environment,
@@ -401,22 +372,34 @@ export async function registerPortalNgnRoutes(app: FastifyInstance) {
               currency: "NGN",
               provider: TEKKO_NGN_PAYOUT_PROVIDER,
             });
-            return attachFeeBreakdown(
-              {
-                transactionId: result.transactionId,
-                reference: result.reference,
-                status: result.status,
-                amount: result.amount,
-                currency: "NGN" as const,
-                environment: body.environment,
-                recipient: { masked: maskAccountNumber(body.beneficiary.accountNumber) },
-              },
-              breakdown
-            );
+            return {
+              queued: false as const,
+              ...attachFeeBreakdown(
+                {
+                  transactionId: result.transactionId,
+                  reference: result.reference,
+                  status: result.status,
+                  amount: result.amount,
+                  currency: "NGN" as const,
+                  environment: body.environment,
+                  recipient: { masked: maskAccountNumber(body.beneficiary.accountNumber) },
+                },
+                breakdown
+              ),
+            };
           }
         );
         if (response === undefined) return;
-        return reply.status(201).send(response);
+        if (response.queued) {
+          return reply.status(202).send({
+            requestId: response.requestId,
+            status: "pending",
+            requiresApproval: true,
+            expiresAt: response.expiresAt,
+          });
+        }
+        const { queued, ...built } = response;
+        return reply.status(201).send(built);
       } catch (err) {
         const rawMsg = err instanceof Error ? err.message : String(err);
         const meta: Record<string, unknown> = { message: rawMsg, market: "nigeria" };
