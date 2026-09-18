@@ -78,6 +78,31 @@ describe("Tekko NGN withdraw fee extraction", () => {
     assert.equal(fees.tekkoFee, "0.50");
   });
 
+  it("prefers totalDebited − amount over a smaller tekkoFee field", () => {
+    const fees = extractTekkoNgnWithdrawFees(
+      {
+        data: {
+          tekkoFee: "0.50",
+          providerFee: "10.00",
+          totalDebited: "510.50",
+          amount: "500",
+        },
+      },
+      "500.00"
+    );
+    assert.equal(fees.tekkoFee, "10.50");
+    assert.equal(fees.totalDebited, "510.50");
+    assert.equal(fees.providerFee, "10.00");
+  });
+
+  it("sums distinct tekkoFee + providerFee when totalDebited missing", () => {
+    const fees = extractTekkoNgnWithdrawFees(
+      { data: { tekkoFee: "0.50", providerFee: "10.00" } },
+      "500.00"
+    );
+    assert.equal(fees.tekkoFee, "10.50");
+  });
+
   it("derives fee from totalDebited − beneficiary amount", () => {
     const fees = extractTekkoNgnWithdrawFees(
       { data: { totalDebited: "500.50", amount: "500" } },

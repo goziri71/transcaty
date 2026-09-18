@@ -54,6 +54,25 @@ test("formatTransactionFeeBreakdown payout includes Tekko provider fee in totalW
   assert.equal(breakdown.totalWalletDebit, "505.50");
 });
 
+test("formatTransactionFeeBreakdown prefers totalDebited − amount for Tekko rail fee", () => {
+  const breakdown = formatTransactionFeeBreakdown({
+    type: "payout",
+    status: "success",
+    amount: "500.00",
+    currency: "NGN",
+    platformFee: "0.00",
+    feeStatus: "none",
+    provider: "tekko-ngn-payout",
+    metadata: JSON.stringify({
+      tekkoFee: "0.50",
+      tekkoProviderFee: "10.00",
+      tekkoTotalDebited: "510.50",
+    }),
+  });
+  assert.equal(breakdown.fees.providerFee, "10.50");
+  assert.equal(breakdown.totalWalletDebit, "510.50");
+});
+
 test("resolveTransactionFeeBaseAmount prefers paidAmount for payin", () => {
   assert.equal(
     resolveTransactionFeeBaseAmount({

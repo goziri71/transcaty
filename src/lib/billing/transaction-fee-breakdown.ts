@@ -2,7 +2,7 @@ import { z } from "zod";
 import { and, eq, inArray } from "drizzle-orm";
 import { db } from "../../db/index.js";
 import { ledgerEntries } from "../../db/schema/index.js";
-import { cmpAmount, subAmount } from "../money.js";
+import { addAmount, cmpAmount, subAmount } from "../money.js";
 import type { TransactionFeeType } from "./fee-calculator.js";
 import {
   feeAmountFromSchedule,
@@ -57,17 +57,55 @@ function normalizeCurrency(currency: string): string {
   return currency.trim().toUpperCase() || "BDT";
 }
 
-/** Tekko (and similar) rail fee stored on payout metadata when known. */
-export function providerFeeFromMetadata(metadata?: string | null): string | null {
+/** Normalize a positive money string from metadata; null if missing/invalid. */
+function positiveMoneyFromMeta(v: unknown): string | null {
+  if (typeof v !== "string" && typeof v !== "number") return null;
+  const n = String(v).trim();
+  if (!n) return null;
+  try {
+    if (cmpAmount(n, "0") <= 0) return null;
+    return n.includes(".") ? n : `${n}.00`;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Tekko (and similar) rail fee stored on payout metadata when known.
+ * Prefers totalDebited − payout amount, then sum of distinct fee fields, then tekkoFee/providerFee.
+ */
+export function providerFeeFromMetadata(
+  metadata?: string | null,
+  payoutAmount?: string | null
+): string | null {
   if (!metadata?.trim()) return null;
   try {
     const meta = JSON.parse(metadata) as Record<string, unknown>;
-    const raw = meta.tekkoFee ?? meta.providerFee;
-    if (typeof raw !== "string" && typeof raw !== "number") return null;
-    const n = String(raw).trim();
-    if (!n) return null;
-    if (cmpAmount(n, "0") <= 0) return null;
-    return n.includes(".") ? n : `${n}.00`;
+    const tekkoFee = positiveMoneyFromMeta(meta.tekkoFee);
+    const providerFee = positiveMoneyFromMeta(meta.tekkoProviderFee ?? meta.providerFee);
+    const totalDebited = positiveMoneyFromMeta(meta.tekkoTotalDebited ?? meta.totalDebited);
+
+    if (totalDebited && payoutAmount?.trim()) {
+      try {
+        const base = payoutAmount.trim().includes(".")
+          ? payoutAmount.trim()
+          : `${payoutAmount.trim()}.00`;
+        const delta = subAmount(totalDebited, base);
+        if (cmpAmount(delta, "0") > 0) return delta;
+      } catch {
+        /* fall through */
+      }
+    }
+
+    if (tekkoFee && providerFee && cmpAmount(tekkoFee, providerFee) !== 0) {
+      try {
+        return addAmount(tekkoFee, providerFee);
+      } catch {
+        /* fall through */
+      }
+    }
+
+    return tekkoFee ?? providerFee;
   } catch {
     return null;
   }
@@ -167,7 +205,7 @@ export function formatTransactionFeeBreakdown(params: {
 }): TransactionFeeBreakdownFields {
   const platformFee = params.platformFee ?? ZERO_FEE;
   const providerFee =
-    params.providerFee ?? providerFeeFromMetadata(params.metadata) ?? ZERO_FEE;
+    params.providerFee ?? providerFeeFromMetadata(params.metadata, params.amount) ?? ZERO_FEE;
   const currency = normalizeCurrency(params.currency);
   const fees = {
     platformFee,
@@ -228,7 +266,7 @@ export async function buildTransactionFeeBreakdown(
     return null;
   }
   const feeType = input.type;
-  const providerFee = providerFeeFromMetadata(input.metadata);
+  const providerFee = providerFeeFromMetadata(input.metadata, input.amount);
 
   if (input.status === "failed") {
     return formatTransactionFeeBreakdown({
@@ -310,7 +348,7 @@ export async function buildTransactionFeeBreakdownBatch(
         return null;
       }
       const feeType = row.type;
-      const providerFee = providerFeeFromMetadata(row.metadata);
+      const providerFee = providerFeeFromMetadata(row.metadata, row.amount);
 
       if (row.status === "failed") {
         return formatTransactionFeeBreakdown({
