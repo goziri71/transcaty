@@ -553,13 +553,6 @@ async function sumTekkoNgnProviderFeeDebited(
   return total;
 }
 
-async function hasTekkoNgnProviderFeeDebit(
-  txDb: FeeDbTx,
-  transactionId: string
-): Promise<boolean> {
-  return cmpAmount(await sumTekkoNgnProviderFeeDebited(txDb, transactionId), "0") > 0;
-}
-
 /**
  * Debit merchant NGN for Tekko's full rail fee once known. Idempotent and
  * tops up if an earlier partial debit under-collected (e.g. tekkoFee-only).
